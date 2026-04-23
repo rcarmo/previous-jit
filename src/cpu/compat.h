@@ -26,9 +26,10 @@
 /* here only to allow newcpu.c to compile */
 /* Should be removed when newcpu.c 'll be relooked for hatari only*/
 
-// Laurent : I don't know what to do with these variables, so, for now, I've put them here !!!
-int vpos;
-int quit_program;  // declared as "int quit_program = 0;" in main.c 
+// Laurent : I don't know what to do with these variables, so, for now, they're declared here
+// and defined in newcpu.c for modern toolchains that default to -fno-common.
+extern int vpos;
+extern int quit_program;  // declared as "int quit_program = 0;" in main.c 
 //WinUae ChangeLog: Improve quitting/resetting behaviour: Move quit_program from GUI
 //WinUae ChangeLog: quit_program is now handled in vsync_handler() and m68k_go().
 

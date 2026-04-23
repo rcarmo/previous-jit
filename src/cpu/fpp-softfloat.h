@@ -463,7 +463,7 @@ STATIC_INLINE void fp_div(fptype *a, fptype *b)
 }
 STATIC_INLINE void fp_mod(fptype *a, fptype *b, uae_u64 *q, uae_s8 *s)
 {
-    *a = floatx80_mod(*a, *b, q, s);
+    *a = floatx80_mod(*a, *b, (bits64 *)q, s);
 }
 STATIC_INLINE void fp_add(fptype *a, fptype *b)
 {
@@ -479,7 +479,7 @@ STATIC_INLINE void fp_sgldiv(fptype *a, fptype *b)
 }
 STATIC_INLINE void fp_rem(fptype *a, fptype *b, uae_u64 *q, uae_s8 *s)
 {
-    *a = floatx80_rem(*a, *b, q, s);
+    *a = floatx80_rem(*a, *b, (bits64 *)q, s);
 }
 STATIC_INLINE void fp_scale(fptype *a, fptype *b)
 {

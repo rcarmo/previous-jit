@@ -39,6 +39,9 @@
 #include "debugui.h"
 #include "debugcpu.h"
 
+/* Defined here for old WinUAE compatibility declarations in compat.h. */
+int vpos;
+int quit_program;
 
 /* Opcode of faulting instruction */
 static uae_u16 last_op_for_exception_3;

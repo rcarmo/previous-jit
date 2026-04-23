@@ -137,7 +137,8 @@ if(CMAKE_COMPILER_IS_GNUCC)
 	set(CMAKE_C_FLAGS "-Wmissing-prototypes -Wstrict-prototypes ${CMAKE_C_FLAGS}")
 	set(CMAKE_C_FLAGS "-Wall -Wwrite-strings -Wsign-compare ${CMAKE_C_FLAGS}")
 	#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wextra -Wno-unused-parameter -Wno-empty-body")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wformat-security -std=gnu99")
+	# Old Hatari/WinUAE-derived code relies on common symbols from headers; modern GCC defaults to -fno-common.
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wformat-security -std=gnu99 -fcommon")
 	#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wshadow -D_FORTIFY_SOURCE=2 -Werror")
 endif(CMAKE_COMPILER_IS_GNUCC)
 

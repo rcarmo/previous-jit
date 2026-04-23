@@ -38,4 +38,8 @@ if [[ "$missing" -ne 0 ]]; then
   echo "hint: populate /workspace/assets/previous/{roms,images} first" >&2
 fi
 
+if [[ "${PREVIOUS_VNC:-}" != "" ]]; then
+  echo "info: PREVIOUS_VNC=${PREVIOUS_VNC} PREVIOUS_VNC_PORT=${PREVIOUS_VNC_PORT:-5900}" >&2
+fi
+
 exec "$BIN" --configfile "$CONFIG"

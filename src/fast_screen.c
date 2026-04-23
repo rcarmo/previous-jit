@@ -23,6 +23,7 @@ const char Screen_fileid[] = "Previous fast_screen.c : " __DATE__ " " __TIME__;
 #include "control.h"
 #include "statusbar.h"
 #include "video.h"
+#include "vnc_server.h"
 
 SDL_Window*   sdlWindow;
 SDL_Surface*  sdlscrn = NULL;   /* The SDL screen surface */
@@ -48,6 +49,8 @@ static SDL_SpinLock  uiBufferLock;     /* Lock for concurrent access to UI buffe
 static Uint32        mask;             /* green screen mask for transparent UI areas */
 static volatile bool doRepaint  = true; /* Repaint thread runs while true */
 static SDL_Rect      statusBar;
+static uint8_t*      vncCaptureBuffer = NULL;
+static int           vncCapturePitch = 0;
 
 
 static Uint32 BW2RGB[0x400];
@@ -272,6 +275,12 @@ static int repainter(void* unused) {
     /* Start with framebuffer blit enabled */
     SDL_AtomicSet(&blitFB, 1);
     
+    VNCServerInitFromEnv(width, height);
+    if (VNCServerEnabled()) {
+        vncCapturePitch = width * 4;
+        vncCaptureBuffer = (uint8_t*)malloc((size_t)vncCapturePitch * (size_t)height);
+    }
+
     /* Enter repaint loop */
     while(doRepaint) {
         bool updateFB = false;
@@ -302,12 +311,20 @@ static int repainter(void* unused) {
             // Render NeXT framebuffer texture
             SDL_RenderCopy(sdlRenderer, fbTexture, NULL, NULL);
             SDL_RenderCopy(sdlRenderer, uiTexture, NULL, NULL);
+            if (vncCaptureBuffer) {
+                if (SDL_RenderReadPixels(sdlRenderer, NULL, SDL_PIXELFORMAT_RGBA32, vncCaptureBuffer, vncCapturePitch) == 0) {
+                    VNCServerUpdateRGBA(vncCaptureBuffer, vncCapturePitch, width, height);
+                }
+            }
             // SDL_RenderPresent sleeps until next VSYNC because of SDL_RENDERER_PRESENTVSYNC in ScreenInit
             SDL_RenderPresent(sdlRenderer);
         } else {
             host_sleep_ms(10);
         }
     }
+    free(vncCaptureBuffer);
+    vncCaptureBuffer = NULL;
+    vncCapturePitch = 0;
     return 0;
 }
 
@@ -382,6 +399,7 @@ void Screen_UnInit(void) {
     doRepaint = false; // stop repaint thread
     int s;
     SDL_WaitThread(repaintThread, &s);
+    VNCServerShutdown();
     nd_sdl_destroy();
 }
 

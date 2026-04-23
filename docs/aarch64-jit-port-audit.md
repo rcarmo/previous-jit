@@ -6,6 +6,7 @@
 - Branch: `audit/uae-jit-port-plan`
 - Base build-fix commit: `59b1131` (`Fix AArch64/GCC build for Previous on modern toolchains`)
 - Native binary currently builds at: `build-clean/src/Previous`
+- Experimental VNC output path is now available via `PREVIOUS_VNC=1` (port with `PREVIOUS_VNC_PORT`, default `5900`)
 
 ## Executive summary
 
@@ -191,3 +192,13 @@ Why:
 ## Bottom line
 
 A port is structurally plausible, but it should be treated as a **compiler-layer transplant onto a WinUAE/MMU-heavy NeXT emulator**, not as a quick patch series. Interpreter boot with real NeXT ROM/disk images should be treated as the immediate prerequisite for any serious JIT work.
+
+## Automation note
+
+A libvncserver-based SDL capture path has been added for automation and remote testing. It mirrors the rendered SDL output and accepts basic keyboard/mouse input through injected SDL events. Enable it with:
+
+```bash
+PREVIOUS_VNC=1 PREVIOUS_VNC_PORT=5900 ./tools/run-local.sh /workspace/assets/previous/configs/previous-example.cfg
+```
+
+This is useful for smoke tests and remote observation while interpreter-mode boot work is being stabilized.

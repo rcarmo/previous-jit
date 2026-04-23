@@ -5,7 +5,7 @@ set(SOURCES
 	keymap.c kms.c m68000.c main.c mo.c nbic.c nextMemory.c paths.c printer.c queue.c 
 	ramdac.c reset.c rs.c rtcnvram.c scandir.c scc.c fast_screen.c host.c
     scsi.c shortcut.c snd.c statusbar.c str.c sysReg.c tmc.c unzip.c
-	utils.c video.c zip.c)
+	utils.c video.c vnc_server.c zip.c)
 
 # When building for OSX, define specific sources for gui and ressources
 if(ENABLE_OSX_BUNDLE)
@@ -38,6 +38,10 @@ endif(ZLIB_FOUND)
 if(PNG_FOUND)
 	include_directories(${PNG_INCLUDE_DIR})
 endif(PNG_FOUND)
+
+if(LIBVNCSERVER_FOUND)
+	include_directories(${LIBVNCSERVER_INCLUDE_DIRS})
+endif(LIBVNCSERVER_FOUND)
 
 if(X11_FOUND)
 	include_directories(${X11_INCLUDE_DIR})
@@ -110,6 +114,10 @@ endif(ZLIB_FOUND)
 if(PNG_FOUND)
 	target_link_libraries(Previous ${PNG_LIBRARY})
 endif(PNG_FOUND)
+
+if(LIBVNCSERVER_FOUND)
+	target_link_libraries(Previous ${LIBVNCSERVER_LIBRARIES})
+endif(LIBVNCSERVER_FOUND)
 
 if(X11_FOUND)
 	target_link_libraries(Previous ${X11_LIBRARIES})

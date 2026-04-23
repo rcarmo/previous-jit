@@ -11,6 +11,7 @@ include(CheckIncludeFiles)
 include(CheckFunctionExists)
 include(CheckCCompilerFlag)
 include(DistClean)
+include(FindPkgConfig)
 
 # Set build type to "Release" if user did not specify any build type yet
 # Other possible values: Debug, Release, RelWithDebInfo and MinSizeRel
@@ -74,6 +75,14 @@ if(PNG_FOUND)
 	set(HAVE_LIBPNG 1)
 endif(PNG_FOUND)
 
+option(ENABLE_VNC "Enable libvncserver-based SDL remote display server" ON)
+if(ENABLE_VNC AND PKG_CONFIG_FOUND)
+	pkg_check_modules(LIBVNCSERVER libvncserver)
+	if(LIBVNCSERVER_FOUND)
+		set(HAVE_LIBVNCSERVER 1)
+	endif()
+endif()
+
 find_package(X11)
 if(X11_FOUND)
 	set(HAVE_X11 1)
@@ -98,6 +107,14 @@ endif(DETECTED_LFS_CFLAGS)
 execute_process(COMMAND pkg-config --cflags-only-other sdl2
 		OUTPUT_VARIABLE DETECTED_SDL_CFLAGS
 		ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(DETECTED_SDL_CFLAGS)
+	add_definitions(${DETECTED_SDL_CFLAGS})
+endif()
+
+if(LIBVNCSERVER_FOUND)
+	include_directories(${LIBVNCSERVER_INCLUDE_DIRS})
+	add_definitions(-DHAVE_LIBVNCSERVER=1)
+endif()
 
 # ###########################
 # Check for optional headers:

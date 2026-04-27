@@ -7,6 +7,14 @@
 - Base build-fix commit: `59b1131` (`Fix AArch64/GCC build for Previous on modern toolchains`)
 - Native binary currently builds at: `build-clean/src/Previous`
 - Experimental VNC output path is now available via `PREVIOUS_VNC=1` (port with `PREVIOUS_VNC_PORT`, default `5900`)
+- Vendored BasiliskII UAE 2026 subtree is now staged under `src/cpu/uae_cpu_2026/`
+- Headless fresh-image harness is now available at `tools/headless-nextstep-harness.sh`
+- Experimental bridge smoke harness is now available at `tools/headless-jit-bridge-smoke.sh`
+- Early bootstrap probe harness is now available at `tools/headless-jit-bootstrap-probe.sh`
+- Compiler-facing prefs shim now lives in `src/cpu/uae2026_compiler_prefs_shim.cpp`
+- Direct vendored compiler blocker inventory now lives in `docs/uae2026-compiler-blockers.md`
+- Vendored compiler object probe is available at `tools/uae2026-compiler-object-probe.sh`
+- Ongoing change log lives in `docs/uae2026-jit-bringup.md`
 
 ## Executive summary
 

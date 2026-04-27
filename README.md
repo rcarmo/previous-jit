@@ -186,6 +186,54 @@ Previous v1.8:
   > Fixes bug in timing system that caused hangs in variable speed mode.
 ```
 
+## Experimental AArch64 UAE 2026 JIT work
+
+This tree now contains an **experimental** transplant area for the newer
+BasiliskII `uae_cpu_2026` JIT/compiler work.
+
+Current status:
+- vendored subtree: `src/cpu/uae_cpu_2026/`
+- sync helper: `tools/sync-uae-2026.sh`
+- experimental build gate: `-DENABLE_EXPERIMENTAL_UAE2026_JIT=ON`
+- fresh-image headless harness: `tools/headless-nextstep-harness.sh`
+- bootstrap-only probe: `tools/headless-jit-bootstrap-probe.sh`
+- full bridge smoke: `tools/headless-jit-bridge-smoke.sh`
+- opcode equivalence harness: `tools/uae2026-opcode-harness.sh`
+
+Important:
+- translated JIT execution is still **disabled**
+- current work only proves staging, prefs/bootstrap plumbing, ASLR handling,
+  and headless boot validation
+- each automated boot harness uses a **fresh copied disk image per run**
+
+On Linux, `Previous` now disables host ASLR by default during startup to keep
+host virtual addresses stable for JIT bring-up. Set `PREVIOUS_DISABLE_ASLR=0`
+to opt out.
+
+Key docs:
+- `docs/uae2026-jit-bringup.md`
+- `docs/uae2026-compiler-blockers.md`
+- `docs/aarch64-jit-port-audit.md`
+- `docs/uae2026-opcode-harness.md`
+- `docs/uae2026-compemu-inline-assembly-plan.md`
+
+Example experimental build:
+
+```bash
+cmake -S . -B build-vnc -DENABLE_VNC=ON -DENABLE_EXPERIMENTAL_UAE2026_JIT=ON
+cmake --build build-vnc -j$(nproc)
+```
+
+Example validation runs:
+
+```bash
+./tools/headless-jit-bootstrap-probe.sh
+./tools/headless-jit-bridge-smoke.sh
+./tools/uae2026-opcode-harness.sh
+./tools/uae2026-compiler-syntax-probe.sh
+./tools/uae2026-compiler-object-probe.sh
+```
+
 ## Running Previous
 
 For running the emulator, you need an image of the boot ROM of the emulated 

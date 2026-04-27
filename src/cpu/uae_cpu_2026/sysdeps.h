@@ -1,0 +1,6 @@
+#ifndef PREVIOUS_UAE2026_SYSDEPS_WRAPPER_H
+#define PREVIOUS_UAE2026_SYSDEPS_WRAPPER_H
+
+#include "../sysdeps.h"
+
+#endif

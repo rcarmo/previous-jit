@@ -11,6 +11,15 @@ const char Main_fileid[] = "Hatari main.c : " __DATE__ " " __TIME__;
 #include <time.h>
 #include <errno.h>
 #include <signal.h>
+#include <ctype.h>
+
+#if HAVE_STRINGS_H
+#include <strings.h>
+#endif
+#if defined(__linux__)
+#include <unistd.h>
+#include <sys/personality.h>
+#endif
 
 #include "main.h"
 #include "configuration.h"
@@ -548,6 +557,67 @@ static void Main_SetSignalHandlers(void) {
     signal(SIGFPE, SIG_IGN);
 }
 
+#if defined(__linux__)
+static bool Main_EnvValueIsFalse(const char *value)
+{
+    if (!value || !*value)
+        return false;
+    return !strcasecmp(value, "0") || !strcasecmp(value, "false")
+        || !strcasecmp(value, "no") || !strcasecmp(value, "off");
+}
+
+static void Main_DisableASLRIfRequested(int argc, char *argv[])
+{
+    const char *setting = getenv("PREVIOUS_DISABLE_ASLR");
+    const char *reexec = getenv("PREVIOUS_ASLR_REEXEC");
+    unsigned long personality_flags;
+    const char *self_path;
+
+    (void)argc;
+
+    if (Main_EnvValueIsFalse(setting))
+        return;
+
+    errno = 0;
+    personality_flags = personality(0xffffffffUL);
+    if (personality_flags == (unsigned long)-1 && errno != 0) {
+        fprintf(stderr, "warning: failed to query personality for ASLR disable: %s\n", strerror(errno));
+        return;
+    }
+
+    if (personality_flags & ADDR_NO_RANDOMIZE) {
+#if HAVE_SETENV
+        setenv("PREVIOUS_ASLR_ACTIVE", "1", 1);
+#endif
+        return;
+    }
+
+    if (reexec && !strcmp(reexec, "1")) {
+        fprintf(stderr, "warning: ASLR disable re-exec did not stick; continuing with host ASLR enabled\n");
+        return;
+    }
+
+    if (personality(personality_flags | ADDR_NO_RANDOMIZE) == -1) {
+        fprintf(stderr, "warning: failed to disable ASLR via personality(): %s\n", strerror(errno));
+        return;
+    }
+
+#if HAVE_SETENV
+    setenv("PREVIOUS_ASLR_REEXEC", "1", 1);
+    setenv("PREVIOUS_ASLR_ACTIVE", "1", 1);
+#endif
+    self_path = (access("/proc/self/exe", X_OK) == 0) ? "/proc/self/exe" : argv[0];
+    execv(self_path, argv);
+    fprintf(stderr, "warning: failed to re-exec Previous after disabling ASLR: %s\n", strerror(errno));
+}
+#else
+static void Main_DisableASLRIfRequested(int argc, char *argv[])
+{
+    (void)argc;
+    (void)argv;
+}
+#endif
+
 
 /*-----------------------------------------------------------------------*/
 /**
@@ -556,6 +626,7 @@ static void Main_SetSignalHandlers(void) {
  * Note: 'argv' cannot be declared const, MinGW would then fail to link.
  */
 int main(int argc, char *argv[]) {
+    Main_DisableASLRIfRequested(argc, argv);
 	/* Generate random seed */
 	srand(time(NULL));
     
@@ -594,6 +665,11 @@ int main(int argc, char *argv[]) {
 
 	/* Init emulator system */
 	Main_Init();
+#if defined(__linux__)
+    if (getenv("PREVIOUS_ASLR_ACTIVE")) {
+        Log_Printf(LOG_INFO, "Host ASLR disabled for deterministic JIT mappings.\n");
+    }
+#endif
 
 	/* Set initial Statusbar information */
 	Main_StatusbarSetup();

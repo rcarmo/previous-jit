@@ -22,6 +22,7 @@ const char HatariGlue_fileid[] = "Hatari hatari-glue.c : " __DATE__ " " __TIME__
 #include "memory.h"
 #include "newcpu.h"
 #include "hatari-glue.h"
+#include "uae2026_jit_bridge.h"
 
 
 struct uae_prefs currprefs, changed_prefs;
@@ -70,6 +71,7 @@ int Init680x0(void) {
     currprefs.mmu_model = changed_prefs.mmu_model = ConfigureParams.System.bMMU?changed_prefs.cpu_model:0;
 
    	write_log("Init680x0() called\n");
+    Uae2026JitBridgeInit();
 
 	init_m68k();
 
@@ -82,6 +84,7 @@ int Init680x0(void) {
  */
 void Exit680x0(void)
 {
+    Uae2026JitBridgeShutdown();
 	memory_uninit();
 
 	free(table68k);

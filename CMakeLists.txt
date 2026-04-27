@@ -83,6 +83,8 @@ if(ENABLE_VNC AND PKG_CONFIG_FOUND)
 	endif()
 endif()
 
+option(ENABLE_EXPERIMENTAL_UAE2026_JIT "Compile the staged UAE 2026 JIT bridge (runtime still disabled)" OFF)
+
 find_package(X11)
 if(X11_FOUND)
 	set(HAVE_X11 1)
@@ -93,6 +95,9 @@ endif(X11_FOUND)
 # ################
 
 add_definitions(-DCONFDIR=\"/etc\")
+if(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+	add_definitions(-DENABLE_EXPERIMENTAL_UAE2026_JIT=1)
+endif()
 
 # Test for large file support:
 execute_process(COMMAND getconf LFS_CFLAGS

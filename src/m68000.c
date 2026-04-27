@@ -18,6 +18,12 @@ const char M68000_fileid[] = "Hatari m68000.c : " __DATE__ " " __TIME__;
 #include "nextMemory.h"
 
 #include "mmu_common.h"
+#include "uae2026_jit_bridge.h"
+#include "uae2026_opcode_test.h"
+
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
 
 Uint32 BusErrorAddress;         /* Stores the offending address for bus-/address errors */
 Uint32 BusErrorPC;              /* Value of the PC when bus error occurs */
@@ -142,6 +148,158 @@ void M68000_Init(void)
 }
 
 static int pendingInterrupts = 0;
+static bool opcode_test_mode_active = false;
+
+static bool opcode_test_dump_enabled(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("B2_TEST_DUMP");
+		cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+	}
+	return cached != 0;
+}
+
+static bool opcode_test_parse_words(const char *hex, Uint16 *out_words, size_t max_words, size_t *out_count)
+{
+	size_t n = 0;
+	const char *p = hex;
+	while (*p) {
+		char *end;
+		unsigned long v;
+		while (*p && (isspace((unsigned char)*p) || *p == ',' || *p == ';' || *p == ':'))
+			p++;
+		if (!*p)
+			break;
+		if (n >= max_words)
+			return false;
+		end = NULL;
+		v = strtoul(p, &end, 16);
+		if (end == p || v > 0xffffUL)
+			return false;
+		out_words[n++] = (Uint16)v;
+		p = end;
+	}
+	*out_count = n;
+	return n > 0;
+}
+
+static bool opcode_test_parse_longs(const char *hex, Uint32 *out_longs, size_t max_longs, size_t *out_count)
+{
+	size_t n = 0;
+	const char *p = hex;
+	while (*p) {
+		char *end;
+		unsigned long v;
+		while (*p && (isspace((unsigned char)*p) || *p == ',' || *p == ';' || *p == ':'))
+			p++;
+		if (!*p)
+			break;
+		if (n >= max_longs)
+			return false;
+		end = NULL;
+		v = strtoul(p, &end, 16);
+		if (end == p || v > 0xffffffffUL)
+			return false;
+		out_longs[n++] = (Uint32)v;
+		p = end;
+	}
+	*out_count = n;
+	return n > 0;
+}
+
+bool Uae2026OpcodeTestModeSetup(void)
+{
+	const char *hex = getenv("B2_TEST_HEX");
+	const char *init = getenv("B2_TEST_INIT");
+	const uaecptr test_addr = 0x01001000;
+	const uaecptr stack_addr = 0x04010000;
+	const Uint32 rom_offset = 0x1000;
+	Uint16 words[1024];
+	Uint32 init_words[17];
+	size_t n_words = 0;
+	size_t init_count = 0;
+	int i;
+
+	opcode_test_mode_active = false;
+	if (!(hex && *hex))
+		return false;
+	if (!opcode_test_parse_words(hex, words, sizeof(words) / sizeof(words[0]), &n_words)) {
+		fprintf(stderr, "B2_TEST_HEX parse failed\n");
+		return false;
+	}
+
+	for (i = 0; i < (int)n_words; i++) {
+		NEXTRom[rom_offset + (Uint32)(i * 2)] = (Uint8)(words[i] >> 8);
+		NEXTRom[rom_offset + (Uint32)(i * 2) + 1] = (Uint8)(words[i] & 0xff);
+	}
+	NEXTRom[rom_offset + (Uint32)(n_words * 2)] = 0x4e;
+	NEXTRom[rom_offset + (Uint32)(n_words * 2) + 1] = 0x72;
+	NEXTRom[rom_offset + (Uint32)(n_words * 2) + 2] = 0x27;
+	NEXTRom[rom_offset + (Uint32)(n_words * 2) + 3] = 0x00;
+
+	for (i = 0; i < 8; i++) {
+		m68k_dreg(regs, i) = 0;
+		m68k_areg(regs, i) = 0;
+	}
+	m68k_areg(regs, 7) = stack_addr;
+	regs.usp = stack_addr;
+	regs.isp = stack_addr;
+	regs.msp = stack_addr;
+	regs.sr = 0x2700;
+	MakeFromSR();
+
+	if (init && *init) {
+		if (!opcode_test_parse_longs(init, init_words, sizeof(init_words) / sizeof(init_words[0]), &init_count) ||
+			(init_count != 16 && init_count != 17)) {
+			fprintf(stderr, "B2_TEST_INIT parse failed (need 16 or 17 hex words)\n");
+			return false;
+		}
+		for (i = 0; i < 8; i++)
+			m68k_dreg(regs, i) = init_words[i];
+		for (i = 0; i < 8; i++)
+			m68k_areg(regs, i) = init_words[8 + i];
+		if (init_count == 17)
+			regs.sr = (uae_u16)(init_words[16] & 0xffff);
+		regs.usp = m68k_areg(regs, 7);
+		regs.isp = m68k_areg(regs, 7);
+		regs.msp = m68k_areg(regs, 7);
+		MakeFromSR();
+	}
+
+	regs.stopped = 0;
+	unset_special(SPCFLAG_STOP | SPCFLAG_BRK | SPCFLAG_DOTRACE | SPCFLAG_TRACE | SPCFLAG_DEBUGGER);
+	m68k_setpc(test_addr);
+	opcode_test_mode_active = true;
+	return true;
+}
+
+bool Uae2026OpcodeTestModeActive(void)
+{
+	return opcode_test_mode_active;
+}
+
+void Uae2026OpcodeTestModeFinish(void)
+{
+	if (!opcode_test_mode_active)
+		return;
+	opcode_test_mode_active = false;
+	if (opcode_test_dump_enabled()) {
+		MakeSR();
+		fprintf(stderr,
+			"REGDUMP: D0=%08x D1=%08x D2=%08x D3=%08x D4=%08x D5=%08x D6=%08x D7=%08x "
+			"A0=%08x A1=%08x A2=%08x A3=%08x A4=%08x A5=%08x A6=%08x A7=%08x SR=%04x PC=%08x\n",
+			(unsigned)m68k_dreg(regs, 0), (unsigned)m68k_dreg(regs, 1),
+			(unsigned)m68k_dreg(regs, 2), (unsigned)m68k_dreg(regs, 3),
+			(unsigned)m68k_dreg(regs, 4), (unsigned)m68k_dreg(regs, 5),
+			(unsigned)m68k_dreg(regs, 6), (unsigned)m68k_dreg(regs, 7),
+			(unsigned)m68k_areg(regs, 0), (unsigned)m68k_areg(regs, 1),
+			(unsigned)m68k_areg(regs, 2), (unsigned)m68k_areg(regs, 3),
+			(unsigned)m68k_areg(regs, 4), (unsigned)m68k_areg(regs, 5),
+			(unsigned)m68k_areg(regs, 6), (unsigned)m68k_areg(regs, 7),
+			(unsigned)regs.sr, (unsigned)m68k_getpc());
+	}
+}
 
 /*-----------------------------------------------------------------------*/
 /**
@@ -177,6 +335,11 @@ void M68000_Stop(void)
  */
 void M68000_Start(void)
 {
+	if (Uae2026OpcodeTestModeSetup()) {
+		m68k_go(true);
+		Uae2026OpcodeTestModeFinish();
+		_Exit(0);
+	}
 	m68k_go(true);
 }
 

@@ -176,34 +176,111 @@ struct regstruct
 {
 	uae_u32 regs[16];
 
-	uae_u32 pc;
-	uae_u8 *pc_p;
-	uae_u8 *pc_oldp;
+	/* ================================================================== *
+	 * SECTION A: JIT-CRITICAL FIELDS                                       *
+	 * These fields MUST be at exact byte offsets matching                  *
+	 * uae_cpu_2026/registers.h so the JIT's hardcoded arm64 offsets work.  *
+	 * NEVER reorder or insert fields within this section.                  *
+	 * ================================================================== */
+
+	/* offset  64: stack pointers (3 × uaecptr/u32)  */
+	uaecptr usp, isp, msp;
+	/* offset  76: status register */
+	uae_u16 sr;
+	/* offset  78: individual flag bits */
+	flagtype t1, t0, s, m, stopped;
+	/* offset  83: padding for intmask alignment */
+	uae_u8   _pad0;
+	/* offset  84: interrupt mask */
+	int      intmask;
+	/* offset  88: program counter */
+	uae_u32  pc;
+	/* offset  92: fault PC (JIT internal) */
+	uae_u32  fault_pc;
+	/* offset  96: host pointers for current PC fetch */
+	uae_u8  *pc_p;
+	uae_u8  *pc_oldp;
+	/* offset 112: misc CPU registers */
+	uae_u32  vbr, sfc, dfc;
+	/* offset 124: special flags */
+	volatile uae_u32 spcflags;
+	/* offset 128: MMU registers (match vendored: urp,srp,tc,mmu_enabled etc.) */
+	uae_u32  urp, srp;
+	uae_u32  tc;
+	int      mmu_enabled;
+	int      mmu_pagesize_8k;
+	/* offset 148: 68040 transparent translation registers */
+	uae_u32  dtt0, dtt1, itt0, itt1;
+	/* offset 164: MMU status / fault address */
+	uae_u32  mmusr;
+	uae_u32  mmu_fslw, mmu_fault_addr;
+	uae_u16  mmu_ssw;
+	/* offset 178: padding */
+	uae_u16  _pad_mmu;
+	/* offset 180: write-back slots */
+	uae_u32  wb3_data;
+	uae_u16  wb3_status;
+	/* offset 186: padding */
+	uae_u16  _pad_wb;
+	/* offset 188: cache registers */
+	uae_u32  cacr, caar;
+
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+	/* offset 196: JIT scratch / FP shadow registers  */
+	uae_u32  jit_scratchregs[3];         /* 12 bytes  -> 208 */
+	double   jit_scratchfregs_a[2];      /* 16 bytes  -> 224 */
+	double   jit_fp_result_a;            /*  8 bytes  -> 232 */
+	uae_u32  jit_exception;              /*  4 bytes  -> 236 */
+	uae_u32  _jit_pad1;                  /*  4 bytes  -> 240 */
+	double   jit_fpregs[8];              /* 64 bytes  -> 304 */
+	double   jit_fp_result;              /*  8 bytes  -> 312 */
+	double   jit_scratchfregs_b[2];      /* 16 bytes  -> 328 */
+	uae_u32 *raw_cputbl_count;           /*  8 bytes  -> 336 */
+	uintptr_t mem_banks;                 /*  8 bytes  -> 344 */
+	uintptr_t cache_tags;                /*  8 bytes  -> 352 */
+#endif /* ENABLE_EXPERIMENTAL_UAE2026_JIT */
+
+	/* ================================================================== *
+	 * SECTION B: PREVIOUS-SPECIFIC FIELDS                                  *
+	 * These follow the JIT section.  Ordering within this section is       *
+	 * free; Previous's C code accesses them by name.                       *
+	 * ================================================================== */
+
+	/* Extended MMU / CPU state (not in vendored struct) */
+	uae_u32  tcr;   /* Previous's cached copy of tc */
+	uae_u32  buscr;
+	uae_u32  mmu_effective_addr;
+	uae_u32  wb2_address;
+	uae_u8   wb2_status;
+	int      mmu_page_size;
+	uae_u32  itt0_prev, itt1_prev, dtt0_prev, dtt1_prev; /* extended 030/040 TT */
+
+	/* Instruction trace / decode helpers */
 	uae_u16 opcode;
 	uae_u32 instruction_pc;
-
 	uae_u16 irc, ir, db;
-	uae_u32 spcflags;
+	flagtype x;
+	int halted;
+	int exception;
+	int ipl, ipl_pin;
+
+	/* Pipeline state (68020+) */
 	uae_u32 last_prefetch;
 	uae_u32 chipset_latch_rw;
 	uae_u32 chipset_latch_read;
 	uae_u32 chipset_latch_write;
+	uae_u32 pcr;
+	uae_u32 address_space_mask;
+	uae_u32 prefetch020[CPU_PIPELINE_MAX];
+	uae_u32 prefetch020addr;
+	uae_u32 cacheholdingdata020;
+	uae_u32 cacheholdingaddr020;
+	int pipeline_pos;
+	int pipeline_r8[2];
+	int pipeline_stop;
+	int memory_waitstate_cycles;
 
-	uaecptr usp, isp, msp;
-	uae_u16 sr;
-	flagtype t1;
-	flagtype t0;
-	flagtype s;
-	flagtype m;
-	flagtype x;
-	flagtype stopped;
-	int halted;
-	int exception;
-	int intmask;
-	int ipl, ipl_pin;
-
-	uae_u32 vbr, sfc, dfc;
-
+	/* FPU register file */
 #ifdef FPUEMU
 	fptype fp[8];
 	uae_u32 fpcr, fpsr, fpiar;
@@ -217,31 +294,6 @@ struct regstruct
 	bool fp_exception;
 	bool fp_branch;
 #endif
-#ifndef CPUEMU_68000_ONLY
-	uae_u32 cacr, caar;
-	uae_u32 itt0, itt1, dtt0, dtt1;
-	uae_u32 tcr, mmusr, urp, srp, buscr;
-	uae_u32 mmu_fslw;
-	uae_u32 mmu_fault_addr, mmu_effective_addr;
-	uae_u16 mmu_ssw;
-	uae_u32 wb2_address;
-	uae_u32 wb3_data;
-	uae_u8 wb3_status, wb2_status;
-	int mmu_enabled;
-	int mmu_page_size;
-#endif
-
-	uae_u32 pcr;
-	uae_u32 address_space_mask;
-
-	uae_u32 prefetch020[CPU_PIPELINE_MAX];
-	uae_u32 prefetch020addr;
-	uae_u32 cacheholdingdata020;
-	uae_u32 cacheholdingaddr020;
-	int pipeline_pos;
-	int pipeline_r8[2];
-	int pipeline_stop;
-	int memory_waitstate_cycles;
 };
 
 extern struct regstruct regs;

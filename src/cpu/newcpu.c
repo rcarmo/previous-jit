@@ -38,6 +38,8 @@
 #include "log.h"
 #include "debugui.h"
 #include "debugcpu.h"
+#include "uae2026_opcode_test.h"
+#include "uae2026_jit_bridge.h"
 
 /* Defined here for old WinUAE compatibility declarations in compat.h. */
 int vpos;
@@ -1525,8 +1527,20 @@ void m68k_go (int may_quit)
 #endif
         
 	set_x_funcs ();
-        run_func=currprefs.cpu_model == 68040 ? m68k_run_mmu040 : m68k_run_mmu030;
-		run_func ();
+
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+        if (Uae2026JitBridgeIsActive()) {
+            Uae2026JitBridgeCompileExecute();
+        } else
+#endif
+        {
+            run_func=currprefs.cpu_model == 68040 ? m68k_run_mmu040 : m68k_run_mmu030;
+            run_func ();
+        }
+		if (Uae2026OpcodeTestModeActive()) {
+			unset_special(SPCFLAG_BRK);
+			break;
+		}
 	}
 	in_m68k_go--;
 }

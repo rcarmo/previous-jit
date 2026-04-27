@@ -1,221 +1,67 @@
-# Previous
+# Previous JIT
 
-Previous is a NeXT Computer emulator that can boot NeXTStep 0.x to 4.0 beta and OpenStep 4.2 For Mach.
+![Previous JIT icon](docs/icon-256.png)
 
-## About Previous
+This repository is an **ARM64 JIT-focused fork of [Previous](https://previous.alternative-system.com/)**.
+Its goal is to do for the NeXT emulator **Previous** what
+[`rcarmo/macemu-jit`](https://github.com/rcarmo/macemu) did for BasiliskII/SheepShaver:
+bring over a newer AArch64-capable JIT toolchain, wire it into the emulator cleanly,
+and build a fast validation loop around it.
 
-Previous is a NeXT Computer emulator based on the Atari emulator Hatari. It 
-uses the latest m68k emulation core from WinUAE and the i860 emulator from 
-Jason Eckhardt. Previous is confirmed to compile and run on Linux, Mac OS X 
-and Windows. It may also work on other Systems which are supported by the SDL2 
-library, like FreeBSD, NetBSD and BeOS.
+In practical terms, this tree is an attempt to create an **ARM-JIT enabled version of Previous**
+for modern AArch64 systems, while keeping the original emulator usable and keeping the upstream
+codebase recognizable.
 
-Previous emulates the following machines:
+## Current status
 
-* NeXT Computer (original 68030 Cube)
-* NeXTcube
-* NeXTcube Turbo
-* NeXTstation
-* NeXTstation Turbo
-* NeXTstation Color
-* NeXTstation Turbo Color
-* NeXTdimension Graphics Board
+This is still **experimental bring-up work**, not a finished high-performance JIT release.
 
-## Compiling and installing
+What is already in tree:
 
-For using Previous, you need to have installed the following libraries:
+- vendored `uae_cpu_2026` JIT/compiler subtree under `src/cpu/uae_cpu_2026/`
+- bridge/runtime scaffolding to let Previous initialize the transplanted compiler
+- bootstrap probe and headless smoke harnesses
+- opcode-equivalence harness for short injected M68K vectors
+- docs describing blockers, bridge layout, and migration strategy
 
-Required:
+What is **not** finished yet:
 
-* The SDL library v2.0.5 or later (http://www.libsdl.org)
-* The libpng PNG reference library (http://www.libpng.org)
-* The zlib compression library (http://www.gzip.org/zlib/)
+- stable translated JIT execution inside Previous
+- opcode-family parity with the BasiliskII/macemu JIT work
+- full NeXT desktop boot under translated execution
 
-Don't forget to also install the header files of these libraries for compiling
-Previous (some Linux distributions use separate development packages for these
-header files)!
+Right now the project is at the stage where:
 
-For compiling Previous, you need a C compiler (preferably GNU C), and a working
-CMake installation (see http://www.cmake.org/ for details).
+- interpreter-backed validation works
+- JIT bootstrap/plumbing works
+- translated execution still crashes early and is being brought up incrementally
 
-CMake can generate makefiles for various flavors of "Make" (like GNU-Make)
-and various IDEs like Xcode on Mac OS X. To run CMake, you've got to pass the
-path to the sources of Previous as parameter, for example run the following if
-you are in the topmost directory of the Previous source tree:
+## Project layout
 
-```
-cmake .
-```
+### Core JIT bring-up pieces
 
-If you're tracking Previous version control, it's preferable to do
-the build in a separate build directory as above would overwrite
-the (non-CMake) Makefiles coming with Previous:
+- `src/cpu/uae2026_jit_bridge.cpp` — bridge between Previous and the transplanted JIT runtime
+- `src/cpu/uae2026_compiler_unit.cpp` — unity-build wrapper for vendored compiler pieces
+- `src/cpu/uae_cpu_2026/` — vendored UAE 2026 JIT/compiler subtree
+- `src/m68000.c` / `src/cpu/newcpu.c` — opcode test-mode integration and CPU loop hooks
 
-```
-mkdir -p build
-cd build
-cmake ..
-```
+### Harnesses
 
-Have a look at the manual of CMake for other options. Alternatively, you can
-use the "cmake-gui" program to configure the sources with a graphical
-application.
+- `tools/headless-nextstep-harness.sh` — fresh-image headless boot harness
+- `tools/headless-jit-bootstrap-probe.sh` — bootstrap-only probe
+- `tools/headless-jit-bridge-smoke.sh` — full bridge smoke test
+- `tools/uae2026-opcode-harness.sh` — interpreter vs JIT opcode equivalence harness
+- `tools/uae2026-opcode-vectors.sh` — curated risky/missing opcode vectors
 
-After cmake finished the configuration successfully, you can compile Previous
-by typing "make". If all works fine, you'll get the executable "Previous" in 
-the src/ subdirectory of the build tree.
+### Docs
 
-
-## Status
-
-Previous is stable, but some parts are still work in progress. Some hardware 
-is not yet emulated. Status of the individual components is as follows:
-
-```
-CPU		good (but not cycle-exact)
-MMU		good
-FPU		good
-DSP		good
-DMA		good
-NextBus		good
-Memory		good
-2-bit graphics	good
-Color graphics	good
-RTC		good
-Timers		good
-SCSI drive	good
-MO drive	good
-Floppy drive	good
-Ethernet	good
-Serial		dummy
-Printer		good
-Sound		good
-Keyboard	good
-Mouse		good
-ADB		dummy
-Nitro		dummy
-Dimension	partial (no video I/O)
-```
-
-There are remaining problems with the host to emulated machine interface for
-input devices.
-
-## Known issues
-
-* Un-emulated hardware may cause problems when attempted to being used.
-* NeXTdimension emulation does not work on hosts with big endian byte order.
-* The MO drive causes slow downs and hangs when both drives are connected, but 
-  only one disk is inserted. This is no emulation issue but a bug in NeXTstep.
-* DSP sound has timing related issues. playscore under NeXTstep 0.9 sometimes 
-  produces bad audio in variable speed mode. ScorePlayer under NeXTstep 2.x 
-  produces distorted sound in normal CPU mode.
-* Shortcuts do not work properly or overlap with host commands on some 
-  platforms.
-* CPU timings are not correct. You may experience performance differences 
-  compared to real hardware.
-* 68882 transcendental FPU instructions produce results identical to 68040 FPSP.
-  The results are slightly different from real 68882 results.
-* Changing network connection settings while a guest system is running sometimes
-  causes permanently lost connections, especially under NeXTstep 2.2.
-
-## Release notes
-
-```
-  Previous v1.0:
-  > Initial release.
-
-  Previous v1.1:
-  > Adds Turbo chipset emulation.
-  > Improves DSP interrupt handling.
-  > Improves hardclock timing.
-
-  Previous v1.2:
-  > Adds support for running Mac OS via Daydream.
-  > Improves mouse movement handling.
-  > Adds dummy Nitro emulation.
-  > Improves dummy SCC emulation.
-
-  Previous v1.3:
-  > Adds Laser Printer emulation.
-  > Introduces option for swapping cmd and alt key.
-
-  Previous v1.4:
-  > Adds NeXTdimension emulation, including emulated i860 CPU.
-  > Improves timings and adds a mode for higher than real speed.
-  > Improves emulator efficiency through optimizations and threads.
-  > Improves mouse movement handling.
-  > Improves Real Time Clock. Time is now handled correctly.
-
-  Previous v1.5:
-  > Adds emulation of soundbox microphone to enable sound recording.
-  > Fixes bug in SCSI code. Images greater than 4 GB are now supported.
-  > Fixes bug in Real Time Clock. Years after 1999 are now accepted.
-  > Fixes bug that prevented screen output on Linux.
-  > Fixes bug that caused NeXTdimension to fail after disabling thread.
-
-  Previous v1.6:
-  > Adds SoftFloat FPU emulation. Fixes FPU on non-x86 host platforms.
-  > Adds emulation of FPU arithmetic exceptions.
-  > Adds support for second magneto-optical disk drive.
-  > Fixes bug that caused a crash when writing to an NFS server.
-  > Fixes bug that prevented NeXTdimension from stopping in rare cases.
-  > Fixes bug that caused external i860 interrupts to be delayed.
-  > Fixes bug that prevented sound input under NeXTstep 0.8.
-  > Fixes bug that caused temporary speed anomalies after pausing.
-  > Improves dummy RAMDAC emulation.
-
-  Previous v1.7:
-  > Adds support for twisted-pair Ethernet.
-  > Adds SoftFloat emulation for 68882 transcendental FPU instructions.
-  > Adds SoftFloat emulation for i860 floating point instructions.
-  > Improves 68040 FPU emulation to support resuming of instructions.
-  > Improves Ethernet connection stability.
-  > Improves efficiency while emulation is paused.
-  > Improves device timings to be closer to real hardware.
-  > Fixes bug in timing system. MO drive now works in variable speed mode.
-  > Fixes bug in 68040 MMU that caused crashes and kernel panics.
-  > Fixes bug in 68040 FPU that caused crashes due to unnormal zero.
-  > Fixes bug in FMOVEM that modified wrong FPU registers.
-  > Fixes bug that sometimes caused hangs if sound was disabled.
-  > Fixes bug that caused lags in responsiveness during sound output.
-  > Fixes bug that caused a crash when using write protected image files.
-
-Previous v1.8:
-  > Removes support for host keyboard repeat because it became useless.
-  > Fixes bug that caused FMOVECR to return wrong values in some cases.
-  > Fixes bug in timing system that caused hangs in variable speed mode.
-```
-
-## Experimental AArch64 UAE 2026 JIT work
-
-This tree now contains an **experimental** transplant area for the newer
-BasiliskII `uae_cpu_2026` JIT/compiler work.
-
-Current status:
-- vendored subtree: `src/cpu/uae_cpu_2026/`
-- sync helper: `tools/sync-uae-2026.sh`
-- experimental build gate: `-DENABLE_EXPERIMENTAL_UAE2026_JIT=ON`
-- fresh-image headless harness: `tools/headless-nextstep-harness.sh`
-- bootstrap-only probe: `tools/headless-jit-bootstrap-probe.sh`
-- full bridge smoke: `tools/headless-jit-bridge-smoke.sh`
-- opcode equivalence harness: `tools/uae2026-opcode-harness.sh`
-
-Important:
-- translated JIT execution is still **disabled**
-- current work only proves staging, prefs/bootstrap plumbing, ASLR handling,
-  and headless boot validation
-- each automated boot harness uses a **fresh copied disk image per run**
-
-On Linux, `Previous` now disables host ASLR by default during startup to keep
-host virtual addresses stable for JIT bring-up. Set `PREVIOUS_DISABLE_ASLR=0`
-to opt out.
-
-Key docs:
 - `docs/uae2026-jit-bringup.md`
 - `docs/uae2026-compiler-blockers.md`
 - `docs/aarch64-jit-port-audit.md`
 - `docs/uae2026-opcode-harness.md`
 - `docs/uae2026-compemu-inline-assembly-plan.md`
+
+## Build
 
 Example experimental build:
 
@@ -224,7 +70,9 @@ cmake -S . -B build-vnc -DENABLE_VNC=ON -DENABLE_EXPERIMENTAL_UAE2026_JIT=ON
 cmake --build build-vnc -j$(nproc)
 ```
 
-Example validation runs:
+## Validation
+
+Current validation flow:
 
 ```bash
 ./tools/headless-jit-bootstrap-probe.sh
@@ -234,26 +82,50 @@ Example validation runs:
 ./tools/uae2026-compiler-object-probe.sh
 ```
 
+Notes:
+
+- automated boot harnesses use a **fresh copied disk image per run**
+- Linux startup disables host ASLR by default for deterministic JIT mappings
+- `PREVIOUS_UAE2026_JIT=0` gives an interpreter baseline for harness comparison
+
+## What is being migrated
+
+The broad plan is:
+
+1. get the transplanted JIT stable enough to execute inside Previous
+2. use the opcode harness to validate missing/risky opcode families quickly
+3. move away from opaque generated `compemu.cpp` ownership toward explicit ARM64 lowering
+4. eventually make this a real AArch64 JIT-enabled Previous tree, not just a staging port
+
+See `docs/uae2026-compemu-inline-assembly-plan.md` for the current migration plan.
+
+## Relationship to upstream Previous
+
+Upstream Previous is a NeXT Computer emulator based on Hatari and WinUAE CPU core work.
+It emulates:
+
+- NeXT Computer (original 68030 Cube)
+- NeXTcube
+- NeXTcube Turbo
+- NeXTstation
+- NeXTstation Turbo
+- NeXTstation Color
+- NeXTstation Turbo Color
+- NeXTdimension Graphics Board
+
+This fork is not trying to replace upstream identity or history; it is a focused JIT porting branch
+with extra tooling, docs, and experimental runtime code.
+
 ## Running Previous
 
-For running the emulator, you need an image of the boot ROM of the emulated 
-machine.
+You still need ROM images and normal Previous configuration/assets to run the emulator.
 
-While the emulator is running, you can open the configuration menu by
-pressing F12, toggle between fullscreen and windowed mode by pressing F11 
-and initiate a clean shut down by pressing F10 (emulates the power button).
+While the emulator is running, you can open the configuration menu with `F12`, toggle fullscreen
+with `F11`, and initiate a clean shutdown with `F10`.
 
 ## Contributors
 
-Previous was written by Andreas Grabher, Simon Schubiger and Gilles Fetis.
+Original Previous was written by Andreas Grabher, Simon Schubiger and Gilles Fetis.
 
-Many thanks go to the members of the NeXT International Forums for their
-help. Special thanks go to Gavin Thomas Nicol, Piotr Twarecki, Toni Wilen,
-Michael Bosshard, Thomas Huth, Olivier Galibert, Jason Eckhardt, Jason 
-Stevens, Daniel L'Hommedieu, Vaughan Kaufman and Peter Leonard!
-This emulator would not exist without their help.
-
-## Contact
-
-If you want to contact the authors of Previous, please have a look at the 
-NeXT International Forums (http://www.nextcomputers.org/forums).
+Many thanks go to the members of the NeXT International Forums and to the original emulator authors
+and contributors whose work this fork builds on.

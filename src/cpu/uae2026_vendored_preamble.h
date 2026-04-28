@@ -98,6 +98,9 @@ extern uintptr MEMBaseDiff;
 #ifndef CPU_64_BIT
 #  define CPU_64_BIT 1
 #endif
+#ifndef USE_JIT2
+#  define USE_JIT2 1
+#endif
 
 /* Block src/cpu/newcpu.h (guard UAE_NEWCPU_H) after the vendored one
  * (guard NEWCPU_H) has been included.  readcpu.h shares UAE_READCPU_H

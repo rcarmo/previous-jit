@@ -19,6 +19,8 @@ void jit_op_eorsr(void);
 /* MOVEC */
 void jit_op_movec2(void);
 void jit_op_move2c(void);
+void jit_op_mvsr2(void);
+void jit_op_moves(void);
 
 /* Divide */
 void jit_op_divu_w(void);

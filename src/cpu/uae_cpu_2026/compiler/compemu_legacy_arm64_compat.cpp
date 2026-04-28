@@ -21,6 +21,8 @@ static inline void legacy_copy_carry_to_flagx(void)
 static inline int legacy_x86_cc_to_native(int cc)
 {
 	switch (cc) {
+	case 0: return NATIVE_CC_VS;
+	case 1: return NATIVE_CC_VC;
 	case 2: return NATIVE_CC_CS;
 	case 3: return NATIVE_CC_CC;
 	case 4: return NATIVE_CC_EQ;
@@ -1572,6 +1574,30 @@ extern "C" void jit_op_mvusp2r(void)
     regs.regs[rn] = regs.usp;
 }
 
+extern "C" void jit_op_mvsr2(void)
+{
+    /* jit_exception: bits 0-2 = destination register (for Dn mode)
+     * bit 3 = memory destination, bit 4 = word form (vs byte/CCR form) */
+    int reg = regs.jit_exception & 7;
+    int is_mem = (regs.jit_exception >> 3) & 1;
+    int is_word = (regs.jit_exception >> 4) & 1;
+    uae_u16 value;
+
+    if (is_word && !regs.s) {
+        Exception(8, 0);
+        return;
+    }
+
+    MakeSR();
+    value = is_word ? (regs.sr & 0xffff) : (regs.sr & 0x00ff);
+
+    if (is_mem) {
+        put_word(regs.scratchregs[0], value);
+    } else {
+        regs.regs[reg] = (regs.regs[reg] & ~0xffff) | value;
+    }
+}
+
 extern "C" void jit_op_reset(void)
 {
     /* RESET instruction — in emulation, this is a no-op */
@@ -1661,14 +1687,56 @@ extern "C" void jit_op_trapv(void)
 
 extern "C" void jit_op_moves(void)
 {
-    /* MOVES: In user/supervisor mode without real MMU,
-     * this is effectively a normal move.
-     * jit_exception = extension word, scratchregs[0] = EA value.
-     * The extension word encodes: bit 11 = direction (0=EA→Rn, 1=Rn→EA),
-     * bits 15-12 = register.
-     * For now: treat as a no-op since we don't have an MMU. */
-    /* Actually, the interpreter implementation does real memory accesses.
-     * Let's do the same. For simplicity, fall through to interpreter. */
+    /* jit_exception: bits 0-15 = extension word, bits 16-17 = size (0=B,1=W,2=L)
+     * scratchregs[0] = effective address */
+    uae_u32 encoded = regs.jit_exception;
+    uae_u16 extra = (uae_u16)(encoded & 0xffff);
+    int size = (encoded >> 16) & 3;
+    uae_u32 addr = regs.scratchregs[0];
+    int regnum = (extra >> 12) & 15;
+
+    if (!regs.s) {
+        Exception(8, 0);
+        return;
+    }
+
+    if (extra & 0x0800) {
+        /* register -> memory */
+        uae_u32 src = regs.regs[regnum & 15];
+        switch (size) {
+        case 0: put_byte(addr, src); break;
+        case 1: put_word(addr, src); break;
+        default: put_long(addr, src); break;
+        }
+    } else {
+        /* memory -> register */
+        switch (size) {
+        case 0: {
+            uae_s8 src = (uae_s8)get_byte(addr);
+            if (extra & 0x8000)
+                m68k_areg(regs, regnum & 7) = (uae_s32)src;
+            else
+                m68k_dreg(regs, regnum & 7) = (m68k_dreg(regs, regnum & 7) & ~0xff) | ((uae_u8)src);
+            break;
+        }
+        case 1: {
+            uae_s16 src = (uae_s16)get_word(addr);
+            if (extra & 0x8000)
+                m68k_areg(regs, regnum & 7) = (uae_s32)src;
+            else
+                m68k_dreg(regs, regnum & 7) = (m68k_dreg(regs, regnum & 7) & ~0xffff) | ((uae_u16)src);
+            break;
+        }
+        default: {
+            uae_u32 src = get_long(addr);
+            if (extra & 0x8000)
+                m68k_areg(regs, regnum & 7) = src;
+            else
+                m68k_dreg(regs, regnum & 7) = src;
+            break;
+        }
+        }
+    }
 }
 
 extern "C" void jit_op_chk(void)

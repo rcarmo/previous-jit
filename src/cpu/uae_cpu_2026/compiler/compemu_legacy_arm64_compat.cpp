@@ -2320,9 +2320,8 @@ extern "C" void jit_op_cpusha(void)
 /* --- TRAPcc helper --- */
 extern "C" void jit_op_trapcc(void)
 {
-    /* The condition was already evaluated; if we get here, trap. */
-    int cond = regs.jit_exception & 1;
-    if (cond) {
+    int cc = regs.jit_exception & 15;
+    if (cctrue(cc)) {
         Exception(7, 0);
     }
 }

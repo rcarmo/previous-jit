@@ -42,6 +42,7 @@ void jit_op_rtr(void);
 void jit_op_stop(void);
 void jit_op_trap(void);
 void jit_op_trapv(void);
+void jit_op_trapcc(void);
 void jit_op_chk(void);
 
 /* Bit operations */

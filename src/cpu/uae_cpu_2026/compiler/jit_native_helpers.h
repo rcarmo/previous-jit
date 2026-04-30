@@ -46,6 +46,9 @@ void jit_op_chk(void);
 
 /* Bit operations */
 void jit_op_tas(void);
+void jit_op_pack(void);
+void jit_op_unpk(void);
+void jit_op_bitfield(void);
 void jit_op_bfins(void);
 
 /* Rotate/shift */

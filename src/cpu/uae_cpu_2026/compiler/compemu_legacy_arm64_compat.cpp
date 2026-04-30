@@ -1845,6 +1845,209 @@ extern "C" void jit_op_unpk(void)
     }
 }
 
+/* --- 68020 bitfield helpers --- */
+static inline uae_u32 jit_bf_mask(int width)
+{
+    return width >= 32 ? 0xffffffffu : ((1u << width) - 1u);
+}
+
+static inline uae_u32 jit_bf_rotl32(uae_u32 v, int shift)
+{
+    shift &= 31;
+    return shift ? ((v << shift) | (v >> (32 - shift))) : v;
+}
+
+static inline uae_u32 jit_bf_rotr32(uae_u32 v, int shift)
+{
+    shift &= 31;
+    return shift ? ((v >> shift) | (v << (32 - shift))) : v;
+}
+
+static uae_u32 jit_bf_get_mem(uae_u32 src, uae_u32 bdata[2], uae_s32 offset, int width)
+{
+    uae_u32 tmp, res, mask;
+
+    offset &= 7;
+    mask = 0xffffffffu << (32 - width);
+    switch ((offset + width + 7) >> 3) {
+    case 1:
+        tmp = get_byte(src);
+        res = tmp << (24 + offset);
+        bdata[0] = tmp & ~(mask >> (24 + offset));
+        break;
+    case 2:
+        tmp = get_word(src);
+        res = tmp << (16 + offset);
+        bdata[0] = tmp & ~(mask >> (16 + offset));
+        break;
+    case 3:
+        tmp = get_word(src);
+        res = tmp << (16 + offset);
+        bdata[0] = tmp & ~(mask >> (16 + offset));
+        tmp = get_byte(src + 2);
+        res |= tmp << (8 + offset);
+        bdata[1] = tmp & ~(mask >> (8 + offset));
+        break;
+    case 4:
+        tmp = get_long(src);
+        res = tmp << offset;
+        bdata[0] = tmp & ~(mask >> offset);
+        break;
+    case 5:
+        tmp = get_long(src);
+        res = tmp << offset;
+        bdata[0] = tmp & ~(mask >> offset);
+        tmp = get_byte(src + 4);
+        res |= tmp >> (8 - offset);
+        bdata[1] = tmp & ~(mask << (8 - offset));
+        break;
+    default:
+        res = 0;
+        break;
+    }
+    return res;
+}
+
+static void jit_bf_put_mem(uae_u32 dst, uae_u32 bdata[2], uae_u32 val, uae_s32 offset, int width)
+{
+    offset = (offset & 7) + width;
+    switch ((offset + 7) >> 3) {
+    case 1:
+        put_byte(dst, bdata[0] | (val << (8 - offset)));
+        break;
+    case 2:
+        put_word(dst, bdata[0] | (val << (16 - offset)));
+        break;
+    case 3:
+        put_word(dst, bdata[0] | (val >> (offset - 16)));
+        put_byte(dst + 2, bdata[1] | (val << (24 - offset)));
+        break;
+    case 4:
+        put_long(dst, bdata[0] | (val << (32 - offset)));
+        break;
+    case 5:
+        put_long(dst, bdata[0] | (val >> (offset - 32)));
+        put_byte(dst + 4, bdata[1] | (val << (40 - offset)));
+        break;
+    }
+}
+
+extern "C" void jit_op_bitfield(void)
+{
+    enum {
+        JIT_BF_OP_BFTST = 0,
+        JIT_BF_OP_BFEXTU = 1,
+        JIT_BF_OP_BFCHG = 2,
+        JIT_BF_OP_BFEXTS = 3,
+        JIT_BF_OP_BFCLR = 4,
+        JIT_BF_OP_BFFFO = 5,
+        JIT_BF_OP_BFSET = 6
+    };
+
+    uae_u32 encoded = regs.jit_exception;
+    uae_u16 ext = encoded & 0xffff;
+    int op = (encoded >> 16) & 0xff;
+    uae_u32 ea_info = regs.scratchregs[0];
+
+    uae_s32 offset = (ext & 0x0800) ? (uae_s32)regs.regs[(ext >> 6) & 7] : ((ext >> 6) & 0x1f);
+    int width = (((((ext & 0x0020) ? regs.regs[ext & 7] : ext) - 1) & 0x1f) + 1);
+    uae_u32 mask = jit_bf_mask(width);
+    int result_reg = (ext >> 12) & 7;
+
+    if (ea_info & 0x80000000u) {
+        int dreg = ea_info & 7;
+        int reg_offset = offset & 31;
+        uae_u32 rotated = jit_bf_rotl32(regs.regs[dreg], reg_offset);
+        uae_u32 field = rotated >> (32 - width);
+
+        SET_NFLG(((uae_s32)rotated) < 0);
+        SET_ZFLG(field == 0);
+        SET_VFLG(0);
+        SET_CFLG(0);
+
+        switch (op) {
+        case JIT_BF_OP_BFTST:
+            break;
+        case JIT_BF_OP_BFEXTU:
+            regs.regs[result_reg] = field;
+            break;
+        case JIT_BF_OP_BFEXTS:
+            regs.regs[result_reg] = (uae_u32)((uae_s32)rotated >> (32 - width));
+            break;
+        case JIT_BF_OP_BFFFO: {
+            uae_u32 ffo = reg_offset;
+            uae_u32 bit = 1u << (width - 1);
+            while (bit) {
+                if (field & bit)
+                    break;
+                bit >>= 1;
+                ffo++;
+            }
+            regs.regs[result_reg] = ffo;
+            break;
+        }
+        case JIT_BF_OP_BFCHG:
+        case JIT_BF_OP_BFCLR:
+        case JIT_BF_OP_BFSET: {
+            uae_u32 new_field;
+            if (op == JIT_BF_OP_BFCHG)
+                new_field = field ^ mask;
+            else if (op == JIT_BF_OP_BFCLR)
+                new_field = 0;
+            else
+                new_field = mask;
+            uae_u32 preserve = (width == 32) ? 0 : (rotated & ((1u << (32 - width)) - 1u));
+            uae_u32 merged = preserve | (new_field << (32 - width));
+            regs.regs[dreg] = jit_bf_rotr32(merged, reg_offset);
+            break;
+        }
+        }
+        return;
+    }
+
+    uae_u32 dsta = ea_info + (offset >> 3);
+    uae_u32 bdata[2] = { 0, 0 };
+    uae_u32 tmp = jit_bf_get_mem(dsta, bdata, offset, width);
+    uae_u32 field = tmp >> (32 - width);
+
+    SET_NFLG(((uae_s32)tmp) < 0);
+    SET_ZFLG(field == 0);
+    SET_VFLG(0);
+    SET_CFLG(0);
+
+    switch (op) {
+    case JIT_BF_OP_BFTST:
+        break;
+    case JIT_BF_OP_BFEXTU:
+        regs.regs[result_reg] = field;
+        break;
+    case JIT_BF_OP_BFEXTS:
+        regs.regs[result_reg] = (uae_u32)((uae_s32)tmp >> (32 - width));
+        break;
+    case JIT_BF_OP_BFFFO: {
+        uae_u32 ffo = offset;
+        uae_u32 bit = 1u << (width - 1);
+        while (bit) {
+            if (field & bit)
+                break;
+            bit >>= 1;
+            ffo++;
+        }
+        regs.regs[result_reg] = ffo;
+        break;
+    }
+    case JIT_BF_OP_BFCHG:
+        jit_bf_put_mem(dsta, bdata, field ^ mask, offset, width);
+        break;
+    case JIT_BF_OP_BFCLR:
+        jit_bf_put_mem(dsta, bdata, 0, offset, width);
+        break;
+    case JIT_BF_OP_BFSET:
+        jit_bf_put_mem(dsta, bdata, mask, offset, width);
+        break;
+    }
+}
+
 /* --- BFINS helper --- */
 extern "C" void jit_op_bfins(void)
 {

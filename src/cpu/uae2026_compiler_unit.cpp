@@ -91,6 +91,8 @@ static struct _addrbank_stub rtarea_bank  = { nullptr, 0 };
 #include "uae_cpu_2026/compiler/compemu_b2_gapfill.cpp"
 #include "uae_cpu_2026/compiler/compemu_priority_gapfill.cpp"
 #include "uae_cpu_2026/compiler/compemu_moves_gapfill.cpp"
+#include "uae_cpu_2026/compiler/compemu_pack_gapfill.cpp"
+#include "uae_cpu_2026/compiler/compemu_bitfield_gapfill.cpp"
 
 /* ------------------------------------------------------------------ *
  * compstbl_arm.cpp — op_smalltbl_0_comp_ff/nf dispatch tables         *

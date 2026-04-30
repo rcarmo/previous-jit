@@ -2415,15 +2415,45 @@ extern "C" void jit_op_roxrw(void)
     SET_VFLG(0);
 }
 
-/* --- Cache instructions (no-ops in emulation) --- */
+/* --- Unsupported/system/cache/FPU-frame helpers --- */
+extern "C" void jit_op_callm(void)
+{
+    op_illg(regs.jit_exception & 0xffff);
+}
+
+extern "C" void jit_op_mmuop030(void)
+{
+    op_illg(regs.jit_exception & 0xffff);
+}
+
+extern "C" void jit_op_frestore(void)
+{
+    if (!regs.s) {
+        Exception(8, 0);
+        return;
+    }
+    /* The current Previous UAE2026 bridge is built without linked FPU frame
+     * helpers.  Treat FRESTORE as a privileged no-op for coverage parity with
+     * the existing FPU-disabled JIT path; full state-frame restoration belongs
+     * with the FPU tranche. */
+}
+
 extern "C" void jit_op_cinva(void)
 {
-    /* CINVA: Cache invalidate all — no-op in emulation */
+    if (!regs.s) {
+        Exception(8, 0);
+        return;
+    }
+    flush_internals();
 }
 
 extern "C" void jit_op_cpusha(void)
 {
-    /* CPUSHA: Cache push all — no-op in emulation */
+    if (!regs.s) {
+        Exception(8, 0);
+        return;
+    }
+    flush_internals();
 }
 
 /* --- TRAPcc helper --- */

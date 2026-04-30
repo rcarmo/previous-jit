@@ -46,6 +46,9 @@ void jit_op_trapcc(void);
 void jit_op_chk(void);
 void jit_op_chk2(void);
 void jit_op_cas(void);
+void jit_op_callm(void);
+void jit_op_mmuop030(void);
+void jit_op_frestore(void);
 
 /* Bit operations */
 void jit_op_tas(void);

@@ -13,6 +13,7 @@ declare -a TEST_ORDER=(
   mull_u64 mull_s32_neg divl_u32_rem divl_s32_neg divl_u32_max divl_s32_neg_divisor mull_s64_neg divl_same_dq_dr divl_u64 divl_s64
   aslw_mem_hardfail lsrw_mem_hardfail rolw_mem_hardfail asrw_mem_edge roxlw_mem_edge roxrw_mem_edge
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
+  chk2_long_in_range cas_long_match_update
   pack_dn_edge unpk_dn_edge moves_write_read movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip
 )
 
@@ -75,6 +76,9 @@ TESTS[bftst_reg_edge]="203C 8000 0000 E8C0 0008"
 TESTS[bfins_reg_edge]="7042 203C FFFF 0000 EFC0 0200"
 TESTS[bfins_dreg_imm]="203C 0000 00A5 4281 EFC1 0108"
 TESTS[bfins_dreg_narrow]="203C 0000 000F 2200 EFC1 0204"
+
+TESTS[chk2_long_in_range]="41F9 0400 A000 20FC 0000 0005 20FC 0000 000A 41F9 0400 A000 7007 04D0 0800"
+TESTS[cas_long_match_update]="41F9 0400 A000 20FC 1111 2222 41F9 0400 A000 203C 1111 2222 223C 3333 4444 0ED0 0040 2010"
 
 TESTS[pack_dn_edge]="203C 0000 1234 8140 0000"
 TESTS[unpk_dn_edge]="203C 0000 0012 8180 0000"

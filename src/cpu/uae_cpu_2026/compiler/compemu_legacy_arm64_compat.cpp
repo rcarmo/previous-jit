@@ -1759,6 +1759,115 @@ extern "C" void jit_op_chk(void)
     }
 }
 
+/* --- CHK2/CAS helpers --- */
+static inline uae_s32 jit_sign_extend_size(uae_u32 v, int size)
+{
+    switch (size) {
+    case 0: return (uae_s32)(uae_s8)v;
+    case 1: return (uae_s32)(uae_s16)v;
+    default: return (uae_s32)v;
+    }
+}
+
+static inline uae_u32 jit_size_mask(int size)
+{
+    switch (size) {
+    case 0: return 0xffu;
+    case 1: return 0xffffu;
+    default: return 0xffffffffu;
+    }
+}
+
+extern "C" void jit_op_chk2(void)
+{
+    uae_u32 enc = regs.jit_exception;
+    int size = (enc >> 16) & 3;
+    uae_u16 extra = enc & 0xffff;
+    uae_u32 addr = regs.scratchregs[0];
+    int regno = (extra >> 12) & 15;
+
+    uae_s32 lower, upper, reg = (uae_s32)regs.regs[regno];
+    switch (size) {
+    case 0:
+        lower = (uae_s32)(uae_s8)get_byte(addr);
+        upper = (uae_s32)(uae_s8)get_byte(addr + 1);
+        if ((extra & 0x8000) == 0)
+            reg = (uae_s32)(uae_s8)reg;
+        break;
+    case 1:
+        lower = (uae_s32)(uae_s16)get_word(addr);
+        upper = (uae_s32)(uae_s16)get_word(addr + 2);
+        if ((extra & 0x8000) == 0)
+            reg = (uae_s32)(uae_s16)reg;
+        break;
+    default:
+        lower = (uae_s32)get_long(addr);
+        upper = (uae_s32)get_long(addr + 4);
+        break;
+    }
+
+    SET_ZFLG(upper == reg || lower == reg);
+    int outside = lower <= upper ? (reg < lower || reg > upper) : (reg > upper || reg < lower);
+    SET_CFLG(outside);
+    if ((extra & 0x0800) && outside)
+        Exception(6, 0);
+}
+
+static inline void jit_cas_flags(uae_u32 dst, uae_u32 cmp, int size)
+{
+    uae_u32 mask = jit_size_mask(size);
+    dst &= mask;
+    cmp &= mask;
+    uae_u32 newv = (dst - cmp) & mask;
+    int bits = size == 0 ? 8 : (size == 1 ? 16 : 32);
+    uae_u32 sign = 1u << (bits - 1);
+    int flgs = (cmp & sign) != 0;
+    int flgo = (dst & sign) != 0;
+    int flgn = (newv & sign) != 0;
+    SET_ZFLG(newv == 0);
+    SET_VFLG((flgs != flgo) && (flgn != flgo));
+    SET_CFLG(cmp > dst);
+    SET_NFLG(flgn != 0);
+}
+
+extern "C" void jit_op_cas(void)
+{
+    uae_u32 enc = regs.jit_exception;
+    int size = (enc >> 16) & 3;
+    uae_u16 extra = enc & 0xffff;
+    uae_u32 addr = regs.scratchregs[0];
+    int ru = (extra >> 6) & 7;
+    int rc = extra & 7;
+    uae_u32 dst;
+
+    switch (size) {
+    case 0:
+        dst = get_byte(addr);
+        jit_cas_flags(dst, regs.regs[rc], size);
+        if (GET_ZFLG())
+            put_byte(addr, regs.regs[ru]);
+        else
+            regs.regs[rc] = (regs.regs[rc] & ~0xffu) | (dst & 0xffu);
+        break;
+    case 1:
+        dst = get_word(addr);
+        jit_cas_flags(dst, regs.regs[rc], size);
+        if (GET_ZFLG())
+            put_word(addr, regs.regs[ru]);
+        else
+            regs.regs[rc] = (regs.regs[rc] & ~0xffffu) | (dst & 0xffffu);
+        break;
+    default:
+        dst = get_long(addr);
+        jit_cas_flags(dst, regs.regs[rc], size);
+        if (GET_ZFLG())
+            put_long(addr, regs.regs[ru]);
+        else
+            regs.regs[rc] = dst;
+        break;
+    }
+}
+
 /* --- TAS helper --- */
 extern "C" void jit_op_tas(void)
 {

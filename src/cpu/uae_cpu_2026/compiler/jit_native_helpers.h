@@ -44,6 +44,8 @@ void jit_op_trap(void);
 void jit_op_trapv(void);
 void jit_op_trapcc(void);
 void jit_op_chk(void);
+void jit_op_chk2(void);
+void jit_op_cas(void);
 
 /* Bit operations */
 void jit_op_tas(void);

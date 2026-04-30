@@ -2426,6 +2426,19 @@ extern "C" void jit_op_mmuop030(void)
     op_illg(regs.jit_exception & 0xffff);
 }
 
+extern "C" void jit_op_mmu_final(void)
+{
+    uae_u16 opcode = regs.jit_exception & 0xffff;
+    if ((opcode & 0x0fe0) == 0x0500) {
+        regs.mmusr = 0;
+        return;
+    }
+    if ((opcode & 0x0fd8) == 0x0548) {
+        return;
+    }
+    op_illg(opcode);
+}
+
 extern "C" void jit_op_frestore(void)
 {
     if (!regs.s) {
@@ -2454,6 +2467,117 @@ extern "C" void jit_op_cpusha(void)
         return;
     }
     flush_internals();
+}
+
+extern "C" void jit_op_cache_line(void)
+{
+    if (!regs.s) {
+        Exception(8, 0);
+        return;
+    }
+    flush_internals();
+}
+
+extern "C" void jit_op_bkpt(void)
+{
+    op_illg(regs.jit_exception & 0xffff);
+}
+
+extern "C" void jit_op_rtm(void)
+{
+    op_illg(regs.jit_exception & 0xffff);
+}
+
+extern "C" void jit_op_fsave(void)
+{
+    if (!regs.s) {
+        Exception(8, 0);
+        return;
+    }
+    /* FPU frame helpers are not linked in the current bridge build. */
+}
+
+extern "C" void jit_op_ftrapcc(void)
+{
+    /* FPU condition evaluation belongs to the FPU tranche; keep as no-op. */
+}
+
+extern "C" void jit_op_fdbcc(void)
+{
+    /* FPU condition evaluation belongs to the FPU tranche; keep as no-op. */
+}
+
+extern "C" void jit_op_movep(void)
+{
+    uae_u32 enc = regs.jit_exception;
+    uae_u16 opcode = enc & 0xffff;
+    int kind = (enc >> 16) & 3;
+    int dreg = (opcode >> 9) & 7;
+    uae_u32 addr = regs.scratchregs[0];
+
+    switch (kind) {
+    case 0: { /* memory -> Dn, word */
+        uae_u16 val = (get_byte(addr) << 8) | get_byte(addr + 2);
+        regs.regs[dreg] = (regs.regs[dreg] & ~0xffffu) | val;
+        break;
+    }
+    case 1: { /* memory -> Dn, long */
+        uae_u32 val = (get_byte(addr) << 24) | (get_byte(addr + 2) << 16) |
+                      (get_byte(addr + 4) << 8) | get_byte(addr + 6);
+        regs.regs[dreg] = val;
+        break;
+    }
+    case 2: { /* Dn -> memory, word */
+        uae_u32 val = regs.regs[dreg];
+        put_byte(addr, val >> 8);
+        put_byte(addr + 2, val);
+        break;
+    }
+    case 3: { /* Dn -> memory, long */
+        uae_u32 val = regs.regs[dreg];
+        put_byte(addr, val >> 24);
+        put_byte(addr + 2, val >> 16);
+        put_byte(addr + 4, val >> 8);
+        put_byte(addr + 6, val);
+        break;
+    }
+    }
+}
+
+extern "C" void jit_op_cas2(void)
+{
+    uae_u32 extra = regs.scratchregs[0];
+    int size = ((regs.jit_exception & 0xffff) == 0x0cfc) ? 1 : 2;
+    uae_u32 rn1 = regs.regs[(extra >> 28) & 15];
+    uae_u32 rn2 = regs.regs[(extra >> 12) & 15];
+    int ru1 = (extra >> 22) & 7;
+    int rc1 = (extra >> 16) & 7;
+    int ru2 = (extra >> 6) & 7;
+    int rc2 = extra & 7;
+    uae_u32 dst1 = size == 1 ? get_word(rn1) : get_long(rn1);
+    uae_u32 dst2 = size == 1 ? get_word(rn2) : get_long(rn2);
+
+    jit_cas_flags(dst1, regs.regs[rc1], size);
+    if (GET_ZFLG()) {
+        jit_cas_flags(dst2, regs.regs[rc2], size);
+        if (GET_ZFLG()) {
+            if (size == 1) {
+                put_word(rn1, regs.regs[ru1]);
+                put_word(rn2, regs.regs[ru2]);
+            } else {
+                put_long(rn1, regs.regs[ru1]);
+                put_long(rn2, regs.regs[ru2]);
+            }
+            return;
+        }
+    }
+    if (size == 1) {
+        regs.regs[rc2] = (regs.regs[rc2] & ~0xffffu) | (dst2 & 0xffffu);
+        regs.regs[rc1] = (regs.regs[rc1] & ~0xffffu) | (dst1 & 0xffffu);
+    } else {
+        regs.regs[rc2] = dst2;
+        regs.regs[rc1] = dst1;
+    }
 }
 
 /* --- TRAPcc helper --- */

@@ -49,6 +49,15 @@ void jit_op_cas(void);
 void jit_op_callm(void);
 void jit_op_mmuop030(void);
 void jit_op_frestore(void);
+void jit_op_movep(void);
+void jit_op_rtm(void);
+void jit_op_bkpt(void);
+void jit_op_cas2(void);
+void jit_op_fsave(void);
+void jit_op_ftrapcc(void);
+void jit_op_fdbcc(void);
+void jit_op_cache_line(void);
+void jit_op_mmu_final(void);
 
 /* Bit operations */
 void jit_op_tas(void);

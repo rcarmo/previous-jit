@@ -116,6 +116,21 @@ static inline bool jit_fast_return_from_subroutine(void)
 	return true;
 }
 
+static inline void jit_charge_rom_delay_ticks(uae_u32 arg)
+{
+	if (arg <= 3u)
+		return;
+	/* The ROM argument is in microseconds on a 25 MHz system.  Feed enough
+	   cycles into Previous's timer/interrupt scheduler for SCSI/ESP polling
+	   loops to make forward progress, while bounding huge diagnostic waits. */
+	uint64_t ticks64 = (uint64_t)arg * 25u;
+	if (ticks64 < 1u)
+		ticks64 = 1u;
+	if (ticks64 > 10000000u)
+		ticks64 = 10000000u;
+	Uae2026JitCpuCheckTicks((int)ticks64);
+}
+
 static inline bool jit_emulate_rom_delay_call(uae_u32 pc)
 {
 	if (pc != 0x010024cc)
@@ -128,14 +143,7 @@ static inline bool jit_emulate_rom_delay_call(uae_u32 pc)
 	const uae_u32 arg_addr = regs.regs[15] + 4;
 	const uae_u32 arg = get_long(arg_addr);
 	put_long(arg_addr, arg - 3u);
-	if (arg > 3u) {
-		uae_u32 ticks = arg / 128u;
-		if (ticks < 1u)
-			ticks = 1u;
-		if (ticks > 8192u)
-			ticks = 8192u;
-		Uae2026JitCpuCheckTicks((int)ticks);
-	}
+	jit_charge_rom_delay_ticks(arg);
 	return jit_fast_return_from_subroutine();
 }
 
@@ -143,6 +151,11 @@ static inline bool jit_emulate_rom_delay_body(uae_u32 pc)
 {
 	if (pc < 0x010024d2 || pc > 0x010024f8)
 		return false;
+	/* If the first SUBQ ran via an interpreter fallback inside a compiled
+	   caller block, dispatch can resume at the delay body.  Charge based on the
+	   already-mutated stack argument and return instead of native-emitting the
+	   cache/DBF body against VRAM-backed stack memory. */
+	jit_charge_rom_delay_ticks(get_long(regs.regs[15] + 4) + 3u);
 	return jit_fast_return_from_subroutine();
 }
 

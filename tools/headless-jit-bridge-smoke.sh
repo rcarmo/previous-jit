@@ -58,7 +58,7 @@ if [[ -f "$PREVIOUS_LOG" ]]; then
   jit_last_pc=$(grep '^DC\[' "$PREVIOUS_LOG" 2>/dev/null | sed -n 's/.* pc=\([0-9a-fA-F]*\).*/\1/p' | tail -1)
   if grep '^DC\[' "$PREVIOUS_LOG" 2>/dev/null | awk '
     { pc=""; for (i=1; i<=NF; i++) if ($i ~ /^pc=/) { pc=substr($i,4); break } }
-    pc != "" && !(pc >= "01000000" && pc < "01020000") { found=1 }
+    pc >= "04000000" && pc < "08000000" { found=1 }
     END { exit(found ? 0 : 1) }'; then
     jit_ram_dispatch_seen=1
   fi

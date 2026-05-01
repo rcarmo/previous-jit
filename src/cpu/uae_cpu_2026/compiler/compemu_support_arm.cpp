@@ -264,8 +264,8 @@ static inline bool jit_force_optlev0_block_exact(uae_u32 pc)
 	const uae_u32 rom_pc = (pc < 0x00020000u) ? (pc | 0x01000000u) : pc;
 	/* The ROM delay helper mutates the caller stack around 0x0bxxxxxx; direct
 	   JIT addressing only shadows ROM/RAM code windows, so this range must not
-	   be emitted as native direct stack loads/stores. */
-	if (rom_pc >= 0x010024ccu && rom_pc <= 0x010024fcu)
+	   be emitted as native direct stack loads/stores in RAM-JIT experiments. */
+	if (jit_allow_ram_dispatch_env() && rom_pc >= 0x010024ccu && rom_pc <= 0x010024fcu)
 		return true;
 	/* Low ROM / RAM-mirrored ROM hardware bring-up.  These blocks poll or
 	   mutate special devices and are safer as whole-block interpreter stubs
@@ -1044,9 +1044,9 @@ static inline bool jit_force_exact_exec_nostats_pc(uae_u32 pc)
 {
 	const uae_u32 rom_pc = (pc < 0x00020000u) ? (pc | 0x01000000u) : pc;
 	/* Do not native-emit the ROM delay helper when it appears inside a traced
-	   caller block. Its first instruction reads/writes a stack argument in the
-	   0x0bxxxxxx area, outside the JIT direct-addressing shadow. */
-	if (rom_pc >= 0x010024ccu && rom_pc <= 0x010024fcu)
+	   caller block during RAM-JIT experiments. Its first instruction reads/writes
+	   a stack argument in the 0x0bxxxxxx area. */
+	if (jit_allow_ram_dispatch_env() && rom_pc >= 0x010024ccu && rom_pc <= 0x010024fcu)
 		return true;
 	return false;
 }
@@ -1059,10 +1059,10 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 	   MOVEM uses readlong/writelong in gencomp.c.
 	   PC_P uses 64-bit eviction/reload in tomem/do_load_reg. */
 
-	/* ROM delay(x) starts with SUBQ.L #3,(4,A7).  The generic native handler
-	   direct-addresses the stack operand; keep it as an interpreter barrier so
-	   0x0bxxxxxx stack accesses go through Previous's memory banks. */
-	if (op == 0x57af)
+	/* ROM delay(x) starts with SUBQ.L #3,(4,A7).  In RAM-JIT experiments,
+	   keep it as an interpreter barrier so 0x0bxxxxxx stack accesses go through
+	   Previous's memory banks. */
+	if (jit_allow_ram_dispatch_env() && op == 0x57af)
 		return true;
 
 	/* Environment-gated barriers for debugging (B2_JIT_RESTORE_BARRIERS). */

@@ -219,7 +219,7 @@ Latest translated-execution debug checkpoint (2026-05-01):
 - smoke now passes: latest run reported `bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`, `aslr_active=1`, `desktop_reached=1`
 - next work is to make writable RAM/shadow coherency robust enough to keep translated execution enabled beyond ROM code
 - harness tracking now records `jit_dispatch_lines`, `jit_ram_dispatch_seen`, `jit_last_pc`, and `jit_ram_requested`; set `PREVIOUS_UAE2026_JIT_RAM=1` to attempt experimental RAM translation and distinguish ROM-only desktop success from RAM-translated progress
-- experimental RAM mode now reaches an actual non-ROM dispatch (`jit_ram_dispatch_seen=1`) after adding ROM delay/memclear runtime helpers, coherent RAM fill/clear primitives, VRAM shadow coverage for early stack/scratch direct reads, and interpreter-safe gates for delay/device/FPU-sensitive ROM ranges; it still does **not** reach desktop, currently falling into `pc=00000000` after RAM dispatch with bus errors around `0x020f40xx`
+- experimental RAM mode now has stricter RAM-dispatch accounting: `jit_ram_dispatch_seen` only counts `0x04000000..0x07ffffff`, not bogus `pc=00000000`; current RAM-requested runs still fail before true writable-RAM dispatch, after ROM delay/device progress, with `pc=00000000` and bus errors around invalid/near-device addresses
 
 ### Run the vendored compiler object probe
 

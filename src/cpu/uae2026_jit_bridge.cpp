@@ -57,6 +57,8 @@ static bool bootstrap_active = false;
 static bool compiler_prefs_applied = false;
 static bool compiler_initialized = false;
 static bool jit_active = false;
+static uae_u8 *jit_shadow_base = nullptr;
+static size_t jit_shadow_size = 0;
 static void *bootstrap_cache = nullptr;
 static size_t bootstrap_cache_bytes = 0;
 
@@ -267,11 +269,12 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
     jit_regflags.nzcv = regflags.cznv;
     jit_regflags.x    = regflags.x;
 
-    /* Update shadow RAM before JIT dispatch so direct reads see current state. */
+    /* Update shadow ROM/RAM before JIT dispatch so direct reads see current state. */
+    Uae2026JitBridgeSyncOpcodeTestShadow();
     {
         extern uae_u8 NEXTRam[];
         if (jit_MEMBaseDiff) {
-            const size_t ram_size = 16UL * 1024 * 1024;
+            const size_t ram_size = 64UL * 1024 * 1024;
             memcpy((void *)(jit_MEMBaseDiff + 0x04000000), NEXTRam, ram_size);
         }
     }
@@ -287,14 +290,9 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
     regflags.cznv = jit_regflags.nzcv;
     regflags.x    = jit_regflags.x;
 
-    /* Write shadow RAM back to NEXTRam */
-    {
-        extern uae_u8 NEXTRam[];
-        if (jit_MEMBaseDiff) {
-            const size_t ram_size = 16UL * 1024 * 1024;
-            memcpy(NEXTRam, (void *)(jit_MEMBaseDiff + 0x04000000), ram_size);
-        }
-    }
+    /* Do not copy shadow RAM back over NEXTRam.  Device/DMA/interpreter
+     * state is authoritative in Previous memory; the shadow is only for
+     * JIT instruction fetch/direct-address reads. */
 }
 
 extern "C" void Uae2026JitBridgeInit(void)
@@ -406,13 +404,13 @@ extern "C" void Uae2026JitBridgeInit(void)
             fprintf(stderr, "UAE2026 bridge: shadow mmap failed (%s)\n", strerror(errno));
             /* Fall back — jit_MEMBaseDiff stays 0, JIT will crash on ROM access */
         } else {
+            jit_shadow_base = shadow;
+            jit_shadow_size = shadow_size;
             /* ROM at 0x00000000 and 0x01000000 */
             memcpy(shadow + 0x00000000, NEXTRom, 0x20000);
             memcpy(shadow + 0x01000000, NEXTRom, 0x20000);
-            /* RAM at 0x04000000: map NEXTRam into the shadow region */
-            /* (just a reference; writes go to shadow copy not real RAM —
-             * for JIT correctness we'd need shared mapping; this is bring-up) */
-            const size_t ram_size = 16UL * 1024 * 1024; /* 16 MB initial */
+            /* RAM at 0x04000000: mirror NEXTRam into the shadow region. */
+            const size_t ram_size = 64UL * 1024 * 1024;
             memcpy(shadow + 0x04000000, NEXTRam, ram_size);
 
             jit_MEMBaseDiff = (uintptr_t)shadow;
@@ -428,7 +426,7 @@ extern "C" void Uae2026JitBridgeInit(void)
         extern uae_u8 *RAMBaseHost;
         RAMBaseHost = shadow + 0x04000000;   /* guard: pcp=0 < shadow+RAM */
         extern uae_u32 RAMSize;
-        RAMSize = 16 * 1024 * 1024;
+        RAMSize = 64 * 1024 * 1024;
         extern uae_u8 *ROMBaseHost;
         ROMBaseHost = shadow + 0x01000000;
         extern uae_u32 ROMSize;
@@ -453,6 +451,18 @@ bri_init_done:
             update_bridge_summary(), sizeof(regstruct),
             bool_word(prefs.cpu_compatible), bool_word(prefs.fpu_strict),
             Uae2026CompilerPrefsSpecialMemDefault());
+}
+
+extern "C" void Uae2026JitBridgeSyncOpcodeTestShadow(void)
+{
+    extern uae_u8 NEXTRom[];
+    if (!jit_shadow_base || jit_shadow_size < 0x01020000UL)
+        return;
+    /* Opcode-test setup patches NEXTRom after bridge init. Keep the JIT's
+     * direct-addressing shadow in sync or compiled execution fetches stale
+     * zeroes and runs off by MAXRUN bytes per dispatch. */
+    memcpy(jit_shadow_base + 0x00000000, NEXTRom, 0x20000);
+    memcpy(jit_shadow_base + 0x01000000, NEXTRom, 0x20000);
 }
 
 extern "C" void Uae2026JitBridgeShutdown(void)

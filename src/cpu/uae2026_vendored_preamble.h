@@ -19,6 +19,26 @@
 #include <stdio.h>
 #include <stdarg.h>
 
+/* The vendored VM allocator only emits mmap/mprotect-backed executable
+ * mappings when these feature macros are present. Previous's generated
+ * config.h does not define them, which otherwise makes vm_alloc.cpp fall
+ * back to calloc(): writable but non-executable heap memory, causing an
+ * immediate SIGSEGV at the first generated AArch64 instruction. */
+#if defined(__linux__)
+#  ifndef HAVE_MMAP_VM
+#    define HAVE_MMAP_VM 1
+#  endif
+#  ifndef HAVE_MMAP_ANONYMOUS
+#    define HAVE_MMAP_ANONYMOUS 1
+#  endif
+#  ifndef HAVE_SYS_MMAN_H
+#    define HAVE_SYS_MMAN_H 1
+#  endif
+#  ifndef HAVE_UNISTD_H
+#    define HAVE_UNISTD_H 1
+#  endif
+#endif
+
 /* Previous-native base types */
 #include "sysdeps.h"
 

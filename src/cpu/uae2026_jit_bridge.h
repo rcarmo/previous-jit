@@ -17,6 +17,7 @@ bool Uae2026JitBridgeIsActive(void);   /* JIT dispatch fully live */
 void Uae2026JitBridgeCompileExecute(void); /* main JIT loop step */
 const char *Uae2026JitBridgeSummary(void);
 void Uae2026JitBridgeInit(void);
+void Uae2026JitBridgeSyncOpcodeTestShadow(void);
 void Uae2026JitBridgeShutdown(void);
 #else
 static inline bool Uae2026JitBridgeCompiled(void) { return false; }
@@ -30,6 +31,7 @@ static inline const char *Uae2026JitBridgeSummary(void) {
     return "uae2026-jit bridge not compiled";
 }
 static inline void Uae2026JitBridgeInit(void) {}
+static inline void Uae2026JitBridgeSyncOpcodeTestShadow(void) {}
 static inline void Uae2026JitBridgeShutdown(void) {}
 #endif
 

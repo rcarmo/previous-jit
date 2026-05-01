@@ -606,11 +606,15 @@ int kill_rodent(int r)
 	return 0;
 }
 
+extern "C" void Uae2026JitSyncRamToShadow(void);
+
 void do_nothing(void)
 {
 #if defined(CPU_AARCH64)
 	jit_diag_do_nothing_calls++;
 	jit_diag_dispatch_count++;
+	if (countdown < 0)
+		cpu_do_check_ticks();
 	countdown = 10000000;
 	if (quit_program > 0)
 		return;
@@ -802,9 +806,13 @@ void exec_nostats(void)
 	jit_diag_maybe_print();
 	{
 		uintptr pcp = (uintptr)regs.pc_p;
-		uintptr base = (uintptr)RAMBaseHost;
-		uintptr limit = base + RAMSize + ROMSize + 0x1000000;
-		if (pcp < base || pcp >= limit || (pcp & 1)) {
+		uintptr ram_base = (uintptr)RAMBaseHost;
+		uintptr ram_limit = ram_base + RAMSize;
+		uintptr rom_base = (uintptr)ROMBaseHost;
+		uintptr rom_limit = rom_base + ROMSize;
+		bool valid_host_pc = ((pcp >= ram_base && pcp < ram_limit) ||
+		                      (pcp >= rom_base && pcp < rom_limit));
+		if (!valid_host_pc || (pcp & 1)) {
 			static int bad_count = 0;
 			uae_u32 safe_pc = regs.pc & ~1u;
 			/* If safe_pc looks like 24-bit sign-extended ROM address
@@ -820,7 +828,7 @@ void exec_nostats(void)
 			/* Re-derive pc_p from guest PC */
 			regs.pc = safe_pc;
 			regs.pc_p = get_real_address(safe_pc, 0, sz_word);
-			regs.pc_oldp = regs.pc_p - safe_pc;
+			regs.pc_oldp = regs.pc_p;
 		}
 	}
 #endif
@@ -898,9 +906,13 @@ void execute_normal(void)
 	/* If pc_p is outside valid Mac memory range (corrupt), re-derive it. */
 	{
 		uintptr pcp = (uintptr)regs.pc_p;
-		uintptr base = (uintptr)RAMBaseHost;
-		uintptr limit = base + RAMSize + ROMSize + 0x1000000; /* allocation limit */
-		if (pcp < base || pcp >= limit || (pcp & 1)) {
+		uintptr ram_base = (uintptr)RAMBaseHost;
+		uintptr ram_limit = ram_base + RAMSize;
+		uintptr rom_base = (uintptr)ROMBaseHost;
+		uintptr rom_limit = rom_base + ROMSize;
+		bool valid_host_pc = ((pcp >= ram_base && pcp < ram_limit) ||
+		                      (pcp >= rom_base && pcp < rom_limit));
+		if (!valid_host_pc || (pcp & 1)) {
 			static int fix_count = 0;
 			uae_u32 safe_pc = regs.pc & ~1u;
 			/* If safe_pc looks like 24-bit sign-extended ROM address
@@ -940,7 +952,7 @@ void execute_normal(void)
 			/* Valid Mac address — re-derive pc_p from the guest PC */
 			regs.pc = safe_pc;
 			regs.pc_p = get_real_address(safe_pc, 0, sz_word);
-			regs.pc_oldp = regs.pc_p - safe_pc;
+			regs.pc_oldp = regs.pc_p;
 		}
 	}
 #endif
@@ -949,12 +961,12 @@ void execute_normal(void)
 		memset(pc_hist, 0, sizeof(pc_hist));
 		int blocklen = 0;
 		int total_cycles = 0;
-		/* Use the actual current fetch PC as the base for this traced block.
-		   On ARM64, stale regs.pc/regs.pc_oldp metadata can survive across
-		   mixed-mode transitions even when regs.pc_p is correct. PC-relative
-		   codegen (LEA/JMP d16,PC) should anchor to the current host PC. */
-		start_pc_p = regs.pc_p;
-		start_pc = get_virtual_address((uae_u8*)regs.pc_p);
+		/* Match the original UAE compiler model: start_pc is the guest base
+		 * address and start_pc_p is the host pointer corresponding to that base.
+		 * Using the current pc_p as both base and moving PC pointer makes compiled
+		 * fall-through PCs drift by host-pointer deltas. */
+		start_pc_p = regs.pc_oldp;
+		start_pc = regs.pc;
 #if defined(CPU_AARCH64)
 		{
 			uae_u32 trace_a1 = regs.regs[9];

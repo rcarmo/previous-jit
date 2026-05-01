@@ -103,8 +103,25 @@ bool    tick_inhibit                 = false;
 bool    basilisk_trace_after_table_ready = false;
 uint16  emulated_ticks               = 0;
 
-void cpu_do_check_ticks(void) {}
-void jit_one_tick(void)       {}
+extern "C" void Uae2026JitCpuCheckTicks(int cycles);
+extern uintptr_t jit_MEMBaseDiff;
+
+extern "C" void Uae2026JitSyncRamToShadow(void)
+{
+    extern uae_u8 NEXTRam[];
+    if (jit_MEMBaseDiff)
+        memcpy((void *)(jit_MEMBaseDiff + 0x04000000), NEXTRam, 64UL * 1024 * 1024);
+}
+
+void cpu_do_check_ticks(void)
+{
+    Uae2026JitCpuCheckTicks(10000000 / 512);
+}
+
+void jit_one_tick(void)
+{
+    cpu_do_check_ticks();
+}
 
 void write_log(const TCHAR *fmt, ...)
 {

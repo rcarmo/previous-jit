@@ -96,6 +96,7 @@ static bool ensure_aarch64_jit_runtime_ready(void)
 }
 
 extern void jit_one_tick(void);
+extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 
 static inline bool jit_bad_pcp_guard_enabled(void)
 {
@@ -458,6 +459,12 @@ void m68k_do_compile_execute(void)
 {
 	if (!ensure_aarch64_jit_runtime_ready())
 		jit_abort("ARM64 JIT dispatcher stubs were not initialized before compiled execution");
+	/* Previous can restore/copy the CPU register struct after compiler table
+	 * setup, which clears the JIT-only pointer fields. Re-stamp them at the
+	 * native dispatch boundary before generated code dereferences them. */
+	regs.raw_cputbl_count = raw_cputbl_count;
+	regs.mem_banks = (uintptr)mem_banks;
+	regs.cache_tags = (uintptr)cache_tags;
 	fprintf(stderr, "JIT_ENTRY pc=%08x spc=%08x a7=%08x\n", m68k_getpc(), (unsigned)regs.spcflags, regs.regs[15]);
 	fflush(stderr);
 	static unsigned long _dc = 0;
@@ -479,10 +486,25 @@ void m68k_do_compile_execute(void)
 #endif
 	for (;;) {
 #if defined(CPU_AARCH64)
+		{
+			extern bool UseJIT;
+			uae_u32 _pc = m68k_getpc();
+			if (!(_pc >= 0x01000000 && _pc < 0x01020000)) {
+				UseJIT = false;
+				return;
+			}
+		}
 		if (use_sync_ticks)
 			tick_inhibit = true;
 #endif
 		((compiled_handler)(pushall_call_handler))();
+#if defined(CPU_AARCH64)
+		{
+			static unsigned _jit_dispatch_tick = 0;
+			if (((++_jit_dispatch_tick) & 0xffu) == 0)
+				Uae2026JitCpuCheckTicks(1024);
+		}
+#endif
 		_dc++;
 		{
 			static unsigned long dc_log = 0;
@@ -537,8 +559,10 @@ void m68k_do_compile_execute(void)
 		}
 		{
 			extern int32 jit_countdown;
-			if (jit_countdown < 0)
+			if (jit_countdown < 0) {
+				jit_one_tick();
 				jit_countdown = 10000000;
+			}
 		}
 #endif
 		if (SPCFLAGS_TEST(SPCFLAG_ALL)) {

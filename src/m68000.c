@@ -237,6 +237,7 @@ bool Uae2026OpcodeTestModeSetup(void)
 	NEXTRom[rom_offset + (Uint32)(n_words * 2) + 1] = 0x72;
 	NEXTRom[rom_offset + (Uint32)(n_words * 2) + 2] = 0x27;
 	NEXTRom[rom_offset + (Uint32)(n_words * 2) + 3] = 0x00;
+	Uae2026JitBridgeSyncOpcodeTestShadow();
 
 	for (i = 0; i < 8; i++) {
 		m68k_dreg(regs, i) = 0;
@@ -277,6 +278,24 @@ bool Uae2026OpcodeTestModeSetup(void)
 bool Uae2026OpcodeTestModeActive(void)
 {
 	return opcode_test_mode_active;
+}
+
+void Uae2026JitCpuCheckTicks(int cycles)
+{
+	static unsigned long trace_count = 0;
+	M68000_AddCycles(cycles);
+	if (getenv("B2_JIT_TICKTRACE") && (trace_count++ < 50 || (trace_count % 1000) == 0))
+		fprintf(stderr, "JITTICK %lu pc=%08x cycles=%d pending_type=%d pending_time=%lld spc=%08x intlev=%d intmask=%d\n",
+			trace_count, m68k_getpc(), cycles, PendingInterrupt.type,
+			(long long)PendingInterrupt.time, regs.spcflags, intlev(), regs.intmask);
+
+	while (PendingInterrupt.time <= 0 && PendingInterrupt.pFunction &&
+		((regs.spcflags & SPCFLAG_STOP) == 0)) {
+		CALL_VAR(PendingInterrupt.pFunction);
+	}
+
+	if (intlev() > regs.intmask)
+		M68000_SetSpecial(SPCFLAG_INT);
 }
 
 void Uae2026OpcodeTestModeFinish(void)

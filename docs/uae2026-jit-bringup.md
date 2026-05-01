@@ -21,7 +21,7 @@ Update it as code lands so the repository always explains the current experiment
 - The bridge now includes a **Previous-specific compiler-facing prefs shim** that drives the vendored `compemu_prefs.cpp` logic from Previous state/env and reports whether a runtime-disabled compiler bootstrap would be safe (`requested`, `bootstrap_ready`, `aslr`, cache size, MMU/FPU state).
 - The bridge now performs a **runtime-disabled bootstrap allocation probe**: it allocates and clears an executable cache buffer when the experimental JIT is requested and the safety checks pass, but still does not hand execution to translated code.
 - `tools/headless-jit-bootstrap-probe.sh` verifies the bridge/bootstrap path without waiting for a full desktop boot.
-- `tools/headless-jit-bridge-smoke.sh` rebuilds the experimental binary and proves: fresh-image boot, bridge logging, ASLR active, bootstrap allocation active, and desktop reachability in one run.
+- `tools/headless-jit-bridge-smoke.sh` rebuilds the experimental binary and currently proves bridge logging, ASLR active, and bootstrap allocation active. **Translated-execution desktop reachability is not yet restored**; the latest runtime tranche reaches the ROM SCSI boot path but does not reach the Workspace.
 - `tools/uae2026-compiler-syntax-probe.sh` records the current compile-time blocker set for direct vendored compiler integration.
 - `tools/uae2026-compiler-object-probe.sh` compiles the vendored ARM64 compiler core to an object file under the probe prelude without linking it into `Previous` yet.
 - Current blocker inventory lives in `docs/uae2026-compiler-blockers.md`.
@@ -208,6 +208,14 @@ cd /workspace/projects/previous
 This injects short M68K opcode vectors into the ROM mirror, runs one interpreter/JIT pass,
 and compares the resulting `REGDUMP:` state instead of waiting for a full NeXT boot.
 See `docs/uae2026-opcode-harness.md` for the current vector set and latest results.
+
+Latest translated-execution debug checkpoint (2026-05-01):
+- opcode harness passes: `total=62`, `jit_ok=62`, `pass=62`, `fail=0`, `infra_fail=0`, `score=100`
+- JIT entry SIGSEGV was fixed by ensuring the vendored VM allocator uses executable `mmap`/`mprotect` memory instead of a `calloc` fallback
+- opcode-test translated execution now syncs the JIT shadow ROM after the test harness patches `NEXTRom`; stale shadow ROM was the cause of the previous `+0x100` PC drift
+- non-ROM blocks are currently held at interpreter dispatch while RAM/shadow coherency is being debugged
+- smoke is still failing: latest state reaches the ROM boot/SCSI path and displays `booting SCSI target 0, lun 0`, but does not reach the desktop
+- current comparison target is normal interpreter boot, which reaches `desktop_reached=1`; next work is to bisect where JIT dispatch diverges from the normal emulator path around timers/SCSI completion and RAM-vs-shadow state
 
 ### Run the vendored compiler object probe
 

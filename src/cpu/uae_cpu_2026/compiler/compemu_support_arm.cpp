@@ -4619,9 +4619,13 @@ int check_for_cache_miss(void)
        by re-deriving pc_p from pc_oldp + m68k PC. */
     {
         uintptr pcp = (uintptr)regs.pc_p;
-        uintptr base = (uintptr)RAMBaseHost;
-        uintptr limit = base + RAMSize + ROMSize + 0x1000000; /* ROM + NuBus slot ROM space */
-        if (pcp < base || pcp >= limit || (pcp & 1)) {
+        uintptr ram_base = (uintptr)RAMBaseHost;
+        uintptr ram_limit = ram_base + RAMSize;
+        uintptr rom_base = (uintptr)ROMBaseHost;
+        uintptr rom_limit = rom_base + ROMSize;
+        bool valid_host_pc = ((pcp >= ram_base && pcp < ram_limit) ||
+                              (pcp >= rom_base && pcp < rom_limit));
+        if (!valid_host_pc || (pcp & 1)) {
             static int bad_count = 0;
             uae_u32 safe_pc = regs.pc & ~1u;
             if (bad_count++ < 50)
@@ -4634,11 +4638,13 @@ int check_for_cache_miss(void)
             flush_icache_hard(7);
             regs.pc = safe_pc;
             regs.pc_p = get_real_address(safe_pc, 0, sz_word);
-            regs.pc_oldp = regs.pc_p - safe_pc;
+            regs.pc_oldp = regs.pc_p;
             /* If the derived pc_p is also outside valid range, let caller
                fall back to interpreter rather than flush-looping. */
             pcp = (uintptr)regs.pc_p;
-            if (pcp < base || pcp >= limit || (pcp & 1))
+            valid_host_pc = ((pcp >= ram_base && pcp < ram_limit) ||
+                             (pcp >= rom_base && pcp < rom_limit));
+            if (!valid_host_pc || (pcp & 1))
                 return 1; /* signal caller to use interpreter */
             return 0;
         }
@@ -5532,21 +5538,16 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             } else {
                 const int max_optlev = jit_max_optlev();
                 const uae_u32 blk_pc = (uae_u32)((uintptr)pc_hist[0].location - MEMBaseDiff);
-                if (blk_pc >= ROMBaseMac) {
+                if (isinrom((uintptr)pc_hist[0].location)) {
                     /* ROM: immediate L2 native codegen (immutable code) */
                     optlev = max_optlev;
                     bi->count = -2;
                 } else {
-                    /* RAM: use interpreter dispatch initially. Transient code
-                       (memclear) runs once per address and never escalates.
-                       Hot loops run many times and will escalate on the next
-                       count expiry after 10 dispatches. */
-                    if (optlev == 0) {
-                        bi->count = 9;
-                    } else if (optlev < max_optlev) {
-                        optlev = max_optlev;
-                        bi->count = -2;
-                    }
+                    /* Previous RAM is writable and shared with device/DMA code.
+                       Keep RAM blocks on interpreter dispatch until the shadow
+                       mapping is made coherent enough for native RAM execution. */
+                    optlev = 0;
+                    bi->count = 9;
                 }
             }
 #else
@@ -6488,7 +6489,7 @@ endblock_done:
            to BI_ACTIVE if content didn't change, or invalidate if it did.
            This prevents infinite execution of stale zeros-compiled native code
            when a branch accidentally targets uninitialized RAM. */
-        if (block_m68k_pc < ROMBaseMac && blocklen > 0) {
+        if (!isinrom((uintptr)pc_hist[0].location) && blocklen > 0) {
             const uae_u16 *_w0 = (const uae_u16 *)pc_hist[0].location;
             if (*_w0 == 0) {
                 /* First word is zero — very likely uninitialized.

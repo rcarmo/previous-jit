@@ -109,25 +109,85 @@ uint16  emulated_ticks               = 0;
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 extern uintptr_t jit_MEMBaseDiff;
 
-extern "C" void Uae2026JitSyncRamToShadow(void)
+static inline bool Uae2026JitRamRange(uae_u32 addr, uae_u32 bytes, uae_u32 *offset_out)
+{
+    const uae_u32 ram_base = 0x04000000u;
+    const uae_u32 ram_size = 64u * 1024u * 1024u;
+    if (addr < ram_base || addr >= ram_base + ram_size)
+        return false;
+    const uae_u32 off = addr - ram_base;
+    if (bytes > ram_size - off)
+        return false;
+    if (offset_out)
+        *offset_out = off;
+    return true;
+}
+
+extern "C" void Uae2026JitSyncRamRangeToShadow(uae_u32 addr, uae_u32 bytes)
 {
     extern uae_u8 NEXTRam[];
+    uae_u32 off = 0;
+    if (!jit_MEMBaseDiff || !Uae2026JitRamRange(addr, bytes, &off))
+        return;
+    memcpy((void *)(jit_MEMBaseDiff + addr), NEXTRam + off, bytes);
+}
+
+extern "C" void Uae2026JitSyncRamToShadow(void)
+{
+    Uae2026JitSyncRamRangeToShadow(0x04000000u, 64u * 1024u * 1024u);
+}
+
+extern "C" void Uae2026JitFillBytes(uae_u32 addr, uae_u32 bytes, uae_u8 value)
+{
+    extern uae_u8 NEXTRam[];
+    uae_u32 off = 0;
+    if (!Uae2026JitRamRange(addr, bytes, &off))
+        return;
+    memset(NEXTRam + off, value, bytes);
     if (jit_MEMBaseDiff)
-        memcpy((void *)(jit_MEMBaseDiff + 0x04000000), NEXTRam, 64UL * 1024 * 1024);
+        memset((void *)(jit_MEMBaseDiff + addr), value, bytes);
+}
+
+extern "C" void Uae2026JitFillLongs(uae_u32 addr, uae_u32 count, uae_u32 value)
+{
+    extern uae_u8 NEXTRam[];
+    if (count > 0x3fffffffu)
+        return;
+    const uae_u32 bytes = count * 4u;
+    uae_u32 off = 0;
+    if (!Uae2026JitRamRange(addr, bytes, &off))
+        return;
+
+    uae_u8 *ram = NEXTRam + off;
+    uae_u8 *shadow = jit_MEMBaseDiff ? (uae_u8 *)(jit_MEMBaseDiff + addr) : nullptr;
+    if (value == 0) {
+        Uae2026JitFillBytes(addr, bytes, 0);
+        return;
+    }
+
+    for (uae_u32 i = 0; i < count; i++) {
+        const uae_u32 p = i * 4u;
+        ram[p + 0] = (uae_u8)(value >> 24);
+        ram[p + 1] = (uae_u8)(value >> 16);
+        ram[p + 2] = (uae_u8)(value >> 8);
+        ram[p + 3] = (uae_u8)value;
+        if (shadow) {
+            shadow[p + 0] = ram[p + 0];
+            shadow[p + 1] = ram[p + 1];
+            shadow[p + 2] = ram[p + 2];
+            shadow[p + 3] = ram[p + 3];
+        }
+    }
 }
 
 extern "C" void Uae2026JitFastClearLongs(uae_u32 addr, uae_u32 count)
 {
-    extern uae_u8 NEXTRam[];
-    if (addr >= 0x04000000u && addr < 0x08000000u) {
-        uae_u32 off = addr - 0x04000000u;
-        uae_u32 bytes = count * 4u;
-        if (off < 64u * 1024u * 1024u && bytes <= 64u * 1024u * 1024u - off) {
-            memset(NEXTRam + off, 0, bytes);
-            if (jit_MEMBaseDiff)
-                memset((void *)(jit_MEMBaseDiff + addr), 0, bytes);
-        }
-    }
+    Uae2026JitFillLongs(addr, count, 0);
+}
+
+extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count)
+{
+    Uae2026JitFillBytes(addr, count, 0);
 }
 
 void cpu_do_check_ticks(void)

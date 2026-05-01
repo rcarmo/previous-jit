@@ -62,6 +62,17 @@ static size_t jit_shadow_size = 0;
 static void *bootstrap_cache = nullptr;
 static size_t bootstrap_cache_bytes = 0;
 
+static void sync_shadow_video(void)
+{
+    if (!jit_shadow_base || jit_shadow_size < 0x10040000UL)
+        return;
+    memcpy(jit_shadow_base + 0x0b000000, NEXTVideo, 0x40000);
+    memcpy(jit_shadow_base + 0x0c000000, NEXTVideo, 0x40000);
+    memcpy(jit_shadow_base + 0x0d000000, NEXTVideo, 0x40000);
+    memcpy(jit_shadow_base + 0x0e000000, NEXTVideo, 0x40000);
+    memcpy(jit_shadow_base + 0x0f000000, NEXTVideo, 0x40000);
+}
+
 struct previous_uae2026_prefs {
     bool requested;
     bool bootstrap_enabled;
@@ -269,8 +280,9 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
     jit_regflags.nzcv = regflags.cznv;
     jit_regflags.x    = regflags.x;
 
-    /* Update shadow ROM/RAM before JIT dispatch so direct reads see current state. */
+    /* Update shadow ROM/VRAM/RAM before JIT dispatch so direct reads see current state. */
     Uae2026JitBridgeSyncOpcodeTestShadow();
+    sync_shadow_video();
     {
         extern uae_u8 NEXTRam[];
         if (jit_MEMBaseDiff) {
@@ -319,6 +331,12 @@ extern "C" void Uae2026JitBridgeInit(void)
     }
     if (prefs.bootstrap_enabled)
         ensure_bootstrap_cache(prefs);
+
+    /* Force generated memory accesses through the bank-dispatch path before
+     * any compiler/runtime helper can cache the preference.  The shadow space
+     * is for instruction fetch and explicitly-synced RAM code, not arbitrary
+     * stack/device data such as 0x0bxxxxxx or 0x0200xxxx. */
+    setenv("B2_JIT_ALL_SPECIAL_MEM", "1", 1);
 
     /*
      * Call the real vendored compiler_init().
@@ -394,7 +412,7 @@ extern "C" void Uae2026JitBridgeInit(void)
     {
         extern uae_u8 NEXTRam[];
         extern uae_u8 NEXTRom[];
-        const uintptr_t shadow_size = 0x08000000UL; /* 128 MB covers 0..0x07FFFFFF */
+        const uintptr_t shadow_size = 0x10040000UL; /* covers ROM, RAM, and 0x0b-0x0f VRAM windows */
 
         uae_u8 *shadow = (uae_u8 *)mmap(
             NULL, shadow_size,
@@ -412,6 +430,10 @@ extern "C" void Uae2026JitBridgeInit(void)
             /* RAM at 0x04000000: mirror NEXTRam into the shadow region. */
             const size_t ram_size = 64UL * 1024 * 1024;
             memcpy(shadow + 0x04000000, NEXTRam, ram_size);
+            /* Early ROM code sometimes uses monochrome VRAM as stack/scratch
+             * around 0x0b03xxxx. Mirror VRAM and its monochrome MWF aliases so
+             * any remaining direct-address reads do not fault. */
+            sync_shadow_video();
 
             jit_MEMBaseDiff = (uintptr_t)shadow;
             /* Make the shadow region executable so popall-derived JIT blocks
@@ -438,12 +460,6 @@ extern "C" void Uae2026JitBridgeInit(void)
     /* Activate JIT dispatch */
     UseJIT = true;
     jit_active = true;
-
-    /* Force all JIT memory accesses through the safe bank-dispatch path.
-     * The shadow space covers ROM+RAM but not I/O or NuBus regions.     *
-     * B2_JIT_ALL_SPECIAL_MEM=1 makes compile_block emit bank-table calls
-     * for all reads/writes instead of the jit_MEMBaseDiff fast path.         */
-    setenv("B2_JIT_ALL_SPECIAL_MEM", "1", 1);
 
 bri_init_done:
     fprintf(stderr,

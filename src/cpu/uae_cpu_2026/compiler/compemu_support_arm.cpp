@@ -261,13 +261,27 @@ static inline int jit_max_optlev(void)
 static inline bool jit_force_optlev0_block_exact(uae_u32 pc)
 {
 #if defined(CPU_AARCH64)
-	/* Low ROM 04000000-0400ffff: $dd0 I/O polling, timer init, and early
-	   boot sequences that read unmapped hardware registers. */
+	const uae_u32 rom_pc = (pc < 0x00020000u) ? (pc | 0x01000000u) : pc;
+	/* The ROM delay helper mutates the caller stack around 0x0bxxxxxx; direct
+	   JIT addressing only shadows ROM/RAM code windows, so this range must not
+	   be emitted as native direct stack loads/stores. */
+	if (rom_pc >= 0x010024ccu && rom_pc <= 0x010024fcu)
+		return true;
+	/* Low ROM / RAM-mirrored ROM hardware bring-up.  These blocks poll or
+	   mutate special devices and are safer as whole-block interpreter stubs
+	   while experimental RAM dispatch is being brought up. */
+	if ((rom_pc >= 0x01008b44u && rom_pc <= 0x01008c98u) ||
+		(rom_pc >= 0x01008e54u && rom_pc <= 0x01008e92u) ||
+		rom_pc == 0x0100913eu)
+		return true;
+	/* Early FPU/cache POST loops contain dense F-line operations and long DBF
+	   probes. Keep them on interpreter-safe paths until native FPU/cache-side
+	   effects are audited for RAM-JIT mode. */
+	if (rom_pc >= 0x01005108u && rom_pc <= 0x01005220u)
+		return true;
+	/* Historical RAM-resident ROM mirrors seen in earlier traces. */
 	if (pc >= 0x04000000 && pc <= 0x0400ffff)
 		return true;
-	/* NuBus slot init 040b0000-040bffff: reads unmapped NuBus hardware
-	   registers at 0x50Fxxxxx. ROM patches cover the video probe (0xb27c)
-	   and one slot probe (0xba0b0) but dozens of other polling points remain. */
 	if (pc >= 0x040b0000 && pc <= 0x040bffff)
 		return true;
 #endif
@@ -1028,7 +1042,12 @@ static inline bool jit_force_exact_exec_nostats_opcode(uae_u16 op)
 
 static inline bool jit_force_exact_exec_nostats_pc(uae_u32 pc)
 {
-	(void)pc;
+	const uae_u32 rom_pc = (pc < 0x00020000u) ? (pc | 0x01000000u) : pc;
+	/* Do not native-emit the ROM delay helper when it appears inside a traced
+	   caller block. Its first instruction reads/writes a stack argument in the
+	   0x0bxxxxxx area, outside the JIT direct-addressing shadow. */
+	if (rom_pc >= 0x010024ccu && rom_pc <= 0x010024fcu)
+		return true;
 	return false;
 }
 
@@ -1039,6 +1058,12 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 	   EMUL_OP has compiled handler op_emulop_comp_ff.
 	   MOVEM uses readlong/writelong in gencomp.c.
 	   PC_P uses 64-bit eviction/reload in tomem/do_load_reg. */
+
+	/* ROM delay(x) starts with SUBQ.L #3,(4,A7).  The generic native handler
+	   direct-addresses the stack operand; keep it as an interpreter barrier so
+	   0x0bxxxxxx stack accesses go through Previous's memory banks. */
+	if (op == 0x57af)
+		return true;
 
 	/* Environment-gated barriers for debugging (B2_JIT_RESTORE_BARRIERS). */
 	if (jit_restore_barrier("sr")) {
@@ -4310,7 +4335,7 @@ STATIC_INLINE void get_n_addr_real(int address, int dest)
 
 void get_n_addr(int address, int dest)
 {
-    if (special_mem || distrust_addr() || jit_n_addr_unsafe)
+    if (jit_force_all_special_mem() || special_mem || distrust_addr() || jit_n_addr_unsafe)
         get_n_addr_old(address, dest);
     else
         get_n_addr_real(address, dest);
@@ -5351,7 +5376,8 @@ void build_comp(void)
 		return;
 	}
 #if defined(CPU_AARCH64)
-	// jit_install_diag_handler(); // Use BasiliskII SIGSEGV handler for recovery
+	if (getenv("B2_JIT_SIGDIAG") && *getenv("B2_JIT_SIGDIAG"))
+		jit_install_diag_handler();
 	fprintf(stderr, "JIT: popallspace=%p cache_start=%p popall_execute_normal=%p\n",
 		popallspace, popall_combined_cache_start, popall_execute_normal);
 	fflush(stderr);

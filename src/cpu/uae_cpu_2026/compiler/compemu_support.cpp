@@ -99,6 +99,7 @@ extern void jit_one_tick(void);
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 extern "C" void Uae2026JitSyncRamToShadow(void);
 extern "C" void Uae2026JitFastClearLongs(uae_u32 addr, uae_u32 count);
+extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count);
 
 static inline void jit_set_guest_pc_fast(uae_u32 pc)
 {
@@ -107,31 +108,100 @@ static inline void jit_set_guest_pc_fast(uae_u32 pc)
 	regs.pc_oldp = regs.pc_p;
 }
 
-static inline void jit_maybe_fast_forward_rom_delay(void)
+static inline bool jit_fast_return_from_subroutine(void)
 {
-	if (!jit_allow_ram_dispatch_env())
-		return;
-	uae_u32 pc = m68k_getpc();
-	if (pc == 0x010024cc) {
-		uae_u32 ret = get_long(regs.regs[15]);
-		regs.regs[15] += 4;
-		jit_set_guest_pc_fast(ret);
-		return;
+	uae_u32 ret = get_long(regs.regs[15]);
+	regs.regs[15] += 4;
+	jit_set_guest_pc_fast(ret);
+	return true;
+}
+
+static inline bool jit_emulate_rom_delay_call(uae_u32 pc)
+{
+	if (pc != 0x010024cc)
+		return false;
+
+	/* ROM delay(x): SUB.L #3,(4,A7); if positive, burn time in cache-disable
+	   DBF loops; restore CACR; RTS.  The JIT runtime helper preserves the
+	   visible stack-argument mutation and call/return shape, but compresses the
+	   delay loops to bounded tick delivery. */
+	const uae_u32 arg_addr = regs.regs[15] + 4;
+	const uae_u32 arg = get_long(arg_addr);
+	put_long(arg_addr, arg - 3u);
+	if (arg > 3u) {
+		uae_u32 ticks = arg / 128u;
+		if (ticks < 1u)
+			ticks = 1u;
+		if (ticks > 8192u)
+			ticks = 8192u;
+		Uae2026JitCpuCheckTicks((int)ticks);
 	}
-	uae_u16 op = get_iword(0);
-	if (op == 0x4298 && (uae_u16)get_iword(2) == 0x51c8 && (uae_u16)get_iword(4) == 0xfffc) {
+	return jit_fast_return_from_subroutine();
+}
+
+static inline bool jit_emulate_rom_delay_body(uae_u32 pc)
+{
+	if (pc < 0x010024d2 || pc > 0x010024f8)
+		return false;
+	return jit_fast_return_from_subroutine();
+}
+
+static inline bool jit_emulate_rom_delay_dbf(uae_u32 pc, uae_u16 op)
+{
+	if ((pc != 0x010024f0 && pc != 0x010024f4) || (op & 0xfff8) != 0x51c8)
+		return false;
+	const uae_u16 disp = (uae_u16)get_iword(2);
+	if ((pc == 0x010024f0 && disp != 0xfffe) || (pc == 0x010024f4 && disp != 0xfffa))
+		return false;
+	const int reg = op & 7;
+	regs.regs[reg] = (regs.regs[reg] & 0xffff0000u) | 0xffffu;
+	jit_set_guest_pc_fast(pc + 4);
+	return true;
+}
+
+static inline bool jit_emulate_rom_cache_restore(uae_u32 pc, uae_u16 op)
+{
+	if (pc != 0x010024f8 || op != 0x4e7b || (uae_u16)get_iword(2) != 0x8002)
+		return false;
+	jit_set_guest_pc_fast(0x010024fc);
+	return true;
+}
+
+static inline bool jit_emulate_bulk_clear_loop(uae_u32 pc, uae_u16 op)
+{
+	if ((pc == 0x0000702a || pc == 0x0100702a || pc == 0x0000703c || pc == 0x0100703c) &&
+		op == 0x4298 && (uae_u16)get_iword(2) == 0x51c8 && (uae_u16)get_iword(4) == 0xfffc) {
 		uae_u32 count = (regs.regs[0] & 0xffffu) + 1u;
 		Uae2026JitFastClearLongs(regs.regs[8], count);
 		regs.regs[8] += count * 4u;
 		regs.regs[0] = (regs.regs[0] & 0xffff0000u) | 0xffffu;
 		jit_set_guest_pc_fast(pc + 6);
-		return;
+		return true;
 	}
-	if ((op & 0xfff8) == 0x51c8 && (uae_u16)get_iword(2) == 0xfffe) {
-		int reg = op & 7;
-		regs.regs[reg] = (regs.regs[reg] & 0xffff0000u) | 0xffffu;
+	if ((pc == 0x00007050 || pc == 0x01007050) &&
+		op == 0x51ca && (uae_u16)get_iword(2) == 0xfffc) {
+		uae_u32 count = regs.regs[2] & 0xffffu;
+		Uae2026JitFastClearBytes(regs.regs[8], count);
+		regs.regs[8] += count;
+		regs.regs[2] = (regs.regs[2] & 0xffff0000u) | 0xffffu;
 		jit_set_guest_pc_fast(pc + 4);
+		return true;
 	}
+	return false;
+}
+
+static inline void jit_maybe_apply_runtime_helpers(void)
+{
+	if (!jit_allow_ram_dispatch_env())
+		return;
+	uae_u32 pc = m68k_getpc();
+	uae_u16 op = get_iword(0);
+	if (jit_emulate_rom_delay_call(pc) ||
+		jit_emulate_rom_delay_body(pc) ||
+		jit_emulate_rom_delay_dbf(pc, op) ||
+		jit_emulate_rom_cache_restore(pc, op) ||
+		jit_emulate_bulk_clear_loop(pc, op))
+		return;
 }
 
 static inline bool jit_bad_pcp_guard_enabled(void)
@@ -522,7 +592,7 @@ void m68k_do_compile_execute(void)
 #endif
 	for (;;) {
 #if defined(CPU_AARCH64)
-		jit_maybe_fast_forward_rom_delay();
+		jit_maybe_apply_runtime_helpers();
 		{
 			extern bool UseJIT;
 			static bool ram_synced_for_dispatch = false;

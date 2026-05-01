@@ -218,6 +218,7 @@ Latest translated-execution debug checkpoint (2026-05-01):
 - the JIT specialty path now mirrors the normal `do_interrupt()` side effects for delivered interrupts (`STOP` clear, exception, interrupt mask update, and INT re-arm)
 - smoke now passes: latest run reported `bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`, `aslr_active=1`, `desktop_reached=1`
 - next work is to make writable RAM/shadow coherency robust enough to keep translated execution enabled beyond ROM code
+- harness tracking now records `jit_dispatch_lines`, `jit_ram_dispatch_seen`, `jit_last_pc`, and `jit_ram_requested`; set `PREVIOUS_UAE2026_JIT_RAM=1` to attempt experimental RAM translation and distinguish ROM-only desktop success from RAM-translated progress
 
 ### Run the vendored compiler object probe
 

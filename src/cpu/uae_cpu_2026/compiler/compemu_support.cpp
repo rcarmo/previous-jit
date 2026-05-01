@@ -97,6 +97,42 @@ static bool ensure_aarch64_jit_runtime_ready(void)
 
 extern void jit_one_tick(void);
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
+extern "C" void Uae2026JitSyncRamToShadow(void);
+extern "C" void Uae2026JitFastClearLongs(uae_u32 addr, uae_u32 count);
+
+static inline void jit_set_guest_pc_fast(uae_u32 pc)
+{
+	regs.pc = pc;
+	regs.pc_p = get_real_address(regs.pc, 0, sz_word);
+	regs.pc_oldp = regs.pc_p;
+}
+
+static inline void jit_maybe_fast_forward_rom_delay(void)
+{
+	if (!jit_allow_ram_dispatch_env())
+		return;
+	uae_u32 pc = m68k_getpc();
+	if (pc == 0x010024cc) {
+		uae_u32 ret = get_long(regs.regs[15]);
+		regs.regs[15] += 4;
+		jit_set_guest_pc_fast(ret);
+		return;
+	}
+	uae_u16 op = get_iword(0);
+	if (op == 0x4298 && (uae_u16)get_iword(2) == 0x51c8 && (uae_u16)get_iword(4) == 0xfffc) {
+		uae_u32 count = (regs.regs[0] & 0xffffu) + 1u;
+		Uae2026JitFastClearLongs(regs.regs[8], count);
+		regs.regs[8] += count * 4u;
+		regs.regs[0] = (regs.regs[0] & 0xffff0000u) | 0xffffu;
+		jit_set_guest_pc_fast(pc + 6);
+		return;
+	}
+	if ((op & 0xfff8) == 0x51c8 && (uae_u16)get_iword(2) == 0xfffe) {
+		int reg = op & 7;
+		regs.regs[reg] = (regs.regs[reg] & 0xffff0000u) | 0xffffu;
+		jit_set_guest_pc_fast(pc + 4);
+	}
+}
 
 static inline bool jit_bad_pcp_guard_enabled(void)
 {
@@ -486,12 +522,19 @@ void m68k_do_compile_execute(void)
 #endif
 	for (;;) {
 #if defined(CPU_AARCH64)
+		jit_maybe_fast_forward_rom_delay();
 		{
 			extern bool UseJIT;
+			static bool ram_synced_for_dispatch = false;
 			uae_u32 _pc = m68k_getpc();
-			if (!(_pc >= 0x01000000 && _pc < 0x01020000)) {
+			const bool in_rom = (_pc >= 0x01000000 && _pc < 0x01020000);
+			if (!in_rom && !jit_allow_ram_dispatch_env()) {
 				UseJIT = false;
 				return;
+			}
+			if (!in_rom && !ram_synced_for_dispatch) {
+				Uae2026JitSyncRamToShadow();
+				ram_synced_for_dispatch = true;
 			}
 		}
 		if (use_sync_ticks)

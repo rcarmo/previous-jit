@@ -116,6 +116,20 @@ extern "C" void Uae2026JitSyncRamToShadow(void)
         memcpy((void *)(jit_MEMBaseDiff + 0x04000000), NEXTRam, 64UL * 1024 * 1024);
 }
 
+extern "C" void Uae2026JitFastClearLongs(uae_u32 addr, uae_u32 count)
+{
+    extern uae_u8 NEXTRam[];
+    if (addr >= 0x04000000u && addr < 0x08000000u) {
+        uae_u32 off = addr - 0x04000000u;
+        uae_u32 bytes = count * 4u;
+        if (off < 64u * 1024u * 1024u && bytes <= 64u * 1024u * 1024u - off) {
+            memset(NEXTRam + off, 0, bytes);
+            if (jit_MEMBaseDiff)
+                memset((void *)(jit_MEMBaseDiff + addr), 0, bytes);
+        }
+    }
+}
+
 void cpu_do_check_ticks(void)
 {
     Uae2026JitCpuCheckTicks(10000000 / 512);

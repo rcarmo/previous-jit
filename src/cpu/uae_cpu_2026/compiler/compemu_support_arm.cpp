@@ -107,6 +107,16 @@ static inline void* vm_acquire_code(uae_u32 size, int options = VM_MAP_DEFAULT)
 
 #include "../compemu_prefs.cpp"
 
+static inline bool jit_allow_ram_dispatch_env(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("PREVIOUS_UAE2026_JIT_RAM");
+		cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+	}
+	return cached != 0;
+}
+
 /* BUG 13 fix: emulated_ticks is uint16 but the JIT's endblock code uses
    32-bit LDR/STR and checks bit 31 for sign. With a uint16, the high 16
    bits are garbage from adjacent memory, making the countdown sign check
@@ -5542,10 +5552,15 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     /* ROM: immediate L2 native codegen (immutable code) */
                     optlev = max_optlev;
                     bi->count = -2;
+                } else if (jit_allow_ram_dispatch_env()) {
+                    /* Experimental: translate RAM after syncing NEXTRam into
+                       the JIT shadow at the ROM->RAM dispatch boundary. */
+                    optlev = max_optlev;
+                    bi->count = -2;
                 } else {
                     /* Previous RAM is writable and shared with device/DMA code.
-                       Keep RAM blocks on interpreter dispatch until the shadow
-                       mapping is made coherent enough for native RAM execution. */
+                       Keep RAM blocks on interpreter dispatch until explicitly
+                       enabled with PREVIOUS_UAE2026_JIT_RAM=1. */
                     optlev = 0;
                     bi->count = 9;
                 }

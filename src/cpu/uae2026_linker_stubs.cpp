@@ -72,7 +72,10 @@ int m68k_do_specialties(void)
         if (intr != -1 && intr > regs.intmask) {
             MakeSR();
             regs.stopped = 0;
+            regs.spcflags &= ~PREV_SPCFLAG_STOP;
             Exception(24 + intr, 0);
+            regs.intmask = intr;
+            regs.spcflags |= PREV_SPCFLAG_INT;
         }
     }
 

@@ -255,7 +255,7 @@ extern "C" const char *Uae2026JitBridgeSummary(void)
 
 extern "C" bool Uae2026JitBridgeIsActive(void)
 {
-    return jit_active;
+    return jit_active && UseJIT;
 }
 
 extern "C" void Uae2026JitBridgeCompileExecute(void)

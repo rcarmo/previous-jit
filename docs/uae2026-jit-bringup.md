@@ -21,7 +21,7 @@ Update it as code lands so the repository always explains the current experiment
 - The bridge now includes a **Previous-specific compiler-facing prefs shim** that drives the vendored `compemu_prefs.cpp` logic from Previous state/env and reports whether a runtime-disabled compiler bootstrap would be safe (`requested`, `bootstrap_ready`, `aslr`, cache size, MMU/FPU state).
 - The bridge now performs a **runtime-disabled bootstrap allocation probe**: it allocates and clears an executable cache buffer when the experimental JIT is requested and the safety checks pass, but still does not hand execution to translated code.
 - `tools/headless-jit-bootstrap-probe.sh` verifies the bridge/bootstrap path without waiting for a full desktop boot.
-- `tools/headless-jit-bridge-smoke.sh` rebuilds the experimental binary and currently proves bridge logging, ASLR active, and bootstrap allocation active. **Translated-execution desktop reachability is not yet restored**; the latest runtime tranche reaches the ROM SCSI boot path but does not reach the Workspace.
+- `tools/headless-jit-bridge-smoke.sh` rebuilds the experimental binary and currently proves bridge logging, ASLR active, bootstrap allocation active, and desktop reachability with ROM translated execution enabled.
 - `tools/uae2026-compiler-syntax-probe.sh` records the current compile-time blocker set for direct vendored compiler integration.
 - `tools/uae2026-compiler-object-probe.sh` compiles the vendored ARM64 compiler core to an object file under the probe prelude without linking it into `Previous` yet.
 - Current blocker inventory lives in `docs/uae2026-compiler-blockers.md`.
@@ -214,8 +214,10 @@ Latest translated-execution debug checkpoint (2026-05-01):
 - JIT entry SIGSEGV was fixed by ensuring the vendored VM allocator uses executable `mmap`/`mprotect` memory instead of a `calloc` fallback
 - opcode-test translated execution now syncs the JIT shadow ROM after the test harness patches `NEXTRom`; stale shadow ROM was the cause of the previous `+0x100` PC drift
 - non-ROM blocks are currently held at interpreter dispatch while RAM/shadow coherency is being debugged
-- smoke is still failing: latest state reaches the ROM boot/SCSI path and displays `booting SCSI target 0, lun 0`, but does not reach the desktop
-- current comparison target is normal interpreter boot, which reaches `desktop_reached=1`; next work is to bisect where JIT dispatch diverges from the normal emulator path around timers/SCSI completion and RAM-vs-shadow state
+- first-principles comparison with the normal emulator found the translated path was returning from `m68k_do_compile_execute()` with `UseJIT=false`, but the outer bridge predicate ignored that flag and immediately re-entered translated dispatch; `Uae2026JitBridgeIsActive()` now respects `UseJIT`
+- the JIT specialty path now mirrors the normal `do_interrupt()` side effects for delivered interrupts (`STOP` clear, exception, interrupt mask update, and INT re-arm)
+- smoke now passes: latest run reported `bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`, `aslr_active=1`, `desktop_reached=1`
+- next work is to make writable RAM/shadow coherency robust enough to keep translated execution enabled beyond ROM code
 
 ### Run the vendored compiler object probe
 

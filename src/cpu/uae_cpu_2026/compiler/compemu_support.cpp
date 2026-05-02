@@ -99,7 +99,6 @@ extern void jit_one_tick(void);
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 extern "C" void Uae2026JitSyncRamToShadow(void);
 extern "C" void Uae2026JitSyncVideoFromShadow(void);
-extern "C" void Uae2026JitBridgeYieldToInterpreterUntilRam(unsigned int pc);
 extern "C" void Uae2026JitFastClearLongs(uae_u32 addr, uae_u32 count);
 extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count);
 
@@ -618,13 +617,17 @@ void m68k_do_compile_execute(void)
 			uae_u32 _pc = m68k_getpc();
 			if (_pc == 0 && jit_allow_ram_dispatch_env()) {
 				static unsigned long zero_pc_log = 0;
+				uae_u32 vec2 = regs.vbr ? get_long(regs.vbr + 8) : get_long(8);
 				if (zero_pc_log < 16 || (zero_pc_log % 1024) == 0) {
-					uae_u32 vec2 = regs.vbr ? get_long(regs.vbr + 8) : get_long(8);
 					fprintf(stderr, "JIT_ZERO_PC dispatch=%lu vbr=%08x vec2=%08x a7=%08x spc=%08x\n",
 						zero_pc_log + 1, (unsigned)regs.vbr, (unsigned)vec2,
 						(unsigned)regs.regs[15], (unsigned)regs.spcflags);
 				}
 				zero_pc_log++;
+				if (vec2) {
+					jit_set_guest_pc_fast(vec2);
+					_pc = vec2;
+				}
 			}
 			const bool in_rom = (_pc >= 0x01000000 && _pc < 0x01020000);
 			const bool in_ram = (_pc >= 0x04000000 && _pc < 0x08000000);

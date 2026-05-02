@@ -58,8 +58,7 @@ static bool bootstrap_active = false;
 static bool compiler_prefs_applied = false;
 static bool compiler_initialized = false;
 static bool jit_active = false;
-static bool interpreter_yield_until_ram = false;
-static unsigned long interpreter_yield_count = 0;
+static unsigned long block_exit_request_count = 0;
 static uae_u8 *jit_shadow_base = nullptr;
 static size_t jit_shadow_size = 0;
 static void *bootstrap_cache = nullptr;
@@ -269,32 +268,18 @@ extern "C" const char *Uae2026JitBridgeSummary(void)
 
 extern "C" bool Uae2026JitBridgeIsActive(void)
 {
-    return jit_active && UseJIT && !interpreter_yield_until_ram;
+    return jit_active && UseJIT;
 }
 
-extern "C" void Uae2026JitBridgeYieldToInterpreterUntilRam(unsigned int pc)
+extern "C" void Uae2026JitBridgeRequestBlockExit(unsigned int source)
 {
     if (!jit_active || !env_truthy("PREVIOUS_UAE2026_JIT_RAM", false))
         return;
-    interpreter_yield_until_ram = true;
     regs.spcflags |= 0x800; /* SPCFLAG_MODE_CHANGE: leave compiled block safely */
-    interpreter_yield_count++;
-    if (interpreter_yield_count <= 16 || (interpreter_yield_count % 1024) == 0)
-        fprintf(stderr, "UAE2026 bridge: yielding to interpreter until RAM pc=%08x count=%lu\n",
-                pc, interpreter_yield_count);
-}
-
-extern "C" bool Uae2026JitBridgeMaybeResumeFromInterpreter(void)
-{
-    if (!interpreter_yield_until_ram || !jit_active || !UseJIT)
-        return false;
-    const uae_u32 pc = m68k_getpc();
-    if (pc < 0x04000000u || pc >= 0x08000000u)
-        return false;
-    Uae2026JitSyncRamToShadow();
-    interpreter_yield_until_ram = false;
-    fprintf(stderr, "UAE2026 bridge: resuming JIT at RAM pc=%08x after interpreter yield\n", pc);
-    return true;
+    block_exit_request_count++;
+    if (block_exit_request_count <= 16 || (block_exit_request_count % 1024) == 0)
+        fprintf(stderr, "UAE2026 bridge: requested JIT block exit source=%08x count=%lu\n",
+                source, block_exit_request_count);
 }
 
 extern "C" void Uae2026JitBridgeCompileExecute(void)
@@ -514,7 +499,6 @@ extern "C" void Uae2026JitBridgeShutdown(void)
     if (jit_active) {
         UseJIT = false;
         jit_active = false;
-        interpreter_yield_until_ram = false;
     }
     if (compiler_initialized) {
         compiler_exit();

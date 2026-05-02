@@ -1361,11 +1361,6 @@ insretry:
             if (intr>regs.intmask || (intr==7 && intr>lastintr))
                 do_interrupt (intr, false);
             lastintr = intr;
-
-#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
-            if (Uae2026JitBridgeMaybeResumeFromInterpreter())
-                return;
-#endif
             
             if(lastRegsS != regs.s) {
                 host_realtime(!(regs.s));
@@ -1452,11 +1447,6 @@ static void m68k_run_mmu040 (void)
             if (intr>regs.intmask || (intr==7 && intr>lastintr))
                 do_interrupt (intr, false);
             lastintr = intr;
-
-#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
-            if (Uae2026JitBridgeMaybeResumeFromInterpreter())
-                return;
-#endif
             
             if(lastRegsS != regs.s) {
                 host_realtime(!(regs.s));

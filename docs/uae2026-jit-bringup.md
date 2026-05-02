@@ -213,7 +213,7 @@ Latest translated-execution debug checkpoint (2026-05-01):
 - opcode harness passes: `total=62`, `jit_ok=62`, `pass=62`, `fail=0`, `infra_fail=0`, `score=100`
 - JIT entry SIGSEGV was fixed by ensuring the vendored VM allocator uses executable `mmap`/`mprotect` memory instead of a `calloc` fallback
 - opcode-test translated execution now syncs the JIT shadow ROM after the test harness patches `NEXTRom`; stale shadow ROM was the cause of the previous `+0x100` PC drift
-- non-ROM blocks are currently held at interpreter dispatch while RAM/shadow coherency is being debugged
+- RAM translation remains gated by `PREVIOUS_UAE2026_JIT_RAM=1` while RAM/shadow coherency and device-helper side effects are being debugged
 - first-principles comparison with the normal emulator found the translated path was returning from `m68k_do_compile_execute()` with `UseJIT=false`, but the outer bridge predicate ignored that flag and immediately re-entered translated dispatch; `Uae2026JitBridgeIsActive()` now respects `UseJIT`
 - the JIT specialty path now mirrors the normal `do_interrupt()` side effects for delivered interrupts (`STOP` clear, exception, interrupt mask update, and INT re-arm)
 - smoke now passes: latest run reported `bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`, `aslr_active=1`, `desktop_reached=1`
@@ -221,7 +221,7 @@ Latest translated-execution debug checkpoint (2026-05-01):
 - harness tracking now records `jit_dispatch_lines`, `jit_ram_dispatch_seen`, `jit_last_pc`, and `jit_ram_requested`; set `PREVIOUS_UAE2026_JIT_RAM=1` to attempt experimental RAM translation and distinguish ROM-only desktop success from RAM-translated progress
 - experimental RAM mode now has stricter RAM-dispatch accounting: `jit_ram_dispatch_seen` only counts `0x04000000..0x07ffffff`, not bogus `pc=00000000`; current RAM-requested runs still fail before true writable-RAM dispatch, after ROM delay/device progress, with `pc=00000000` and bus errors around invalid/near-device addresses
 - follow-up wiring replaced the no-op MOVEC bridge stubs with control-register state updates (`VBR`, stack pointers, `TC`, `TT*`, `SRP/URP`, `CACR`); default smoke and opcode harness still pass
-- NBIC/device-access barriers now hand RAM-requested runs back to the interpreter before the bad `pc=00000000` path; the harness now reports true RAM dispatch (`jit_ram_dispatch_seen=1`) at least once, then later stalls in ROM device/SCSI polling around `010085d0/0100913e`, so desktop is still not claimed for RAM mode
+- NBIC/device access now requests a JIT block exit instead of delegating to the interpreter; current RAM-mode runs no longer use interpreter-resume scaffolding, but they still fail before a clean desktop and need native device-helper/PC-continuation fixes rather than fallback handoff
 
 ### Run the vendored compiler object probe
 

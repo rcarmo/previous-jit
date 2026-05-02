@@ -6,7 +6,7 @@
 #include "nbic.h"
 
 #if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
-extern void Uae2026JitBridgeYieldToInterpreterUntilRam(unsigned int pc);
+extern void Uae2026JitBridgeRequestBlockExit(unsigned int source);
 #endif
 
 #define LOG_NEXTBUS_LEVEL   LOG_NONE
@@ -14,7 +14,7 @@ extern void Uae2026JitBridgeYieldToInterpreterUntilRam(unsigned int pc);
 static inline void nbic_jit_device_barrier(Uint32 addr)
 {
 #if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
-	Uae2026JitBridgeYieldToInterpreterUntilRam(addr);
+	Uae2026JitBridgeRequestBlockExit(addr);
 #else
 	(void)addr;
 #endif

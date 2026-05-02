@@ -220,6 +220,7 @@ Latest translated-execution debug checkpoint (2026-05-01):
 - next work is to make writable RAM/shadow coherency robust enough to keep translated execution enabled beyond ROM code
 - harness tracking now records `jit_dispatch_lines`, `jit_ram_dispatch_seen`, `jit_last_pc`, and `jit_ram_requested`; set `PREVIOUS_UAE2026_JIT_RAM=1` to attempt experimental RAM translation and distinguish ROM-only desktop success from RAM-translated progress
 - experimental RAM mode now has stricter RAM-dispatch accounting: `jit_ram_dispatch_seen` only counts `0x04000000..0x07ffffff`, not bogus `pc=00000000`; current RAM-requested runs still fail before true writable-RAM dispatch, after ROM delay/device progress, with `pc=00000000` and bus errors around invalid/near-device addresses
+- follow-up wiring replaced the no-op MOVEC bridge stubs with control-register state updates (`VBR`, stack pointers, `TC`, `TT*`, `SRP/URP`, `CACR`); default smoke and opcode harness still pass, but the RAM-requested path still falls to `pc=00000000`, so the remaining blocker is not merely missing MOVEC state
 
 ### Run the vendored compiler object probe
 

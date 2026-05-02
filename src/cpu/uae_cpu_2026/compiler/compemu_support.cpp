@@ -611,11 +611,12 @@ void m68k_do_compile_execute(void)
 			static bool ram_synced_for_dispatch = false;
 			uae_u32 _pc = m68k_getpc();
 			const bool in_rom = (_pc >= 0x01000000 && _pc < 0x01020000);
+			const bool in_ram = (_pc >= 0x04000000 && _pc < 0x08000000);
 			if (!in_rom && !jit_allow_ram_dispatch_env()) {
 				UseJIT = false;
 				return;
 			}
-			if (!in_rom && !ram_synced_for_dispatch) {
+			if (in_ram && !ram_synced_for_dispatch) {
 				Uae2026JitSyncRamToShadow();
 				ram_synced_for_dispatch = true;
 			}

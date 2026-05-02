@@ -62,6 +62,7 @@
 #include "compemu_arm.h"
 #include <SDL2/SDL.h>
 
+
 /* ARM64 JIT is PIE-compatible: it uses register-indirect addressing
  * (R_MEMSTART/R15) rather than PC-relative globals, so code placement
  * relative to .data does not matter. */
@@ -184,8 +185,10 @@ static inline bool jit_force_special_fb_writes(void)
 static inline bool jit_force_all_special_mem(void)
 {
 	static int enabled = -1;
-	if (enabled < 0)
-		enabled = (getenv("B2_JIT_ALL_SPECIAL_MEM") && *getenv("B2_JIT_ALL_SPECIAL_MEM")) ? 1 : 0;
+	if (enabled < 0) {
+		const char *env = getenv("B2_JIT_ALL_SPECIAL_MEM");
+		enabled = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+	}
 	return enabled != 0;
 }
 

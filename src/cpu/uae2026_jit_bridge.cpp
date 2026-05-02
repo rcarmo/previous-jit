@@ -345,12 +345,6 @@ extern "C" void Uae2026JitBridgeInit(void)
     if (prefs.bootstrap_enabled)
         ensure_bootstrap_cache(prefs);
 
-    /* Force generated memory accesses through the bank-dispatch path before
-     * any compiler/runtime helper can cache the preference.  The shadow space
-     * is for instruction fetch and explicitly-synced RAM code, not arbitrary
-     * stack/device data such as 0x0bxxxxxx or 0x0200xxxx. */
-    setenv("B2_JIT_ALL_SPECIAL_MEM", "1", 1);
-
     /*
      * Call the real vendored compiler_init().
      * This sets up flush_icache, the baseaddr[]/mem_banks[] bank table,

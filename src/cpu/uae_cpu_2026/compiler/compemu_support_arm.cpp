@@ -994,6 +994,7 @@ static void op_move_l_d8anxn_absw_comp_ff(uae_u32 opcode);
 static void op_move_l_reg_d16an_comp_ff(uae_u32 opcode);
 extern "C" void jit_trace_add(uae_u32 pc, uae_u32 opcode);
 extern "C" void jit_trace_pc_hit(uae_u32 pc, uae_u32 tagged_opcode);
+extern "C" bool jit_op_rom_delay_bsr_callsite(uae_u32 pc, uae_u32 retpc);
 static void op_movea_l_postinc_an_comp_ff(uae_u32 opcode);
 static void op_aline_trap_comp_ff(uae_u32 opcode);
 static void op_emulop_comp_ff(uae_u32 opcode);
@@ -4210,6 +4211,35 @@ static uintptr get_handler(uintptr addr)
  *  if that assumption is wrong! No branches, no second chances, just
  *  straight go-for-it attitude */
 
+static inline bool jit_ram_const_direct_read_addr(uae_u32 addr, int size)
+{
+    const uae_u32 end = addr + (uae_u32)size;
+    if (end < addr)
+        return false;
+    /* JIT direct reads are safe only from immutable ROM shadows.  Writable RAM,
+       stack/MMU aliases (0x0bxxxxxx), and devices must use Previous's live
+       addrbank helpers so interpreter/device side effects see the same memory. */
+    if (addr < 0x00020000u && end <= 0x00020000u)
+        return true;
+    if (addr >= 0x01000000u && end <= 0x01020000u)
+        return true;
+    return false;
+}
+
+static inline bool jit_ram_use_bank_for_mem_vreg(int address, int size, bool is_write)
+{
+    if (!jit_allow_ram_dispatch_env())
+        return false;
+    if (address < 0 || address >= VREGS)
+        return true;
+    if (is_write)
+        return true;
+    if (live.state[address].status == ISCONST &&
+        jit_ram_const_direct_read_addr((uae_u32)live.state[address].val, size))
+        return false;
+    return true;
+}
+
 static void writemem_real(int address, int source, int size)
 {
     if (currprefs.address_space_24) {
@@ -4234,7 +4264,8 @@ static inline void writemem_special(int address, int source, int offset)
 
 void writebyte(int address, int source)
 {
-    if (jit_force_all_special_mem() || (special_mem & S_WRITE) || distrust_byte() || jit_n_addr_unsafe || (jit_force_special_fb_writes() && jit_is_framebuffer_addr(address)))
+    if (jit_force_all_special_mem() || jit_ram_use_bank_for_mem_vreg(address, 1, true) ||
+        (special_mem & S_WRITE) || distrust_byte() || jit_n_addr_unsafe || (jit_force_special_fb_writes() && jit_is_framebuffer_addr(address)))
         writemem_special(address, source, SIZEOF_VOID_P * 5);
     else
         writemem_real(address, source, 1);
@@ -4242,7 +4273,8 @@ void writebyte(int address, int source)
 
 void writeword(int address, int source)
 {
-    if (jit_force_all_special_mem() || (special_mem & S_WRITE) || distrust_word() || jit_n_addr_unsafe || (jit_force_special_fb_writes() && jit_is_framebuffer_addr(address)))
+    if (jit_force_all_special_mem() || jit_ram_use_bank_for_mem_vreg(address, 2, true) ||
+        (special_mem & S_WRITE) || distrust_word() || jit_n_addr_unsafe || (jit_force_special_fb_writes() && jit_is_framebuffer_addr(address)))
         writemem_special(address, source, SIZEOF_VOID_P * 4);
     else
         writemem_real(address, source, 2);
@@ -4250,7 +4282,8 @@ void writeword(int address, int source)
 
 void writelong(int address, int source)
 {
-    if (jit_force_all_special_mem() || (special_mem & S_WRITE) || distrust_long() || jit_n_addr_unsafe || (jit_force_special_fb_writes() && jit_is_framebuffer_addr(address)))
+    if (jit_force_all_special_mem() || jit_ram_use_bank_for_mem_vreg(address, 4, true) ||
+        (special_mem & S_WRITE) || distrust_long() || jit_n_addr_unsafe || (jit_force_special_fb_writes() && jit_is_framebuffer_addr(address)))
         writemem_special(address, source, SIZEOF_VOID_P * 3);
     else
         writemem_real(address, source, 4);
@@ -4259,7 +4292,8 @@ void writelong(int address, int source)
 // Now the same for clobber variant
 void writeword_clobber(int address, int source)
 {
-    if (jit_force_all_special_mem() || (special_mem & S_WRITE) || distrust_word() || jit_n_addr_unsafe || (jit_force_special_fb_writes() && jit_is_framebuffer_addr(address)))
+    if (jit_force_all_special_mem() || jit_ram_use_bank_for_mem_vreg(address, 2, true) ||
+        (special_mem & S_WRITE) || distrust_word() || jit_n_addr_unsafe || (jit_force_special_fb_writes() && jit_is_framebuffer_addr(address)))
         writemem_special(address, source, SIZEOF_VOID_P * 4);
     else
         writemem_real(address, source, 2);
@@ -4268,7 +4302,8 @@ void writeword_clobber(int address, int source)
 
 void writelong_clobber(int address, int source)
 {
-    if (jit_force_all_special_mem() || (special_mem & S_WRITE) || distrust_long() || jit_n_addr_unsafe || (jit_force_special_fb_writes() && jit_is_framebuffer_addr(address)))
+    if (jit_force_all_special_mem() || jit_ram_use_bank_for_mem_vreg(address, 4, true) ||
+        (special_mem & S_WRITE) || distrust_long() || jit_n_addr_unsafe || (jit_force_special_fb_writes() && jit_is_framebuffer_addr(address)))
         writemem_special(address, source, SIZEOF_VOID_P * 3);
     else
         writemem_real(address, source, 4);
@@ -4304,7 +4339,8 @@ static inline void readmem_special(int address, int dest, int offset)
 
 void readbyte(int address, int dest)
 {
-    if (jit_force_all_special_mem() || (special_mem & S_READ) || distrust_byte() || jit_n_addr_unsafe)
+    if (jit_force_all_special_mem() || jit_ram_use_bank_for_mem_vreg(address, 1, false) ||
+        (special_mem & S_READ) || distrust_byte() || jit_n_addr_unsafe)
         readmem_special(address, dest, SIZEOF_VOID_P * 2);
     else
         readmem_real(address, dest, 1);
@@ -4312,7 +4348,8 @@ void readbyte(int address, int dest)
 
 void readword(int address, int dest)
 {
-    if (jit_force_all_special_mem() || (special_mem & S_READ) || distrust_word() || jit_n_addr_unsafe)
+    if (jit_force_all_special_mem() || jit_ram_use_bank_for_mem_vreg(address, 2, false) ||
+        (special_mem & S_READ) || distrust_word() || jit_n_addr_unsafe)
         readmem_special(address, dest, SIZEOF_VOID_P * 1);
     else
         readmem_real(address, dest, 2);
@@ -4320,7 +4357,8 @@ void readword(int address, int dest)
 
 void readlong(int address, int dest)
 {
-    if (jit_force_all_special_mem() || (special_mem & S_READ) || distrust_long() || jit_n_addr_unsafe)
+    if (jit_force_all_special_mem() || jit_ram_use_bank_for_mem_vreg(address, 4, false) ||
+        (special_mem & S_READ) || distrust_long() || jit_n_addr_unsafe)
         readmem_special(address, dest, SIZEOF_VOID_P * 0);
     else
         readmem_real(address, dest, 4);
@@ -4342,7 +4380,8 @@ STATIC_INLINE void get_n_addr_real(int address, int dest)
 
 void get_n_addr(int address, int dest)
 {
-    if (jit_force_all_special_mem() || special_mem || distrust_addr() || jit_n_addr_unsafe)
+    if (jit_force_all_special_mem() || jit_ram_use_bank_for_mem_vreg(address, SIZEOF_VOID_P, false) ||
+        special_mem || distrust_addr() || jit_n_addr_unsafe)
         get_n_addr_old(address, dest);
     else
         get_n_addr_real(address, dest);
@@ -5852,6 +5891,31 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     }
                 }
 #endif
+                if (jit_allow_ram_dispatch_env() && (uae_u16)opcode == 0x61ff) {
+                    uae_u16 *opw = (uae_u16 *)pc_hist[i].location;
+                    const uae_u32 disp = ((uae_u32)do_get_mem_word(opw + 1) << 16) |
+                        (uae_u32)do_get_mem_word(opw + 2);
+                    const uae_u32 target_pc = op_m68k_pc + 2u + (uae_u32)(uae_s32)disp;
+                    if (target_pc == 0x010024ccu) {
+                        if (was_comp) {
+                            flush(1);
+                            was_comp = 0;
+                        }
+                        compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
+                        compemu_raw_mov_l_ri(REG_PAR2, op_m68k_pc + 6u);
+                        compemu_raw_call((uintptr)jit_op_rom_delay_bsr_callsite);
+                        compemu_raw_mov_l_rm(0, (uintptr)specflags);
+#if defined(USE_DATA_BUFFER)
+                        data_check_end(12, 64);
+#endif
+                        compemu_raw_maybe_do_nothing(retired_cycles);
+                        compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
+                        compemu_raw_endblock_pc_inreg(REG_PC_TMP, retired_cycles);
+                        forced_interpreter_barrier = true;
+                        break;
+                    }
+                }
+
                 if (comptbl[cft_map(opcode)] && optlev > 1 && allow_l2) {
                     failure = 0;
                     if (!was_comp) {

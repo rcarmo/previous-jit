@@ -750,6 +750,24 @@ void get_n_addr(int address, int dest, int tmp) { (void)tmp; get_n_addr(address,
 void get_n_addr_jmp(int address, int dest, int tmp) { (void)tmp; get_n_addr_jmp(address, dest); }
 void calc_disp_ea_020(int base, uae_u32 dp, int target, int tmp) { (void)tmp; calc_disp_ea_020(base, dp, target); }
 void register_branch(uae_u32 not_taken, uae_u32 taken, uae_u8 cond) { register_branch((uintptr)not_taken, (uintptr)taken, cond); }
+
+extern "C" bool jit_op_rom_delay_bsr_callsite(uae_u32 pc, uae_u32 retpc)
+{
+	if (!jit_allow_ram_dispatch_env())
+		return false;
+	/* Caller-side ROM delay(x) compression.  At a BSR/JSR-to-delay callsite,
+	   the visible post-return state is: A7 back at the argument, argument
+	   decremented by 3, elapsed ticks charged, PC at the return address.  Avoid
+	   pushing a temporary return address through the 0x0bxxxxxx VRAM/MMU stack
+	   path during block tracing/native execution. */
+	uae_u32 sp = regs.regs[15];
+	uae_u32 arg = get_long(sp);
+	put_long(sp, arg - 3u);
+	jit_charge_rom_delay_ticks(arg);
+	jit_set_guest_pc_fast(retpc ? retpc : (pc + 6));
+	return true;
+}
+
 #include "compemu_legacy_arm64_compat.cpp"
 #else
 

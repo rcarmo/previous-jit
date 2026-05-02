@@ -221,7 +221,9 @@ Latest translated-execution debug checkpoint (2026-05-01):
 - harness tracking now records `jit_dispatch_lines`, `jit_ram_dispatch_seen`, `jit_last_pc`, and `jit_ram_requested`; set `PREVIOUS_UAE2026_JIT_RAM=1` to attempt experimental RAM translation and distinguish ROM-only desktop success from RAM-translated progress
 - experimental RAM mode now has stricter RAM-dispatch accounting: `jit_ram_dispatch_seen` only counts `0x04000000..0x07ffffff`, not bogus `pc=00000000`; current RAM-requested runs still fail before true writable-RAM dispatch, after ROM delay/device progress, with `pc=00000000` and bus errors around invalid/near-device addresses
 - follow-up wiring replaced the no-op MOVEC bridge stubs with control-register state updates (`VBR`, stack pointers, `TC`, `TT*`, `SRP/URP`, `CACR`); default smoke and opcode harness still pass
-- NBIC/device access now requests a JIT block exit instead of delegating to the interpreter; current RAM-mode runs no longer use interpreter-resume scaffolding, but they still fail before a clean desktop and need native device-helper/PC-continuation fixes rather than fallback handoff
+- NBIC/device access now requests a JIT block exit instead of delegating to the interpreter; current RAM-mode runs no longer use interpreter-resume scaffolding, and the first post-NBIC bad return into `0x0b03f800` was narrowed to ROM `delay()` call/return handling on the VRAM-backed stack
+- the legacy Hatari Python UI is now build-gated behind `ENABLE_HATARI_PYTHON_UI=OFF` by default; it is not part of the JIT/headless path
+- RAM-mode memory codegen no longer relies on bridge-level `B2_JIT_ALL_SPECIAL_MEM`; it routes RAM-mode writable/unclassified data accesses through the live addrbank helpers while allowing direct reads only from immutable ROM shadows
 
 ### Run the vendored compiler object probe
 

@@ -212,7 +212,10 @@ configure_file(${CMAKE_SOURCE_DIR}/cmake/config-cmake.h
 
 add_subdirectory(src)
 
-include(FindPythonInterp)
-if(PYTHONINTERP_FOUND)
-	add_subdirectory(python-ui)
-endif(PYTHONINTERP_FOUND)
+option(ENABLE_HATARI_PYTHON_UI "Build/install the legacy Hatari Python UI" OFF)
+if(ENABLE_HATARI_PYTHON_UI)
+	include(FindPythonInterp)
+	if(PYTHONINTERP_FOUND)
+		add_subdirectory(python-ui)
+	endif(PYTHONINTERP_FOUND)
+endif()

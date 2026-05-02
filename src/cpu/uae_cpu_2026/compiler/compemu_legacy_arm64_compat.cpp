@@ -71,17 +71,31 @@ static inline int legacy_addr_with_offset(int base, uae_s32 offset)
 	return legacy_addr_with_offset_avoid(base, offset, -1);
 }
 
-static inline bool legacy_rom_delay_bsr_callsite(uae_u32 pc, uae_u16 opcode, uae_u32 *retpc)
+static inline bool legacy_bsr_l_target(uae_u32 pc, uae_u16 opcode, uae_u32 expected_target, uae_u32 *retpc)
 {
 	if (opcode != 0x61ff)
 		return false;
 	uae_u32 disp = ((uae_u32)get_iword(2) << 16) | (uae_u32)get_iword(4);
 	uae_u32 target = pc + 2u + (uae_u32)(uae_s32)disp;
-	if (target != 0x010024ccu)
+	if (target != expected_target)
 		return false;
 	if (retpc)
 		*retpc = pc + 6u;
 	return true;
+}
+
+static inline bool legacy_rom_delay_bsr_callsite(uae_u32 pc, uae_u16 opcode, uae_u32 *retpc)
+{
+	if (pc != 0x0100969cu && pc != 0x0100ce26u)
+		return false;
+	return legacy_bsr_l_target(pc, opcode, 0x010024ccu, retpc);
+}
+
+static inline bool legacy_rom_vbr_lookup_bsr_callsite(uae_u32 pc, uae_u16 opcode, uae_u32 *retpc)
+{
+	if (pc != 0x0100139au)
+		return false;
+	return legacy_bsr_l_target(pc, opcode, 0x010003c2u, retpc);
 }
 
 void start_needflags(void) { needflags = 1; }
@@ -851,8 +865,10 @@ void exec_nostats(void)
 		uae_u32 opcode = GET_OPCODE;
 		{
 			uae_u32 retpc = 0;
-			if (legacy_rom_delay_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
-				jit_op_rom_delay_bsr_callsite(before_pc, retpc)) {
+			if ((legacy_rom_delay_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
+				 jit_op_rom_delay_bsr_callsite(before_pc, retpc)) ||
+				(legacy_rom_vbr_lookup_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
+				 jit_op_rom_vbr_global_lookup_callsite(before_pc, retpc))) {
 				cpu_check_ticks();
 				if (SPCFLAGS_TEST(SPCFLAG_ALL))
 					return;
@@ -1095,9 +1111,11 @@ void execute_normal(void)
 			uae_u32 pc_before_op = m68k_getpc();
 			uae_u32 opcode = GET_OPCODE;
 			uae_u32 delay_retpc = 0;
-			bool delay_callsite = legacy_rom_delay_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
-				jit_op_rom_delay_bsr_callsite(pc_before_op, delay_retpc);
-			if (!delay_callsite)
+			bool helper_callsite = (legacy_rom_delay_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
+				jit_op_rom_delay_bsr_callsite(pc_before_op, delay_retpc)) ||
+				(legacy_rom_vbr_lookup_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
+				jit_op_rom_vbr_global_lookup_callsite(pc_before_op, delay_retpc));
+			if (!helper_callsite)
 				(*cpufunctbl[opcode])(opcode);
 			cpu_check_ticks();
 			total_cycles += 4 * CYCLE_UNIT;
@@ -1110,7 +1128,7 @@ void execute_normal(void)
 				}
 				maxrun_limit = env_maxrun;
 			}
-			bool must_end = delay_callsite || __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
+			bool must_end = helper_callsite || __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
 			if (!must_end && end_block(opcode)) {
 				uintptr new_pcp = (uintptr)regs.pc_p;
 				uintptr blk_start = (uintptr)pc_hist[0].location;
@@ -1221,7 +1239,8 @@ extern "C" void jit_op_movec2(void)
     int rn = (ext >> 12) & 15;
     int cr = ext & 0xFFF;
     uae_u32 *regp = &regs.regs[rn];
-    m68k_movec2(cr, regp);
+    if (m68k_movec2(cr, regp) && jit_allow_ram_dispatch_env())
+        regs.spcflags |= 0x800;
 }
 
 extern "C" void jit_op_move2c(void)
@@ -1230,7 +1249,8 @@ extern "C" void jit_op_move2c(void)
     int rn = (ext >> 12) & 15;
     int cr = ext & 0xFFF;
     uae_u32 *regp = &regs.regs[rn];
-    m68k_move2c(cr, regp);
+    if (m68k_move2c(cr, regp) && jit_allow_ram_dispatch_env())
+        regs.spcflags |= 0x800;
 }
 
 /* ================================================================

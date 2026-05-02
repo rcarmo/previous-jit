@@ -29,6 +29,18 @@
 #include "rs.h"
 #include "statusbar.h"
 
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+extern void Uae2026JitBridgeRequestBlockExit(unsigned int source);
+#endif
+
+static inline void mo_jit_device_barrier(Uint32 addr)
+{
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+    Uae2026JitBridgeRequestBlockExit(addr);
+#else
+    (void)addr;
+#endif
+}
 
 #define LOG_MO_REG_LEVEL    LOG_DEBUG
 #define LOG_MO_CMD_LEVEL    LOG_DEBUG
@@ -312,6 +324,7 @@ void MO_IntStatus_Read(void) { // 0x02012004
 
 void MO_IntStatus_Write(void) {
     Uint8 val = IoMem[IoAccessCurrentAddress & IO_SEG_MASK];
+    mo_jit_device_barrier(IoAccessCurrentAddress);
     osp_poll_mo_signals();
     mo.intstatus &= ~(val&MOINT_OSP_MASK);
  	Log_Printf(LOG_MO_REG_LEVEL,"[MO] Interrupt status write at $%08x val=$%02x PC=$%08x\n", IoAccessCurrentAddress, IoMem[IoAccessCurrentAddress & IO_SEG_MASK], m68k_getpc());

@@ -224,6 +224,7 @@ Latest translated-execution debug checkpoint (2026-05-01):
 - NBIC/device access now requests a JIT block exit instead of delegating to the interpreter; current RAM-mode runs no longer use interpreter-resume scaffolding, and the first post-NBIC bad return into `0x0b03f800` was narrowed to ROM `delay()` call/return handling on the VRAM-backed stack
 - the legacy Hatari Python UI is now build-gated behind `ENABLE_HATARI_PYTHON_UI=OFF` by default; it is not part of the JIT/headless path
 - RAM-mode memory codegen no longer relies on bridge-level `B2_JIT_ALL_SPECIAL_MEM`; it routes RAM-mode writable/unclassified data accesses through the live addrbank helpers while allowing direct reads only from immutable ROM shadows
+- follow-up RAM-mode fixes added native callsite helpers for the two ROM delay calls that were corrupting return addresses (`0100969c`, `0100ce26`), a native helper for the ROM VBR global lookup at `0100139a -> 010003c2`, and a MO interrupt-status block-exit barrier; RAM mode now gets past the NBIC/MO reset crash path and reaches the graphical boot window, but the display is still corrupted and no true RAM dispatch is recorded yet
 
 ### Run the vendored compiler object probe
 

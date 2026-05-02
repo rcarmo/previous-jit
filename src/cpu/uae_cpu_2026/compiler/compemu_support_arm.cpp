@@ -995,6 +995,7 @@ static void op_move_l_reg_d16an_comp_ff(uae_u32 opcode);
 extern "C" void jit_trace_add(uae_u32 pc, uae_u32 opcode);
 extern "C" void jit_trace_pc_hit(uae_u32 pc, uae_u32 tagged_opcode);
 extern "C" bool jit_op_rom_delay_bsr_callsite(uae_u32 pc, uae_u32 retpc);
+extern "C" bool jit_op_rom_vbr_global_lookup_callsite(uae_u32 pc, uae_u32 retpc);
 static void op_movea_l_postinc_an_comp_ff(uae_u32 opcode);
 static void op_aline_trap_comp_ff(uae_u32 opcode);
 static void op_emulop_comp_ff(uae_u32 opcode);
@@ -1071,6 +1072,11 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 	   keep it as an interpreter barrier so 0x0bxxxxxx stack accesses go through
 	   Previous's memory banks. */
 	if (jit_allow_ram_dispatch_env() && op == 0x57af)
+		return true;
+	/* MOVEC helpers update guest registers/control state behind the register
+	   allocator. End the block after them so following instructions reload the
+	   canonical state instead of using stale native A0/VBR/stack values. */
+	if (jit_allow_ram_dispatch_env() && (op == 0x4e7a || op == 0x4e7b))
 		return true;
 
 	/* Environment-gated barriers for debugging (B2_JIT_RESTORE_BARRIERS). */
@@ -5896,14 +5902,19 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     const uae_u32 disp = ((uae_u32)do_get_mem_word(opw + 1) << 16) |
                         (uae_u32)do_get_mem_word(opw + 2);
                     const uae_u32 target_pc = op_m68k_pc + 2u + (uae_u32)(uae_s32)disp;
-                    if (target_pc == 0x010024ccu) {
+                    uintptr helper = 0;
+                    if ((op_m68k_pc == 0x0100969cu || op_m68k_pc == 0x0100ce26u) && target_pc == 0x010024ccu)
+                        helper = (uintptr)jit_op_rom_delay_bsr_callsite;
+                    else if (op_m68k_pc == 0x0100139au && target_pc == 0x010003c2u)
+                        helper = (uintptr)jit_op_rom_vbr_global_lookup_callsite;
+                    if (helper) {
                         if (was_comp) {
                             flush(1);
                             was_comp = 0;
                         }
                         compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
                         compemu_raw_mov_l_ri(REG_PAR2, op_m68k_pc + 6u);
-                        compemu_raw_call((uintptr)jit_op_rom_delay_bsr_callsite);
+                        compemu_raw_call(helper);
                         compemu_raw_mov_l_rm(0, (uintptr)specflags);
 #if defined(USE_DATA_BUFFER)
                         data_check_end(12, 64);

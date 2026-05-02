@@ -132,6 +132,30 @@ static inline void jit_charge_rom_delay_ticks(uae_u32 arg)
 	Uae2026JitCpuCheckTicks((int)ticks64);
 }
 
+static inline bool jit_emulate_rom_vbr_global_lookup(uae_u32 pc)
+{
+	if (pc != 0x010003c2)
+		return false;
+	/* ROM helper: MOVEC VBR,A0; MOVE.L (A0,$0004),D0; RTS.
+	   Keep this as a native runtime helper in RAM-JIT mode because the normal
+	   compiled/fallback mixed path can keep stale A0 in the register allocator
+	   after MOVEC2 writes A0 through the canonical regs array. */
+	regs.regs[8] = regs.vbr;
+	regs.regs[0] = get_long(regs.vbr + 4);
+	return jit_fast_return_from_subroutine();
+}
+
+extern "C" bool jit_op_rom_vbr_global_lookup_callsite(uae_u32 pc, uae_u32 retpc)
+{
+	if (!jit_allow_ram_dispatch_env())
+		return false;
+	(void)pc;
+	regs.regs[8] = regs.vbr;
+	regs.regs[0] = get_long(regs.vbr + 4);
+	jit_set_guest_pc_fast(retpc ? retpc : (pc + 6));
+	return true;
+}
+
 static inline bool jit_emulate_rom_delay_call(uae_u32 pc)
 {
 	if (pc != 0x010024cc)
@@ -210,7 +234,8 @@ static inline void jit_maybe_apply_runtime_helpers(void)
 		return;
 	uae_u32 pc = m68k_getpc();
 	uae_u16 op = get_iword(0);
-	if (jit_emulate_rom_delay_call(pc) ||
+	if (jit_emulate_rom_vbr_global_lookup(pc) ||
+		jit_emulate_rom_delay_call(pc) ||
 		jit_emulate_rom_delay_body(pc) ||
 		jit_emulate_rom_delay_dbf(pc, op) ||
 		jit_emulate_rom_cache_restore(pc, op) ||

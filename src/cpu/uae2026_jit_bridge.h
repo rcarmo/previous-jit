@@ -14,6 +14,8 @@ bool Uae2026JitBridgeBootstrapReady(void);
 bool Uae2026JitBridgeBootstrapAttempted(void);
 bool Uae2026JitBridgeBootstrapActive(void);
 bool Uae2026JitBridgeIsActive(void);   /* JIT dispatch fully live */
+void Uae2026JitBridgeYieldToInterpreterUntilRam(unsigned int pc);
+bool Uae2026JitBridgeMaybeResumeFromInterpreter(void);
 void Uae2026JitBridgeCompileExecute(void); /* main JIT loop step */
 const char *Uae2026JitBridgeSummary(void);
 void Uae2026JitBridgeInit(void);
@@ -26,6 +28,8 @@ static inline bool Uae2026JitBridgeBootstrapReady(void) { return false; }
 static inline bool Uae2026JitBridgeBootstrapAttempted(void) { return false; }
 static inline bool Uae2026JitBridgeBootstrapActive(void) { return false; }
 static inline bool Uae2026JitBridgeIsActive(void) { return false; }
+static inline void Uae2026JitBridgeYieldToInterpreterUntilRam(unsigned int pc) { (void)pc; }
+static inline bool Uae2026JitBridgeMaybeResumeFromInterpreter(void) { return false; }
 static inline void Uae2026JitBridgeCompileExecute(void) {}
 static inline const char *Uae2026JitBridgeSummary(void) {
     return "uae2026-jit bridge not compiled";

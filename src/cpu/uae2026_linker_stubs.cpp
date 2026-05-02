@@ -109,6 +109,25 @@ uint16  emulated_ticks               = 0;
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 extern uintptr_t jit_MEMBaseDiff;
 
+extern "C" void Uae2026JitSyncVideoFromShadow(void)
+{
+    extern uae_u8 NEXTVideo[];
+    if (!jit_MEMBaseDiff || regs.vbr < 0x0b000000u || regs.vbr >= 0x0b040000u)
+        return;
+
+    const uae_u32 off = regs.vbr - 0x0b000000u;
+    if (off + 0x400u > 0x40000u)
+        return;
+
+    const uae_u8 *shadow = (const uae_u8 *)(jit_MEMBaseDiff + regs.vbr);
+    /* Only seed an empty host-side vector table from shadow direct writes.
+     * Do not mirror full VRAM from shadow: special-memory writes update
+     * NEXTVideo directly and shadow can otherwise clobber valid host state. */
+    if (do_get_mem_long((uae_u32 *)(NEXTVideo + off + 8)) == 0 &&
+        do_get_mem_long((uae_u32 *)(uintptr_t)(shadow + 8)) != 0)
+        memcpy(NEXTVideo + off, shadow, 0x400);
+}
+
 static inline bool Uae2026JitRamRange(uae_u32 addr, uae_u32 bytes, uae_u32 *offset_out)
 {
     const uae_u32 ram_base = 0x04000000u;

@@ -98,6 +98,8 @@ static bool ensure_aarch64_jit_runtime_ready(void)
 extern void jit_one_tick(void);
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 extern "C" void Uae2026JitSyncRamToShadow(void);
+extern "C" void Uae2026JitSyncVideoFromShadow(void);
+extern "C" void Uae2026JitBridgeYieldToInterpreterUntilRam(unsigned int pc);
 extern "C" void Uae2026JitFastClearLongs(uae_u32 addr, uae_u32 count);
 extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count);
 
@@ -582,7 +584,11 @@ void m68k_do_compile_execute(void)
 	 * setup, which clears the JIT-only pointer fields. Re-stamp them at the
 	 * native dispatch boundary before generated code dereferences them. */
 	regs.raw_cputbl_count = raw_cputbl_count;
-	regs.mem_banks = (uintptr)mem_banks;
+	/* regs.mem_banks is stamped by the Previous bridge to point at Previous's
+	 * live addrbank table.  Do not overwrite it with the vendored static table
+	 * here, or special-memory codegen will miss device/VRAM/MMU side effects. */
+	if (!regs.mem_banks)
+		regs.mem_banks = (uintptr)mem_banks;
 	regs.cache_tags = (uintptr)cache_tags;
 	fprintf(stderr, "JIT_ENTRY pc=%08x spc=%08x a7=%08x\n", m68k_getpc(), (unsigned)regs.spcflags, regs.regs[15]);
 	fflush(stderr);
@@ -610,6 +616,16 @@ void m68k_do_compile_execute(void)
 			extern bool UseJIT;
 			static bool ram_synced_for_dispatch = false;
 			uae_u32 _pc = m68k_getpc();
+			if (_pc == 0 && jit_allow_ram_dispatch_env()) {
+				static unsigned long zero_pc_log = 0;
+				if (zero_pc_log < 16 || (zero_pc_log % 1024) == 0) {
+					uae_u32 vec2 = regs.vbr ? get_long(regs.vbr + 8) : get_long(8);
+					fprintf(stderr, "JIT_ZERO_PC dispatch=%lu vbr=%08x vec2=%08x a7=%08x spc=%08x\n",
+						zero_pc_log + 1, (unsigned)regs.vbr, (unsigned)vec2,
+						(unsigned)regs.regs[15], (unsigned)regs.spcflags);
+				}
+				zero_pc_log++;
+			}
 			const bool in_rom = (_pc >= 0x01000000 && _pc < 0x01020000);
 			const bool in_ram = (_pc >= 0x04000000 && _pc < 0x08000000);
 			if (!in_rom && !jit_allow_ram_dispatch_env()) {
@@ -626,6 +642,8 @@ void m68k_do_compile_execute(void)
 #endif
 		((compiled_handler)(pushall_call_handler))();
 #if defined(CPU_AARCH64)
+		if (jit_allow_ram_dispatch_env())
+			Uae2026JitSyncVideoFromShadow();
 		{
 			static unsigned _jit_dispatch_tick = 0;
 			if (((++_jit_dispatch_tick) & 0xffu) == 0)

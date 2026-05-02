@@ -5,7 +5,20 @@
 #include "sysdeps.h"
 #include "nbic.h"
 
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+extern void Uae2026JitBridgeYieldToInterpreterUntilRam(unsigned int pc);
+#endif
+
 #define LOG_NEXTBUS_LEVEL   LOG_NONE
+
+static inline void nbic_jit_device_barrier(Uint32 addr)
+{
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+	Uae2026JitBridgeYieldToInterpreterUntilRam(addr);
+#else
+	(void)addr;
+#endif
+}
 
 /* NeXTbus and NeXTbus Interface Chip emulation */
 
@@ -41,6 +54,7 @@ struct {
 
 /* Register access functions */
 static Uint8 nbic_control_read0(Uint32 addr) {
+	nbic_jit_device_barrier(addr);
 	Log_Printf(LOG_WARN, "[NBIC] Control (byte 0) read at %08X",addr);
 	return (nbic.control>>24);
 }
@@ -58,6 +72,7 @@ static Uint8 nbic_control_read3(Uint32 addr) {
 }
 
 static void nbic_control_write0(Uint32 addr, Uint8 val) {
+	nbic_jit_device_barrier(addr);
 	Log_Printf(LOG_WARN, "[NBIC] Control (byte 0) write %02X at %08X",val,addr);
 	nbic.control &= 0x00FFFFFF;
 	nbic.control |= (val&0xFF)<<24;

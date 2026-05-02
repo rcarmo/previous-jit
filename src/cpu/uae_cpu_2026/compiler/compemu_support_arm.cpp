@@ -273,6 +273,8 @@ static inline bool jit_force_optlev0_block_exact(uae_u32 pc)
 	/* Low ROM / RAM-mirrored ROM hardware bring-up.  These blocks poll or
 	   mutate special devices and are safer as whole-block interpreter stubs
 	   while experimental RAM dispatch is being brought up. */
+	if (jit_allow_ram_dispatch_env() && rom_pc >= 0x0100a000u && rom_pc <= 0x0100a700u)
+		return true;
 	if ((rom_pc >= 0x01008b44u && rom_pc <= 0x01008c98u) ||
 		(rom_pc >= 0x01008e54u && rom_pc <= 0x01008e92u) ||
 		rom_pc == 0x0100913eu)
@@ -1046,6 +1048,8 @@ static inline bool jit_force_exact_exec_nostats_opcode(uae_u16 op)
 static inline bool jit_force_exact_exec_nostats_pc(uae_u32 pc)
 {
 	const uae_u32 rom_pc = (pc < 0x00020000u) ? (pc | 0x01000000u) : pc;
+	if (jit_allow_ram_dispatch_env() && rom_pc >= 0x0100a000u && rom_pc <= 0x0100a700u)
+		return true;
 	/* Do not native-emit the ROM delay helper when it appears inside a traced
 	   caller block during RAM-JIT experiments. Its first instruction reads/writes
 	   a stack argument in the 0x0bxxxxxx area. */

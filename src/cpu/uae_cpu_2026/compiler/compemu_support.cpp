@@ -107,6 +107,8 @@ extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitLivePutLong(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitFastClearLongs(uae_u32 addr, uae_u32 count);
 extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count);
+extern "C" uae_u8 Uae2026JitRtcReadByte(uae_u32 addr);
+extern "C" void Uae2026JitRtcWriteByte(uae_u32 addr, uae_u32 val);
 
 static inline void jit_set_guest_pc_fast(uae_u32 pc)
 {
@@ -158,6 +160,61 @@ extern "C" bool jit_op_rom_vbr_global_lookup_callsite(uae_u32 pc, uae_u32 retpc)
 	(void)pc;
 	regs.regs[8] = regs.vbr;
 	regs.regs[0] = get_long(regs.vbr + 4);
+	jit_set_guest_pc_fast(retpc ? retpc : (pc + 6));
+	return true;
+}
+
+static inline bool jit_emulate_rom_rtc_write_byte(uae_u32 pc)
+{
+	if (pc != 0x010076c6)
+		return false;
+	const uae_u32 sp = regs.regs[15];
+	Uae2026JitRtcWriteByte(Uae2026JitLiveGetLong(sp + 4) & 0xffu, Uae2026JitLiveGetLong(sp + 8) & 0xffu);
+	return jit_fast_return_from_subroutine();
+}
+
+extern "C" bool jit_op_rom_rtc_write_byte_callsite(uae_u32 pc, uae_u32 retpc)
+{
+	if (!jit_allow_ram_dispatch_env())
+		return false;
+	const uae_u32 sp = regs.regs[15];
+	Uae2026JitRtcWriteByte(Uae2026JitLiveGetLong(sp) & 0xffu, Uae2026JitLiveGetLong(sp + 4) & 0xffu);
+	jit_set_guest_pc_fast(retpc ? retpc : (pc + 6));
+	return true;
+}
+
+static inline bool jit_emulate_rom_rtc_read_byte(uae_u32 pc)
+{
+	if (pc != 0x010077aa)
+		return false;
+	/* ROM helper: read one RTC/NVRAM byte by bit-banging SCR2.  In RAM-JIT
+	   mode, native-emitting the long SCR2 toggles is fragile because byte-lane
+	   IO side effects and the RTC serial phase must remain perfectly ordered.
+	   Preserve the visible subroutine result directly: D0 = byte, RTS with the
+	   caller's stack argument still in place. */
+	const uae_u32 arg = Uae2026JitLiveGetLong(regs.regs[15] + 4) & 0xffu;
+	const uae_u32 val = Uae2026JitRtcReadByte(arg);
+	regs.regs[0] = val;
+	regs.regs[1] = val;
+	SET_ZFLG((val & 0xffu) == 0);
+	SET_NFLG((val & 0x80u) != 0);
+	SET_VFLG(0);
+	SET_CFLG(0);
+	return jit_fast_return_from_subroutine();
+}
+
+extern "C" bool jit_op_rom_rtc_read_byte_callsite(uae_u32 pc, uae_u32 retpc)
+{
+	if (!jit_allow_ram_dispatch_env())
+		return false;
+	const uae_u32 arg = Uae2026JitLiveGetLong(regs.regs[15]) & 0xffu;
+	const uae_u32 val = Uae2026JitRtcReadByte(arg);
+	regs.regs[0] = val;
+	regs.regs[1] = val;
+	SET_ZFLG((val & 0xffu) == 0);
+	SET_NFLG((val & 0x80u) != 0);
+	SET_VFLG(0);
+	SET_CFLG(0);
 	jit_set_guest_pc_fast(retpc ? retpc : (pc + 6));
 	return true;
 }
@@ -241,6 +298,8 @@ static inline void jit_maybe_apply_runtime_helpers(void)
 	uae_u32 pc = m68k_getpc();
 	uae_u16 op = get_iword(0);
 	if (jit_emulate_rom_vbr_global_lookup(pc) ||
+		jit_emulate_rom_rtc_write_byte(pc) ||
+		jit_emulate_rom_rtc_read_byte(pc) ||
 		jit_emulate_rom_delay_call(pc) ||
 		jit_emulate_rom_delay_dbf(pc, op) ||
 		jit_emulate_rom_cache_restore(pc, op) ||

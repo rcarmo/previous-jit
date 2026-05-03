@@ -190,6 +190,25 @@ struct {
     Uint8 intctrl;      /* 0x32 (r), 0xB2 (w) */
 } rtc;
 
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+Uint8 Uae2026JitRtcReadByte(Uint32 addr)
+{
+    const Uint8 rtc_addr_local = addr & RTC_ADDR_MASK;
+    if (rtc_addr_local & RTC_ADDR_CLOCK)
+        return rtc_get_clock(rtc_addr_local);
+    return rtc.ram[rtc_addr_local & 0x1f];
+}
+
+void Uae2026JitRtcWriteByte(Uint32 addr, Uint32 val)
+{
+    const Uint8 rtc_addr_local = (addr & RTC_ADDR_MASK) | RTC_ADDR_WRITE;
+    if (rtc_addr_local & RTC_ADDR_CLOCK)
+        rtc_put_clock(rtc_addr_local, (Uint8)val);
+    else
+        rtc.ram[rtc_addr_local & 0x1f] = (Uint8)val;
+}
+#endif
+
 
 int oldrtc_interface_io(Uint8 rtdatabit) {
     

@@ -996,6 +996,8 @@ extern "C" void jit_trace_add(uae_u32 pc, uae_u32 opcode);
 extern "C" void jit_trace_pc_hit(uae_u32 pc, uae_u32 tagged_opcode);
 extern "C" bool jit_op_rom_delay_bsr_callsite(uae_u32 pc, uae_u32 retpc);
 extern "C" bool jit_op_rom_vbr_global_lookup_callsite(uae_u32 pc, uae_u32 retpc);
+extern "C" bool jit_op_rom_rtc_read_byte_callsite(uae_u32 pc, uae_u32 retpc);
+extern "C" bool jit_op_rom_rtc_write_byte_callsite(uae_u32 pc, uae_u32 retpc);
 static void op_movea_l_postinc_an_comp_ff(uae_u32 opcode);
 static void op_aline_trap_comp_ff(uae_u32 opcode);
 static void op_emulop_comp_ff(uae_u32 opcode);
@@ -5907,6 +5909,10 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         helper = (uintptr)jit_op_rom_delay_bsr_callsite;
                     else if (op_m68k_pc == 0x0100139au && target_pc == 0x010003c2u)
                         helper = (uintptr)jit_op_rom_vbr_global_lookup_callsite;
+                    else if (target_pc == 0x010077aau)
+                        helper = (uintptr)jit_op_rom_rtc_read_byte_callsite;
+                    else if (target_pc == 0x010076c6u)
+                        helper = (uintptr)jit_op_rom_rtc_write_byte_callsite;
                     if (helper) {
                         if (was_comp) {
                             flush(1);

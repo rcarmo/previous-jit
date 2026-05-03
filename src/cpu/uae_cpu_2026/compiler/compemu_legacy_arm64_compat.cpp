@@ -98,6 +98,18 @@ static inline bool legacy_rom_vbr_lookup_bsr_callsite(uae_u32 pc, uae_u16 opcode
 	return legacy_bsr_l_target(pc, opcode, 0x010003c2u, retpc);
 }
 
+static inline bool legacy_rom_rtc_read_bsr_callsite(uae_u32 pc, uae_u16 opcode, uae_u32 *retpc)
+{
+	(void)pc;
+	return legacy_bsr_l_target(pc, opcode, 0x010077aau, retpc);
+}
+
+static inline bool legacy_rom_rtc_write_bsr_callsite(uae_u32 pc, uae_u16 opcode, uae_u32 *retpc)
+{
+	(void)pc;
+	return legacy_bsr_l_target(pc, opcode, 0x010076c6u, retpc);
+}
+
 void start_needflags(void) { needflags = 1; }
 void end_needflags(void) { needflags = 0; }
 
@@ -868,7 +880,11 @@ void exec_nostats(void)
 			if ((legacy_rom_delay_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
 				 jit_op_rom_delay_bsr_callsite(before_pc, retpc)) ||
 				(legacy_rom_vbr_lookup_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
-				 jit_op_rom_vbr_global_lookup_callsite(before_pc, retpc))) {
+				 jit_op_rom_vbr_global_lookup_callsite(before_pc, retpc)) ||
+				(legacy_rom_rtc_write_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
+				 jit_op_rom_rtc_write_byte_callsite(before_pc, retpc)) ||
+				(legacy_rom_rtc_read_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
+				 jit_op_rom_rtc_read_byte_callsite(before_pc, retpc))) {
 				cpu_check_ticks();
 				if (SPCFLAGS_TEST(SPCFLAG_ALL))
 					return;
@@ -1114,7 +1130,11 @@ void execute_normal(void)
 			bool helper_callsite = (legacy_rom_delay_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
 				jit_op_rom_delay_bsr_callsite(pc_before_op, delay_retpc)) ||
 				(legacy_rom_vbr_lookup_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
-				jit_op_rom_vbr_global_lookup_callsite(pc_before_op, delay_retpc));
+				jit_op_rom_vbr_global_lookup_callsite(pc_before_op, delay_retpc)) ||
+				(legacy_rom_rtc_write_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
+				jit_op_rom_rtc_write_byte_callsite(pc_before_op, delay_retpc)) ||
+				(legacy_rom_rtc_read_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
+				jit_op_rom_rtc_read_byte_callsite(pc_before_op, delay_retpc));
 			if (!helper_callsite)
 				(*cpufunctbl[opcode])(opcode);
 			cpu_check_ticks();

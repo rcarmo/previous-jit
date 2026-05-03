@@ -109,6 +109,63 @@ uint16  emulated_ticks               = 0;
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 extern uintptr_t jit_MEMBaseDiff;
 
+extern "C" {
+    uae_u32 Uae2026JitPhysGetByte(uae_u32 addr);
+    uae_u32 Uae2026JitPhysGetWord(uae_u32 addr);
+    uae_u32 Uae2026JitPhysGetLong(uae_u32 addr);
+    void Uae2026JitPhysPutByte(uae_u32 addr, uae_u32 value);
+    void Uae2026JitPhysPutWord(uae_u32 addr, uae_u32 value);
+    void Uae2026JitPhysPutLong(uae_u32 addr, uae_u32 value);
+}
+
+static inline bool Uae2026JitVideoAliasRange(uae_u32 addr, uae_u32 bytes, uae_u32 *offset_out, int *mwf_out)
+{
+    const uae_u32 end = addr + bytes;
+    if (end < addr)
+        return false;
+    for (uae_u32 base = 0x0b000000u; base <= 0x0f000000u; base += 0x01000000u) {
+        if (addr >= base && end <= base + 0x00040000u) {
+            if (offset_out)
+                *offset_out = addr - base;
+            if (mwf_out)
+                *mwf_out = (base == 0x0b000000u) ? -1 : (int)((base >> 24) & 3u);
+            return true;
+        }
+    }
+    return false;
+}
+
+static inline uae_u32 Uae2026JitMwfApply(uae_u32 oldv, uae_u32 newv, int function, int size)
+{
+    static const uae_u8 mwf[4][4][4] = {
+        { {0,0,0,0}, {0,0,1,1}, {0,1,1,2}, {0,1,2,3} },
+        { {0,1,2,3}, {1,2,3,3}, {2,3,3,3}, {3,3,3,3} },
+        { {0,0,0,0}, {1,1,0,0}, {2,1,1,0}, {3,2,1,0} },
+        { {0,1,2,3}, {1,2,2,3}, {2,2,3,3}, {3,3,3,3} }
+    };
+    if (function < 0)
+        return newv;
+    uae_u32 v = 0;
+    for (int i = 0; i < size * 4; i++) {
+        const int a = (oldv >> (i * 2)) & 3;
+        const int b = (newv >> (i * 2)) & 3;
+        v |= (uae_u32)mwf[function & 3][a][b] << (i * 2);
+    }
+    return v;
+}
+
+static inline void Uae2026JitSyncVideoToShadow(void)
+{
+    extern uae_u8 NEXTVideo[];
+    if (!jit_MEMBaseDiff)
+        return;
+    memcpy((void *)(jit_MEMBaseDiff + 0x0b000000u), NEXTVideo, 0x40000u);
+    memcpy((void *)(jit_MEMBaseDiff + 0x0c000000u), NEXTVideo, 0x40000u);
+    memcpy((void *)(jit_MEMBaseDiff + 0x0d000000u), NEXTVideo, 0x40000u);
+    memcpy((void *)(jit_MEMBaseDiff + 0x0e000000u), NEXTVideo, 0x40000u);
+    memcpy((void *)(jit_MEMBaseDiff + 0x0f000000u), NEXTVideo, 0x40000u);
+}
+
 extern "C" void Uae2026JitSyncVideoFromShadow(void)
 {
     extern uae_u8 NEXTVideo[];
@@ -124,8 +181,10 @@ extern "C" void Uae2026JitSyncVideoFromShadow(void)
      * Do not mirror full VRAM from shadow: special-memory writes update
      * NEXTVideo directly and shadow can otherwise clobber valid host state. */
     if (do_get_mem_long((uae_u32 *)(NEXTVideo + off + 8)) == 0 &&
-        do_get_mem_long((uae_u32 *)(uintptr_t)(shadow + 8)) != 0)
+        do_get_mem_long((uae_u32 *)(uintptr_t)(shadow + 8)) != 0) {
         memcpy(NEXTVideo + off, shadow, 0x400);
+        Uae2026JitSyncVideoToShadow();
+    }
 }
 
 static inline bool Uae2026JitRamRange(uae_u32 addr, uae_u32 bytes, uae_u32 *offset_out)
@@ -156,12 +215,69 @@ extern "C" void Uae2026JitSyncRamToShadow(void)
     Uae2026JitSyncRamRangeToShadow(0x04000000u, 64u * 1024u * 1024u);
 }
 
+extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr)
+{
+    return Uae2026JitPhysGetByte(addr);
+}
+
+extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr)
+{
+    return Uae2026JitPhysGetWord(addr);
+}
+
+extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr)
+{
+    return Uae2026JitPhysGetLong(addr);
+}
+
+extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value)
+{
+    Uae2026JitPhysPutByte(addr, value);
+    Uae2026JitSyncRamRangeToShadow(addr, 1);
+    uae_u32 off = 0;
+    int mwf = -1;
+    if (Uae2026JitVideoAliasRange(addr, 1, &off, &mwf))
+        Uae2026JitSyncVideoToShadow();
+}
+
+extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value)
+{
+    Uae2026JitPhysPutWord(addr, value);
+    Uae2026JitSyncRamRangeToShadow(addr, 2);
+    uae_u32 off = 0;
+    int mwf = -1;
+    if (Uae2026JitVideoAliasRange(addr, 2, &off, &mwf))
+        Uae2026JitSyncVideoToShadow();
+}
+
+extern "C" void Uae2026JitLivePutLong(uae_u32 addr, uae_u32 value)
+{
+    Uae2026JitPhysPutLong(addr, value);
+    Uae2026JitSyncRamRangeToShadow(addr, 4);
+    uae_u32 off = 0;
+    int mwf = -1;
+    if (Uae2026JitVideoAliasRange(addr, 4, &off, &mwf))
+        Uae2026JitSyncVideoToShadow();
+}
+
 extern "C" void Uae2026JitFillBytes(uae_u32 addr, uae_u32 bytes, uae_u8 value)
 {
     extern uae_u8 NEXTRam[];
     uae_u32 off = 0;
-    if (!Uae2026JitRamRange(addr, bytes, &off))
+    if (!Uae2026JitRamRange(addr, bytes, &off)) {
+        extern uae_u8 NEXTVideo[];
+        int mwf = -1;
+        if (Uae2026JitVideoAliasRange(addr, bytes, &off, &mwf)) {
+            if (mwf < 0) {
+                memset(NEXTVideo + off, value, bytes);
+            } else {
+                for (uae_u32 i = 0; i < bytes; i++)
+                    NEXTVideo[off + i] = (uae_u8)Uae2026JitMwfApply(NEXTVideo[off + i], value, mwf, 1);
+            }
+            Uae2026JitSyncVideoToShadow();
+        }
         return;
+    }
     memset(NEXTRam + off, value, bytes);
     if (jit_MEMBaseDiff)
         memset((void *)(jit_MEMBaseDiff + addr), value, bytes);
@@ -174,8 +290,23 @@ extern "C" void Uae2026JitFillLongs(uae_u32 addr, uae_u32 count, uae_u32 value)
         return;
     const uae_u32 bytes = count * 4u;
     uae_u32 off = 0;
-    if (!Uae2026JitRamRange(addr, bytes, &off))
+    if (!Uae2026JitRamRange(addr, bytes, &off)) {
+        extern uae_u8 NEXTVideo[];
+        int mwf = -1;
+        if (Uae2026JitVideoAliasRange(addr, bytes, &off, &mwf)) {
+            for (uae_u32 i = 0; i < count; i++) {
+                const uae_u32 p = off + i * 4u;
+                const uae_u32 oldv = do_get_mem_long((uae_u32 *)(NEXTVideo + p));
+                const uae_u32 out = Uae2026JitMwfApply(oldv, value, mwf, 4);
+                NEXTVideo[p + 0] = (uae_u8)(out >> 24);
+                NEXTVideo[p + 1] = (uae_u8)(out >> 16);
+                NEXTVideo[p + 2] = (uae_u8)(out >> 8);
+                NEXTVideo[p + 3] = (uae_u8)out;
+            }
+            Uae2026JitSyncVideoToShadow();
+        }
         return;
+    }
 
     uae_u8 *ram = NEXTRam + off;
     uae_u8 *shadow = jit_MEMBaseDiff ? (uae_u8 *)(jit_MEMBaseDiff + addr) : nullptr;

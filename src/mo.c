@@ -28,9 +28,17 @@
 #include "file.h"
 #include "rs.h"
 #include "statusbar.h"
+#include "memory.h"
 
 #if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
 extern void Uae2026JitBridgeRequestBlockExit(unsigned int source);
+
+uae_u32 Uae2026JitPhysGetByte(uae_u32 addr) { return byteget(addr); }
+uae_u32 Uae2026JitPhysGetWord(uae_u32 addr) { return wordget(addr); }
+uae_u32 Uae2026JitPhysGetLong(uae_u32 addr) { return longget(addr); }
+void Uae2026JitPhysPutByte(uae_u32 addr, uae_u32 value) { byteput(addr, value); }
+void Uae2026JitPhysPutWord(uae_u32 addr, uae_u32 value) { wordput(addr, value); }
+void Uae2026JitPhysPutLong(uae_u32 addr, uae_u32 value) { longput(addr, value); }
 #endif
 
 static inline void mo_jit_device_barrier(Uint32 addr)

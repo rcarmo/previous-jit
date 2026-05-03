@@ -99,6 +99,12 @@ extern void jit_one_tick(void);
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 extern "C" void Uae2026JitSyncRamToShadow(void);
 extern "C" void Uae2026JitSyncVideoFromShadow(void);
+extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr);
+extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
+extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr);
+extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value);
+extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value);
+extern "C" void Uae2026JitLivePutLong(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitFastClearLongs(uae_u32 addr, uae_u32 count);
 extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count);
 
@@ -174,7 +180,7 @@ static inline bool jit_emulate_rom_delay_call(uae_u32 pc)
 
 static inline bool jit_emulate_rom_delay_body(uae_u32 pc)
 {
-	if (pc < 0x010024d2 || pc > 0x010024f8)
+	if (pc < 0x010024d2 || pc > 0x010024ee)
 		return false;
 	/* If the first SUBQ ran via an interpreter fallback inside a compiled
 	   caller block, dispatch can resume at the delay body.  Charge based on the
@@ -236,9 +242,9 @@ static inline void jit_maybe_apply_runtime_helpers(void)
 	uae_u16 op = get_iword(0);
 	if (jit_emulate_rom_vbr_global_lookup(pc) ||
 		jit_emulate_rom_delay_call(pc) ||
-		jit_emulate_rom_delay_body(pc) ||
 		jit_emulate_rom_delay_dbf(pc, op) ||
 		jit_emulate_rom_cache_restore(pc, op) ||
+		jit_emulate_rom_delay_body(pc) ||
 		jit_emulate_bulk_clear_loop(pc, op))
 		return;
 }

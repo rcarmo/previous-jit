@@ -225,6 +225,7 @@ Latest translated-execution debug checkpoint (2026-05-01):
 - the legacy Hatari Python UI is now build-gated behind `ENABLE_HATARI_PYTHON_UI=OFF` by default; it is not part of the JIT/headless path
 - RAM-mode memory codegen no longer relies on bridge-level `B2_JIT_ALL_SPECIAL_MEM`; it routes RAM-mode writable/unclassified data accesses through the live addrbank helpers while allowing direct reads only from immutable ROM shadows
 - follow-up RAM-mode fixes added native callsite helpers for the two ROM delay calls that were corrupting return addresses (`0100969c`, `0100ce26`), a native helper for the ROM VBR global lookup at `0100139a -> 010003c2`, and a MO interrupt-status block-exit barrier; RAM mode now gets past the NBIC/MO reset crash path and reaches the graphical boot window, but the display is still corrupted and no true RAM dispatch is recorded yet
+- the next RAM-mode blocker has been narrowed to the ROM main-memory configuration read/check path: after live helper memory routing for non-ROM bitfield helpers and VRAM/MWF bulk fills, RAM mode no longer spirals through low bad PCs but reports `Main Memory Configuration Test Failed` and loops through ROM printf/exception text around `010068ac`; focus next on SCR2 bit-banged access at `0200d000` from `010077c6..01007876`
 
 ### Run the vendored compiler object probe
 

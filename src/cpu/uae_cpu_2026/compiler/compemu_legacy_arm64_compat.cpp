@@ -2032,6 +2032,24 @@ static inline uae_u32 jit_bf_rotr32(uae_u32 v, int shift)
     return shift ? ((v >> shift) | (v << (32 - shift))) : v;
 }
 
+static inline bool jit_helper_live_memory(uae_u32 addr)
+{
+    if (!jit_allow_ram_dispatch_env())
+        return false;
+    const uae_u32 end = addr + 8u;
+    if (end >= addr && ((addr < 0x00020000u && end <= 0x00020000u) ||
+        (addr >= 0x01000000u && end <= 0x01020000u)))
+        return false;
+    return true;
+}
+
+static inline uae_u32 jit_mem_bget(uae_u32 addr) { return jit_helper_live_memory(addr) ? Uae2026JitLiveGetByte(addr) : get_byte(addr); }
+static inline uae_u32 jit_mem_wget(uae_u32 addr) { return jit_helper_live_memory(addr) ? Uae2026JitLiveGetWord(addr) : get_word(addr); }
+static inline uae_u32 jit_mem_lget(uae_u32 addr) { return jit_helper_live_memory(addr) ? Uae2026JitLiveGetLong(addr) : get_long(addr); }
+static inline void jit_mem_bput(uae_u32 addr, uae_u32 val) { if (jit_helper_live_memory(addr)) Uae2026JitLivePutByte(addr, val); else put_byte(addr, val); }
+static inline void jit_mem_wput(uae_u32 addr, uae_u32 val) { if (jit_helper_live_memory(addr)) Uae2026JitLivePutWord(addr, val); else put_word(addr, val); }
+static inline void jit_mem_lput(uae_u32 addr, uae_u32 val) { if (jit_helper_live_memory(addr)) Uae2026JitLivePutLong(addr, val); else put_long(addr, val); }
+
 static uae_u32 jit_bf_get_mem(uae_u32 src, uae_u32 bdata[2], uae_s32 offset, int width)
 {
     uae_u32 tmp, res, mask;
@@ -2040,33 +2058,33 @@ static uae_u32 jit_bf_get_mem(uae_u32 src, uae_u32 bdata[2], uae_s32 offset, int
     mask = 0xffffffffu << (32 - width);
     switch ((offset + width + 7) >> 3) {
     case 1:
-        tmp = get_byte(src);
+        tmp = jit_mem_bget(src);
         res = tmp << (24 + offset);
         bdata[0] = tmp & ~(mask >> (24 + offset));
         break;
     case 2:
-        tmp = get_word(src);
+        tmp = jit_mem_wget(src);
         res = tmp << (16 + offset);
         bdata[0] = tmp & ~(mask >> (16 + offset));
         break;
     case 3:
-        tmp = get_word(src);
+        tmp = jit_mem_wget(src);
         res = tmp << (16 + offset);
         bdata[0] = tmp & ~(mask >> (16 + offset));
-        tmp = get_byte(src + 2);
+        tmp = jit_mem_bget(src + 2);
         res |= tmp << (8 + offset);
         bdata[1] = tmp & ~(mask >> (8 + offset));
         break;
     case 4:
-        tmp = get_long(src);
+        tmp = jit_mem_lget(src);
         res = tmp << offset;
         bdata[0] = tmp & ~(mask >> offset);
         break;
     case 5:
-        tmp = get_long(src);
+        tmp = jit_mem_lget(src);
         res = tmp << offset;
         bdata[0] = tmp & ~(mask >> offset);
-        tmp = get_byte(src + 4);
+        tmp = jit_mem_bget(src + 4);
         res |= tmp >> (8 - offset);
         bdata[1] = tmp & ~(mask << (8 - offset));
         break;
@@ -2082,21 +2100,21 @@ static void jit_bf_put_mem(uae_u32 dst, uae_u32 bdata[2], uae_u32 val, uae_s32 o
     offset = (offset & 7) + width;
     switch ((offset + 7) >> 3) {
     case 1:
-        put_byte(dst, bdata[0] | (val << (8 - offset)));
+        jit_mem_bput(dst, bdata[0] | (val << (8 - offset)));
         break;
     case 2:
-        put_word(dst, bdata[0] | (val << (16 - offset)));
+        jit_mem_wput(dst, bdata[0] | (val << (16 - offset)));
         break;
     case 3:
-        put_word(dst, bdata[0] | (val >> (offset - 16)));
-        put_byte(dst + 2, bdata[1] | (val << (24 - offset)));
+        jit_mem_wput(dst, bdata[0] | (val >> (offset - 16)));
+        jit_mem_bput(dst + 2, bdata[1] | (val << (24 - offset)));
         break;
     case 4:
-        put_long(dst, bdata[0] | (val << (32 - offset)));
+        jit_mem_lput(dst, bdata[0] | (val << (32 - offset)));
         break;
     case 5:
-        put_long(dst, bdata[0] | (val >> (offset - 32)));
-        put_byte(dst + 4, bdata[1] | (val << (40 - offset)));
+        jit_mem_lput(dst, bdata[0] | (val >> (offset - 32)));
+        jit_mem_bput(dst + 4, bdata[1] | (val << (40 - offset)));
         break;
     }
 }
@@ -2270,7 +2288,7 @@ extern "C" void jit_op_bfins(void)
         int bytes_needed = (total_bits + 7) >> 3;
         uae_u32 val = 0;
         for (int i = 0; i < bytes_needed && i < 5; i++) {
-            val = (val << 8) | get_byte(addr + i);
+            val = (val << 8) | jit_mem_bget(addr + i);
         }
         
         uae_u32 mask = (width == 32) ? 0xFFFFFFFF : ((1u << width) - 1);
@@ -2279,7 +2297,7 @@ extern "C" void jit_op_bfins(void)
         val |= ((ins_data & mask) << shift);
         
         for (int i = 0; i < bytes_needed && i < 5; i++) {
-            put_byte(addr + i, (val >> ((bytes_needed - 1 - i) * 8)) & 0xFF);
+            jit_mem_bput(addr + i, (val >> ((bytes_needed - 1 - i) * 8)) & 0xFF);
         }
         
         uae_u32 field = (ins_data & mask);

@@ -62,7 +62,7 @@ Observed metrics:
 
 Recent artifact example:
 
-- `/workspace/tmp/previous-opcode-harness-20260512-154820`
+- `/workspace/tmp/previous-opcode-harness-20260512-191256`
 
 Interpretation:
 

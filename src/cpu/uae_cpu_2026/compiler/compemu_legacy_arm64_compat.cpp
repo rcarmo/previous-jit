@@ -9,8 +9,10 @@ extern "C" uaecptr mmu040_movem_ea;
 struct previous_mmufixup_entry { int reg; uae_u32 value; };
 extern "C" previous_mmufixup_entry mmufixup[2];
 extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
-extern "C" uae_u32 Uae2026JitLastInstructionPc = 0;
-extern "C" struct flag_struct Uae2026JitLastFlags = { 0, 0 };
+extern "C" {
+uae_u32 Uae2026JitLastInstructionPc = 0;
+struct flag_struct Uae2026JitLastFlags = { 0, 0 };
+}
 
 static inline bool legacy_needflags_enabled(void)
 {

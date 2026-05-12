@@ -38,7 +38,7 @@
 #define ARM_CV_FLAGS      (ARM_C_FLAG|ARM_V_FLAG)
 
 
-#define _W(c) emit_long(c)
+#define _W(c) emit_long((uae_u32)(c))
 
 
 #define MIN_EL0           0b011

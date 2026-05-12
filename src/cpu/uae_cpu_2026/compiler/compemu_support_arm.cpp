@@ -2883,6 +2883,8 @@ static inline void log_dump(void)
 
 static inline void set_status(int r, int status)
 {
+    if ((unsigned)r >= VREGS)
+        jit_abort("set_status invalid vreg %d", r);
     if (status == ISCONST)
         log_clobberreg(r);
     live.state[r].status = status;

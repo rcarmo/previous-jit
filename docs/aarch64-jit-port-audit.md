@@ -148,6 +148,7 @@ Why:
    - JIT assumptions about addressability and translated memory vs Previous's NeXT bus/memory model
    - RAM dispatch needs code-space MMU translation both for branch targets and for dispatch PC materialization
    - data effective-address translation must remain data-space: the private RAM/MMU bank `xlateaddr` uses `Uae2026JitMmuXlateData()`, while branch/return/dispatch PC paths use the dedicated code-space host helper
+   - vendored compiler globals must remain namespaced away from Previous-native globals when layouts differ (`uae2026_currprefs`/`uae2026_changed_prefs` vs native `currprefs`/`changed_prefs`)
 
 4. **Generated table compatibility**
    - BasiliskII's JIT generator output and Previous's active CPU tables need reconciliation

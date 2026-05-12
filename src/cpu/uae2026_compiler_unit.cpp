@@ -10,15 +10,18 @@
  *
  * To make the JIT fields (mem_banks, cache_tags, scratchregs, jit_fpregs…)
  * visible at the correct offsets, we add those fields to Previous's
- * newcpu.h struct at the right position.  The regflags and MEMBaseDiff
- * symbols are renamed so they don't conflict with Previous's versions.
+ * newcpu.h struct at the right position.  The regflags, MEMBaseDiff, and
+ * vendored compiler prefs symbols are renamed so they don't conflict with
+ * Previous's native versions.
  */
 
 #if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
 
-/* Rename regflags and MEMBaseDiff to avoid collision with Previous's globals. */
-#define regflags    jit_regflags
-#define MEMBaseDiff jit_MEMBaseDiff
+/* Rename vendored globals to avoid collisions with Previous-native globals. */
+#define regflags      jit_regflags
+#define MEMBaseDiff   jit_MEMBaseDiff
+#define currprefs     uae2026_currprefs
+#define changed_prefs uae2026_changed_prefs
 
 /* ------------------------------------------------------------------ *
  * Shared compatibility preamble                                        *

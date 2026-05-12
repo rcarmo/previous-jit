@@ -33,8 +33,9 @@ prelude, without linking it into `Previous` yet.
 - syntax probe: **passing**
 - object compile probe: **passing**
 - emulator/runtime integration of vendored compiler entry points: **wired under `ENABLE_EXPERIMENTAL_UAE2026_JIT`**
-- default/ROM translated execution reaches the NEXTSTEP desktop and passed a 60s stability smoke in the latest audit check (`/workspace/tmp/previous-jit-bridge-smoke-audit-20260512-180833`)
-- RAM/MMU dispatch mode is still experimental and remains blocked in nested 68040 MMU exception / RTE page-fault state; latest audit RAM smoke reached true RAM dispatch but ended before desktop at the kernel panic prompt (`/workspace/tmp/previous-jit-bridge-smoke-ram-audit-20260512-181409`)
+- default/ROM translated execution reaches the NEXTSTEP desktop and passed a 60s stability smoke in the latest audit check (`/workspace/tmp/previous-jit-bridge-smoke-audit-clean-20260512-191843`)
+- RAM/MMU dispatch mode is still experimental and remains blocked in nested 68040 MMU exception / RTE page-fault state; latest audit RAM smoke reached true RAM dispatch but ended before desktop (`/workspace/tmp/previous-jit-bridge-smoke-ram-audit-clean-20260512-192418`)
+- latest build-hygiene audit removes the prior compiler/linker warning set by renaming vendored compiler prefs away from Previous-native `currprefs`/`changed_prefs`, guarding duplicate `USE_JIT`, casting AArch64 instruction-word emissions, and adding a defensive ARM64 vreg status bounds check
 
 ## Remaining blocker classes
 
@@ -125,3 +126,4 @@ Implication:
 3. add a targeted regression for the current RAM-mode blocker: auto-update-EA MMU fault followed by MMU-handler `RTE` back to low user virtual PCs
 4. audit bridge/JIT state materialization before `Exception(2)`, especially PC/SR/USP/ISP and live D/A register spill during RTE-triggered page faults
 5. keep RAM/MMU data effective-address translation (`Uae2026JitMmuXlateData`) separate from code/branch/dispatch-PC translation (`Uae2026JitMmuXlateCodeHost`) when adding native paths
+6. keep vendored compiler globals (`uae2026_currprefs`, `uae2026_changed_prefs`, `jit_regflags`, `jit_MEMBaseDiff`) separate from Previous-native globals with incompatible layouts

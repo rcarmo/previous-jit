@@ -160,6 +160,7 @@ Current RAM-mode lessons for the migration plan:
 - Bridge-delivered MMU restarts should use full `m68k_setpc()` materialization, not `m68k_setpci()`, when the next translated handoff depends on a coherent `regs.pc`/`pc_p`/`pc_oldp` tuple.
 - Code-space MMU translation is required for RAM dispatch PC materialization and branch/return targets. Data-space translation is not sufficient for instruction fetch, but it is still required for ordinary data effective-address `xlateaddr` use.
 - Keep the two paths explicit: `Uae2026JitMmuXlateCodeHost()` is for instruction/branch/return/dispatch host pointers; the private RAM/MMU bank `xlateaddr` remains data-space via `Uae2026JitMmuXlateData()`.
+- Keep vendored compiler globals renamed away from Previous-native globals. In particular, Basilisk/UAE compiler prefs use `uae2026_currprefs`/`uae2026_changed_prefs`; Previous-native `currprefs`/`changed_prefs` have a different struct layout and must not share symbols.
 - The remaining RAM-mode frontier is nested 68040 MMU exception delivery around handler `RTE` back to low user virtual PCs. Keep `fault_pc`/`instruction_pc` distinct from `mmu_fault_addr`; rewriting one into the other produced worse/incorrect exception-frame behavior.
 
 Immediate harness gap: add a minimal RAM/MMU regression that reproduces “auto-update EA fault -> MMU handler -> `RTE` to low user virtual PC” without waiting for a full boot.

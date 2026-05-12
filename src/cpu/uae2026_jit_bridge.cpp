@@ -18,6 +18,7 @@
 #include <cstring>
 #include <cstdint>
 #include <cerrno>
+#include <csetjmp>
 #include <time.h>
 
 #if defined(__linux__) || defined(__APPLE__)
@@ -34,13 +35,28 @@ extern void compemu_reset(void);
 
 /* JIT execute loop (defined in uae2026_linker_stubs.cpp) */
 extern void m68k_do_compile_execute(void);
+extern "C" {
+    extern jmp_buf __exbuf;
+    extern int __exvalue;
+    jmp_buf *__poptry(void);
+    void __pushtry(jmp_buf *j);
+    int __is_catched(void);
+    void prev_Exception_1arg(int nr) __asm__("Exception");
+    void prev_m68k_reset(int hard) __asm__("m68k_reset");
+}
+extern bool mmu_restart;
 
 /* UseJIT flag (defined in uae2026_linker_stubs.cpp) */
 extern bool UseJIT;
 
 /* MEMBaseDiff -- host base offset for the JIT's direct-addressing  */
 extern uintptr_t jit_MEMBaseDiff;
+extern "C" uintptr_t Uae2026JitRamMmuBankTable(void);
 extern "C" void Uae2026JitSyncRamToShadow(void);
+extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
+extern "C" uae_u32 Uae2026JitLastInstructionPc;
+extern "C" uae_u32 Uae2026JitLastExceptionSp;
+extern "C" struct flag_struct Uae2026JitLastFlags;
 
 /* regflags — CPU flag struct (Previous layout: cznv field). */
 extern struct flag_struct regflags;
@@ -63,6 +79,40 @@ static uae_u8 *jit_shadow_base = nullptr;
 static size_t jit_shadow_size = 0;
 static void *bootstrap_cache = nullptr;
 static size_t bootstrap_cache_bytes = 0;
+
+static uae_u32 bridge_live_canonical_addr(uae_u32 addr)
+{
+    if (addr >= 0x10000000u && addr < 0x20000000u)
+        return 0x04000000u | (addr & 0x03ffffffu);
+    if (addr >= 0x0c000000u && addr < 0x10000000u)
+        return 0x0b000000u | (addr & 0x0003ffffu);
+    return addr;
+}
+
+static bool bridge_live_readable(uae_u32 addr, uae_u32 bytes)
+{
+    if (bytes == 0)
+        return false;
+    addr = bridge_live_canonical_addr(addr);
+    const uae_u32 end = addr + bytes;
+    if (end < addr)
+        return false;
+    return (addr >= 0x01000000u && end <= 0x01020000u) ||
+           (addr >= 0x04000000u && end <= 0x08000000u) ||
+           (addr >= 0x0b000000u && end <= 0x0b040000u) ||
+           (addr < 0x00040000u && end <= 0x00040000u);
+}
+
+static uae_u32 bridge_live_peek_word(uae_u32 addr)
+{
+    addr = bridge_live_canonical_addr(addr);
+    return bridge_live_readable(addr, 2) ? Uae2026JitLiveGetWord(addr) : 0;
+}
+
+static uae_u32 bridge_live_peek_long(uae_u32 addr)
+{
+    return bridge_live_readable(addr, 4) ? bridge_live_peek_word(addr) << 16 | bridge_live_peek_word(addr + 2) : 0;
+}
 
 static void sync_shadow_video(void)
 {
@@ -129,6 +179,85 @@ static int env_int(const char *name, int fallback)
     if (!value || !*value)
         return fallback;
     return atoi(value);
+}
+
+static int bridge_move_size_increment(uae_u16 opcode, int areg)
+{
+    const uae_u16 family = opcode & 0x3000u;
+    if (family == 0x1000u)
+        return areg_byteinc[areg & 7];
+    if (family == 0x2000u)
+        return 4;
+    if (family == 0x3000u)
+        return 2;
+    return 0;
+}
+
+static void bridge_restore_postinc_if_faulted(int areg, int inc, uae_u32 fault_addr)
+{
+    if (areg < 0 || areg > 7 || inc <= 0)
+        return;
+    uae_u32 &value = m68k_areg(regs, areg);
+    if (value == fault_addr + (uae_u32)inc)
+        value = fault_addr;
+}
+
+static void bridge_restore_predec_if_faulted(int areg, int inc, uae_u32 fault_addr)
+{
+    if (areg < 0 || areg > 7 || inc <= 0)
+        return;
+    uae_u32 &value = m68k_areg(regs, areg);
+    if (value == fault_addr)
+        value = fault_addr + (uae_u32)inc;
+}
+
+static void bridge_restore_autoea_fault_side_effects(uae_u32 fault_pc)
+{
+    if (!bridge_live_readable(fault_pc, 2))
+        return;
+    const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(fault_pc);
+    const uae_u32 fault_addr = regs.mmu_fault_addr;
+
+    /* MOVES.<size> <reg>,(An)+ / -(An) and memory->reg variants.  The RAM
+       direct shortcut and native gapfill update An before helper memory access;
+       if that access faults, restore An before the 68040 exception frame is
+       built. */
+    int moves_inc = 0;
+    if ((opcode & 0xfff8u) == 0x0e18u || (opcode & 0xfff8u) == 0x0e20u)
+        moves_inc = areg_byteinc[opcode & 7u];
+    else if ((opcode & 0xfff8u) == 0x0e58u || (opcode & 0xfff8u) == 0x0e60u)
+        moves_inc = 2;
+    else if ((opcode & 0xfff8u) == 0x0e98u || (opcode & 0xfff8u) == 0x0ea0u)
+        moves_inc = 4;
+    if (moves_inc > 0) {
+        const int reg = opcode & 7u;
+        if ((opcode & 0x38u) == 0x18u)
+            bridge_restore_postinc_if_faulted(reg, moves_inc, fault_addr);
+        else if ((opcode & 0x38u) == 0x20u)
+            bridge_restore_predec_if_faulted(reg, moves_inc, fault_addr);
+        return;
+    }
+
+    /* Generic MOVE.<size> with auto-update source/destination modes.  This is
+       intentionally conservative: restore only when the updated register value
+       exactly matches the faulting EA relationship, avoiding false rewinds for
+       source postincrement reads that fault before the increment executes. */
+    if ((opcode & 0xc000u) == 0 && (opcode & 0x3000u) != 0) {
+        const int src_mode = (opcode >> 3) & 7;
+        const int src_reg = opcode & 7;
+        const int dst_mode = (opcode >> 6) & 7;
+        const int dst_reg = (opcode >> 9) & 7;
+        const int src_inc = bridge_move_size_increment(opcode, src_reg);
+        const int dst_inc = bridge_move_size_increment(opcode, dst_reg);
+        if (src_mode == 3)
+            bridge_restore_postinc_if_faulted(src_reg, src_inc, fault_addr);
+        else if (src_mode == 4)
+            bridge_restore_predec_if_faulted(src_reg, src_inc, fault_addr);
+        if (dst_mode == 3)
+            bridge_restore_postinc_if_faulted(dst_reg, dst_inc, fault_addr);
+        else if (dst_mode == 4)
+            bridge_restore_predec_if_faulted(dst_reg, dst_inc, fault_addr);
+    }
 }
 
 static previous_uae2026_prefs snapshot_bridge_prefs()
@@ -297,8 +426,13 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
     Uae2026JitBridgeSyncOpcodeTestShadow();
     sync_shadow_video();
     {
-        extern uae_u8 NEXTRam[];
-        if (jit_MEMBaseDiff) {
+        static int full_ram_sync = -1;
+        if (full_ram_sync < 0) {
+            const char *env = getenv("PREVIOUS_JIT_FULL_RAM_TO_SHADOW");
+            full_ram_sync = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+        }
+        if (full_ram_sync && jit_MEMBaseDiff) {
+            extern uae_u8 NEXTRam[];
             const size_t ram_size = 64UL * 1024 * 1024;
             memcpy((void *)(jit_MEMBaseDiff + 0x04000000), NEXTRam, ram_size);
         }
@@ -309,11 +443,137 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
     regs.pc_p    = nullptr;
     regs.pc_oldp = nullptr;
 
-    m68k_do_compile_execute();
+    bool handled_mmu_exception = false;
+    int prb = setjmp(__exbuf);
+    if (prb == 0) {
+        __exvalue = 0;
+        __pushtry(&__exbuf);
+        m68k_do_compile_execute();
+        __poptry();
+    } else {
+        handled_mmu_exception = true;
+        __exvalue = prb;
+        if (__is_catched())
+            __poptry();
+        if (mmu_restart) {
+            regflags = Uae2026JitLastFlags;
+            const uae_u32 restart_pc = regs.fault_pc ? regs.fault_pc :
+                (Uae2026JitLastInstructionPc ? Uae2026JitLastInstructionPc : regs.instruction_pc);
+            m68k_setpci(restart_pc);
+        }
+        for (unsigned fixup_index = 0; fixup_index < 2; fixup_index++) {
+            if (mmufixup[fixup_index].reg >= 0) {
+                m68k_areg(regs, mmufixup[fixup_index].reg) = mmufixup[fixup_index].value;
+                mmufixup[fixup_index].reg = -1;
+            }
+        }
+        bridge_restore_autoea_fault_side_effects(regs.fault_pc);
+        const bool bridge_rte_fault = bridge_live_peek_word(regs.fault_pc) == 0x4e73u;
+        if (!regs.s && Uae2026JitLastExceptionSp && bridge_rte_fault) {
+            regs.isp = Uae2026JitLastExceptionSp;
+        }
+        {
+            static unsigned long exc_log_count = 0;
+            const uae_u32 pc = m68k_getpc();
+            if (exc_log_count < 256 || pc == 0x0406b94au || pc == 0x040a4b52u || (exc_log_count % 1024) == 0) {
+                const uae_u32 sp = regs.regs[15];
+                const uae_u32 fault_pc = regs.fault_pc;
+                fprintf(stderr,
+                        "UAE2026 bridge: caught MMU exception %d pc=%08x op=%04x ext=%04x fault_pc=%08x fop=%04x fext=%04x addr=%08x sr=%04x sfc=%u dfc=%u vbr=%08x vec2=%08x vec3=%08x sp=%08x "
+                        "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
+                        "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x "
+                        "sp0=%08x sp4=%08x sp8=%08x fr_sr=%04x fr_pc=%08x fr_vec=%04x fr8=%08x fr12=%08x spc=%08x\n",
+                        prb, (unsigned)pc,
+                        bridge_live_readable(pc, 4) ? (unsigned)Uae2026JitLiveGetWord(pc) : 0xffffu,
+                        bridge_live_readable(pc + 2, 2) ? (unsigned)Uae2026JitLiveGetWord(pc + 2) : 0xffffu,
+                        (unsigned)fault_pc,
+                        bridge_live_readable(fault_pc, 2) ? (unsigned)Uae2026JitLiveGetWord(fault_pc) : 0xffffu,
+                        bridge_live_readable(fault_pc + 2, 2) ? (unsigned)Uae2026JitLiveGetWord(fault_pc + 2) : 0xffffu,
+                        (unsigned)regs.mmu_fault_addr,
+                        (unsigned)regs.sr, (unsigned)regs.sfc, (unsigned)regs.dfc,
+                        (unsigned)regs.vbr,
+                        bridge_live_peek_long(regs.vbr + 8),
+                        bridge_live_peek_long(regs.vbr + 12),
+                        (unsigned)sp,
+                        (unsigned)regs.regs[0], (unsigned)regs.regs[1],
+                        (unsigned)regs.regs[2], (unsigned)regs.regs[3],
+                        (unsigned)regs.regs[4], (unsigned)regs.regs[5],
+                        (unsigned)regs.regs[6], (unsigned)regs.regs[7],
+                        (unsigned)regs.regs[8], (unsigned)regs.regs[9],
+                        (unsigned)regs.regs[10], (unsigned)regs.regs[11],
+                        (unsigned)regs.regs[12], (unsigned)regs.regs[13],
+                        (unsigned)regs.regs[14], (unsigned)regs.regs[15],
+                        bridge_live_peek_long(sp), bridge_live_peek_long(sp + 4),
+                        bridge_live_peek_long(sp + 8),
+                        bridge_live_peek_word(sp), bridge_live_peek_long(sp + 2),
+                        bridge_live_peek_word(sp + 6), bridge_live_peek_long(sp + 8),
+                        bridge_live_peek_long(sp + 12), (unsigned)regs.spcflags);
+            }
+            exc_log_count++;
+        }
+        int prb2 = setjmp(__exbuf);
+        if (prb2 == 0) {
+            __exvalue = 0;
+            __pushtry(&__exbuf);
+            prev_Exception_1arg(prb);
+            __poptry();
+            if (regs.s) {
+                Uae2026JitLastExceptionSp = m68k_areg(regs, 7);
+                if (regs.m)
+                    regs.msp = m68k_areg(regs, 7);
+                else
+                    regs.isp = m68k_areg(regs, 7);
+            }
+            MakeSR();
+            const uae_u32 handled_pc = m68k_getpc();
+            /* Exception() can leave the correct post-vector PC represented by
+             * the pc/pc_p/pc_oldp triple without committing it to regs.pc.  The
+             * bridge deliberately clears pc_p at the next JIT entry, so make the
+             * vector PC canonical now or the next dispatch can see PC=0. */
+            m68k_setpc(handled_pc);
+            if (prb == 2) {
+                static unsigned long handled_log_count = 0;
+                if (handled_log_count < 64 || (handled_log_count % 1024) == 0) {
+                    fprintf(stderr,
+                            "UAE2026 bridge: handled MMU exception %d newpc=%08x sr=%04x vbr=%08x sp=%08x sp0=%08x sp4=%08x fr_sr=%04x fr_pc=%08x fr_vec=%04x fr8=%08x fr12=%08x spc=%08x\n",
+                            prb, (unsigned)handled_pc, (unsigned)regs.sr,
+                            (unsigned)regs.vbr, (unsigned)regs.regs[15],
+                            bridge_live_peek_long(regs.regs[15]),
+                            bridge_live_peek_long(regs.regs[15] + 4),
+                            bridge_live_peek_word(regs.regs[15]),
+                            bridge_live_peek_long(regs.regs[15] + 2),
+                            bridge_live_peek_word(regs.regs[15] + 6),
+                            bridge_live_peek_long(regs.regs[15] + 8),
+                            bridge_live_peek_long(regs.regs[15] + 12),
+                            (unsigned)regs.spcflags);
+                }
+                handled_log_count++;
+            }
+            if (bridge_rte_fault && env_truthy("B2_JIT_RTE_FAULT_HANDOFF", false)) {
+                fprintf(stderr, "UAE2026 bridge: RTE fault handoff to interpreter pc=%08x sr=%04x isp=%08x\n",
+                        (unsigned)handled_pc, (unsigned)regs.sr, (unsigned)regs.isp);
+                UseJIT = false;
+                jit_active = false;
+            }
+        } else {
+            __exvalue = prb2;
+            if (__is_catched())
+                __poptry();
+            fprintf(stderr, "UAE2026 bridge: fatal double MMU exception %d while handling %d\n", prb2, prb);
+            prev_m68k_reset(1);
+        }
+    }
 
-    /* Sync flag struct back */
-    regflags.cznv = jit_regflags.nzcv;
-    regflags.x    = jit_regflags.x;
+    /* Sync flag struct back.  If the bridge handled an MMU exception,
+     * Exception() and the interpreter-side path have already updated
+     * regflags; do not overwrite them with stale JIT-entry flags. */
+    if (handled_mmu_exception) {
+        jit_regflags.nzcv = regflags.cznv;
+        jit_regflags.x    = regflags.x;
+    } else {
+        regflags.cznv = jit_regflags.nzcv;
+        regflags.x    = jit_regflags.x;
+    }
 
     /* Do not copy shadow RAM back over NEXTRam.  Device/DMA/interpreter
      * state is authoritative in Previous memory; the shadow is only for
@@ -356,9 +616,9 @@ extern "C" void Uae2026JitBridgeInit(void)
 
     /*
      * Full JIT bring-up:
-     *  0. Set currprefs.cachesize — the JIT reads this to allocate the cache.
-     *                        Previous's currprefs doesn't normally have this
-     *                        set (Hatari doesn't use JIT cache size).
+     *  0. Uae2026CompilerPrefsSync() has already populated the vendored
+     *                        JIT prefs (kept separate from Previous's native
+     *                        currprefs because the struct layouts differ).
      *  1. init_table68k()  — build the 68k opcode table (jit_table68k[]).
      *                        BridgeInit() is called BEFORE init_m68k() in
      *                        hatari-glue.c so we must do this ourselves.
@@ -367,13 +627,6 @@ extern "C" void Uae2026JitBridgeInit(void)
      *                        writes the popall stubs (compemu_reset), and
      *                        sets cache_enabled = 1. All-in-one.
      */
-    /* Inject cache size so alloc_cache() doesn't bail with cachesize==0 */
-    const int jit_cache_kb = Uae2026CompilerPrefsCacheSizeKB();
-    if (jit_cache_kb > 0)
-        currprefs.cachesize = jit_cache_kb;
-    else
-        currprefs.cachesize = 8192;  /* 8 MB default */
-    changed_prefs.cachesize = currprefs.cachesize;
 
     extern void init_table68k(void);
     init_table68k();
@@ -387,13 +640,19 @@ extern "C" void Uae2026JitBridgeInit(void)
         fprintf(stderr, "UAE2026 bridge: build_comp failed to enable JIT cache\n");
         UseJIT = false;
         jit_active = false;
-        compiler_initialized = false;
+        if (compiler_initialized) {
+            compiler_exit();
+            compiler_initialized = false;
+        }
         goto bri_init_done;
     }
 
-    /* Point the JIT's bank-dispatch table at Previous's addrbank array.
-     * mem_banks is addrbank*[65536] with SAVE_MEMORY_BANKS.             */
-    regs.mem_banks = (uintptr_t)mem_banks;
+    /* Point the JIT's bank-dispatch table at a layout-compatible table.
+     * In RAM/MMU mode native data helpers must go through the 040 MMU path;
+     * Previous's physical addrbank table bypasses address translation. */
+    regs.mem_banks = env_truthy("PREVIOUS_UAE2026_JIT_RAM", false)
+        ? Uae2026JitRamMmuBankTable()
+        : (uintptr_t)mem_banks;
 
     /*
      * JIT Shadow Memory
@@ -419,7 +678,14 @@ extern "C" void Uae2026JitBridgeInit(void)
     {
         extern uae_u8 NEXTRam[];
         extern uae_u8 NEXTRom[];
+        extern uae_u8 *RAMBaseHost;
+        extern uae_u32 RAMSize;
+        extern uae_u8 *ROMBaseHost;
+        extern uae_u32 ROMSize;
+        extern uae_u32 ROMBaseMac;
+
         const uintptr_t shadow_size = 0x10040000UL; /* covers ROM, RAM, and 0x0b-0x0f VRAM windows */
+        bool shadow_ready = false;
 
         uae_u8 *shadow = (uae_u8 *)mmap(
             NULL, shadow_size,
@@ -427,7 +693,6 @@ extern "C" void Uae2026JitBridgeInit(void)
             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (shadow == MAP_FAILED) {
             fprintf(stderr, "UAE2026 bridge: shadow mmap failed (%s)\n", strerror(errno));
-            /* Fall back — jit_MEMBaseDiff stays 0, JIT will crash on ROM access */
         } else {
             jit_shadow_base = shadow;
             jit_shadow_size = shadow_size;
@@ -442,26 +707,52 @@ extern "C" void Uae2026JitBridgeInit(void)
              * any remaining direct-address reads do not fault. */
             sync_shadow_video();
 
-            jit_MEMBaseDiff = (uintptr_t)shadow;
             /* Make the shadow region executable so popall-derived JIT blocks
-             * that land in the shadow don't fault. */
-            mprotect(shadow, shadow_size, PROT_READ | PROT_WRITE | PROT_EXEC);
+             * that land in the shadow don't fault.  Do not publish
+             * jit_MEMBaseDiff until the mapping is fully usable; otherwise a
+             * later failure path can leave helpers pointing at a half-initialized
+             * shadow. */
+            if (mprotect(shadow, shadow_size, PROT_READ | PROT_WRITE | PROT_EXEC) < 0) {
+                fprintf(stderr, "UAE2026 bridge: mprotect(shadow) failed (%s)\n", strerror(errno));
+            } else {
+                jit_MEMBaseDiff = (uintptr_t)shadow;
+                /* Clear pc_p/pc_oldp so execute_normal() re-derives from regs.pc. *
+                 * Also set the compiler unit's RAM/ROM host windows for guards.   */
+                regs.pc_p = nullptr;
+                regs.pc_oldp = nullptr;
+                RAMBaseHost = shadow + 0x04000000;
+                RAMSize = 64 * 1024 * 1024;
+                ROMBaseHost = shadow + 0x01000000;
+                ROMSize = 0x20000;
+                ROMBaseMac = 0x01000000;
+                shadow_ready = true;
+            }
         }
 
-        /* Clear pc_p/pc_oldp so execute_normal() re-derives from regs.pc.    *
-         * Also set the compiler unit's RAMBaseHost so the sanity guard fires.  */
-        regs.pc_p    = nullptr;
-        regs.pc_oldp = nullptr;
-        extern uae_u8 *RAMBaseHost;
-        RAMBaseHost = shadow + 0x04000000;   /* guard: pcp=0 < shadow+RAM */
-        extern uae_u32 RAMSize;
-        RAMSize = 64 * 1024 * 1024;
-        extern uae_u8 *ROMBaseHost;
-        ROMBaseHost = shadow + 0x01000000;
-        extern uae_u32 ROMSize;
-        ROMSize = 0x20000;
-        extern uae_u32 ROMBaseMac;
-        ROMBaseMac = 0x01000000;
+        if (!shadow_ready) {
+            UseJIT = false;
+            jit_active = false;
+            if (compiler_initialized) {
+                compiler_exit();
+                compiler_initialized = false;
+            }
+            if (jit_shadow_base) {
+#if defined(__linux__) || defined(__APPLE__)
+                munmap(jit_shadow_base, jit_shadow_size);
+#else
+                free(jit_shadow_base);
+#endif
+            }
+            jit_shadow_base = nullptr;
+            jit_shadow_size = 0;
+            jit_MEMBaseDiff = 0;
+            RAMBaseHost = nullptr;
+            RAMSize = 0;
+            ROMBaseHost = nullptr;
+            ROMSize = 0;
+            ROMBaseMac = 0;
+            goto bri_init_done;
+        }
     }
 
     /* Activate JIT dispatch */
@@ -490,6 +781,12 @@ extern "C" void Uae2026JitBridgeSyncOpcodeTestShadow(void)
 
 extern "C" void Uae2026JitBridgeShutdown(void)
 {
+    extern uae_u8 *RAMBaseHost;
+    extern uae_u32 RAMSize;
+    extern uae_u8 *ROMBaseHost;
+    extern uae_u32 ROMSize;
+    extern uae_u32 ROMBaseMac;
+
     if (jit_active) {
         UseJIT = false;
         jit_active = false;
@@ -498,16 +795,30 @@ extern "C" void Uae2026JitBridgeShutdown(void)
         compiler_exit();
         compiler_initialized = false;
     }
-    if (!bootstrap_cache)
-        return;
 
+    if (jit_shadow_base) {
 #if defined(__linux__) || defined(__APPLE__)
-    munmap(bootstrap_cache, bootstrap_cache_bytes);
-#else
-    free(bootstrap_cache);
+        munmap(jit_shadow_base, jit_shadow_size);
 #endif
-    bootstrap_cache = nullptr;
-    bootstrap_cache_bytes = 0;
+        jit_shadow_base = nullptr;
+        jit_shadow_size = 0;
+    }
+    jit_MEMBaseDiff = 0;
+    RAMBaseHost = nullptr;
+    RAMSize = 0;
+    ROMBaseHost = nullptr;
+    ROMSize = 0;
+    ROMBaseMac = 0;
+
+    if (bootstrap_cache) {
+#if defined(__linux__) || defined(__APPLE__)
+        munmap(bootstrap_cache, bootstrap_cache_bytes);
+#else
+        free(bootstrap_cache);
+#endif
+        bootstrap_cache = nullptr;
+        bootstrap_cache_bytes = 0;
+    }
     bootstrap_active = false;
 }
 

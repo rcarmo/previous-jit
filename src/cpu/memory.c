@@ -31,7 +31,6 @@ const char Memory_fileid[] = "Previous memory.c : " __DATE__ " " __TIME__;
 
 #include "newcpu.h"
 
-
 /* Set illegal_mem to 1 for debug output: */
 #define illegal_mem 1
 
@@ -126,6 +125,30 @@ uae_u32 NEXT_ram_bank3_mask;
 
 /* VRAM turbo monochrome and color */
 #define NEXT_VRAM_TURBO_START	0x0C000000
+
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+extern void Uae2026JitSyncRamRangeToShadow(uae_u32 addr, uae_u32 bytes);
+extern void Uae2026JitSyncVideoRangeToShadow(uae_u32 addr, uae_u32 bytes);
+static inline void mem_ram_jit_sync(uaecptr offset, uae_u32 bytes)
+{
+	Uae2026JitSyncRamRangeToShadow(NEXT_RAM_START | (offset & 0x03ffffff), bytes);
+}
+static inline void mem_video_jit_sync(uaecptr offset, uae_u32 bytes)
+{
+	Uae2026JitSyncVideoRangeToShadow(NEXT_VRAM_START | (offset & NEXT_VRAM_MASK), bytes);
+}
+#else
+static inline void mem_ram_jit_sync(uaecptr offset, uae_u32 bytes)
+{
+	(void)offset;
+	(void)bytes;
+}
+static inline void mem_video_jit_sync(uaecptr offset, uae_u32 bytes)
+{
+	(void)offset;
+	(void)bytes;
+}
+#endif
 
 /* IO memory */
 #define NEXT_IO_START			0x02000000
@@ -372,18 +395,21 @@ static void mem_ram_bank0_lput(uaecptr addr, uae_u32 l)
 {
 	addr &= NEXT_ram_bank0_mask;
 	do_put_mem_long(NEXTRam + addr, l);
+	mem_ram_jit_sync(addr, 4);
 }
 
 static void mem_ram_bank0_wput(uaecptr addr, uae_u32 w)
 {
 	addr &= NEXT_ram_bank0_mask;
 	do_put_mem_word(NEXTRam + addr, w);
+	mem_ram_jit_sync(addr, 2);
 }
 
 static void mem_ram_bank0_bput(uaecptr addr, uae_u32 b)
 {
 	addr &= NEXT_ram_bank0_mask;
 	NEXTRam[addr] = b;
+	mem_ram_jit_sync(addr, 1);
 }
 
 
@@ -409,18 +435,21 @@ static void mem_ram_bank1_lput(uaecptr addr, uae_u32 l)
 {
 	addr &= NEXT_ram_bank1_mask;
 	do_put_mem_long(NEXTRam + addr, l);
+	mem_ram_jit_sync(addr, 4);
 }
 
 static void mem_ram_bank1_wput(uaecptr addr, uae_u32 w)
 {
 	addr &= NEXT_ram_bank1_mask;
 	do_put_mem_word(NEXTRam + addr, w);
+	mem_ram_jit_sync(addr, 2);
 }
 
 static void mem_ram_bank1_bput(uaecptr addr, uae_u32 b)
 {
 	addr &= NEXT_ram_bank1_mask;
 	NEXTRam[addr] = b;
+	mem_ram_jit_sync(addr, 1);
 }
 
 
@@ -446,18 +475,21 @@ static void mem_ram_bank2_lput(uaecptr addr, uae_u32 l)
 {
 	addr &= NEXT_ram_bank2_mask;
 	do_put_mem_long(NEXTRam + addr, l);
+	mem_ram_jit_sync(addr, 4);
 }
 
 static void mem_ram_bank2_wput(uaecptr addr, uae_u32 w)
 {
 	addr &= NEXT_ram_bank2_mask;
 	do_put_mem_word(NEXTRam + addr, w);
+	mem_ram_jit_sync(addr, 2);
 }
 
 static void mem_ram_bank2_bput(uaecptr addr, uae_u32 b)
 {
 	addr &= NEXT_ram_bank2_mask;
 	NEXTRam[addr] = b;
+	mem_ram_jit_sync(addr, 1);
 }
 
 
@@ -483,18 +515,21 @@ static void mem_ram_bank3_lput(uaecptr addr, uae_u32 l)
 {
 	addr &= NEXT_ram_bank3_mask;
 	do_put_mem_long(NEXTRam + addr, l);
+	mem_ram_jit_sync(addr, 4);
 }
 
 static void mem_ram_bank3_wput(uaecptr addr, uae_u32 w)
 {
 	addr &= NEXT_ram_bank3_mask;
 	do_put_mem_word(NEXTRam + addr, w);
+	mem_ram_jit_sync(addr, 2);
 }
 
 static void mem_ram_bank3_bput(uaecptr addr, uae_u32 b)
 {
 	addr &= NEXT_ram_bank3_mask;
 	NEXTRam[addr] = b;
+	mem_ram_jit_sync(addr, 1);
 }
 
 /* **** NEXT RAM empty areas **** */
@@ -566,18 +601,21 @@ static void mem_video_lput(uaecptr addr, uae_u32 l)
 {
 	addr &= NEXT_VRAM_MASK;
 	do_put_mem_long(NEXTVideo + addr, l);
+	mem_video_jit_sync(addr, 4);
 }
 
 static void mem_video_wput(uaecptr addr, uae_u32 w)
 {
 	addr &= NEXT_VRAM_MASK;
 	do_put_mem_word(NEXTVideo + addr, w);
+	mem_video_jit_sync(addr, 2);
 }
 
 static void mem_video_bput(uaecptr addr, uae_u32 b)
 {
 	addr &= NEXT_VRAM_MASK;
 	NEXTVideo[addr] = b;
+	mem_video_jit_sync(addr, 1);
 }
 
 

@@ -147,3 +147,17 @@ Every migration step should clear, in order:
 5. finally do `DIV*`/`MULL` via helper-backed native blocks
 
 That order gives the fastest path from “crashes on first JIT entry” to “opcode-family equivalence under harness”.
+
+## 2026-05-12 Previous RAM/MMU checkpoint
+
+The opcode harness is now a reliable green gate for the current curated vector set (`pass=62 fail=0 score=100`), and default/ROM JIT boot reaches the NEXTSTEP desktop with a 60s stability wait. The current blocker has moved out of generic opcode bring-up and into RAM/MMU exception semantics.
+
+Current RAM-mode lessons for the migration plan:
+
+- Auto-update EA opcodes (`Aipi`/`Apdi`) are high-risk under 68040 MMU restart because native paths can update address registers before a helper longjmps out for a page fault. RAM dispatch therefore routes those forms through exact fallback barriers while restart/fixup handling is audited.
+- `MOVES.* reg,(An)+` is no longer short-circuited by the RAM direct helper. It must use exact interpreter/helper semantics until SFC/DFC, restart, and exception-frame behavior are covered by a targeted regression.
+- Return-family opcodes, especially `RTE`, need hard barriers and post-fallback PC canonicalization because interpreter helpers may use `m68k_setpci()` and leave `pc_p` stale for JIT resumption.
+- Code-space MMU translation is required for RAM dispatch PC materialization and branch/return targets. Data-space translation is not sufficient for instruction fetch.
+- The remaining RAM-mode frontier is nested 68040 MMU exception delivery around handler `RTE` back to low user virtual PCs. Keep `fault_pc`/`instruction_pc` distinct from `mmu_fault_addr`; rewriting one into the other produced worse/incorrect exception-frame behavior.
+
+Immediate harness gap: add a minimal RAM/MMU regression that reproduces “auto-update EA fault -> MMU handler -> `RTE` to low user virtual PC” without waiting for a full boot.

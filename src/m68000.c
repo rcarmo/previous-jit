@@ -16,6 +16,8 @@ const char M68000_fileid[] = "Hatari m68000.c : " __DATE__ " " __TIME__;
 #include "m68000.h"
 #include "options.h"
 #include "nextMemory.h"
+#include "dsp.h"
+#include "dimension.h"
 
 #include "mmu_common.h"
 #include "uae2026_jit_bridge.h"
@@ -283,7 +285,15 @@ bool Uae2026OpcodeTestModeActive(void)
 void Uae2026JitCpuCheckTicks(int cycles)
 {
 	static unsigned long trace_count = 0;
+	static int immediate_interrupts = -1;
+	static int lastintr = 0;
 	M68000_AddCycles(cycles);
+	DSP_Run(cycles);
+	i860_Run(cycles);
+	if (immediate_interrupts < 0) {
+		const char *env = getenv("B2_JIT_IMMEDIATE_INTERRUPTS");
+		immediate_interrupts = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+	}
 	if (getenv("B2_JIT_TICKTRACE") && (trace_count++ < 50 || (trace_count % 1000) == 0))
 		fprintf(stderr, "JITTICK %lu pc=%08x cycles=%d pending_type=%d pending_time=%lld spc=%08x intlev=%d intmask=%d\n",
 			trace_count, m68k_getpc(), cycles, PendingInterrupt.type,
@@ -294,14 +304,47 @@ void Uae2026JitCpuCheckTicks(int cycles)
 		CALL_VAR(PendingInterrupt.pFunction);
 	}
 
-	if (intlev() > regs.intmask)
-		M68000_SetSpecial(SPCFLAG_INT);
+	{
+		int intr = intlev();
+		if (intr > regs.intmask || (intr == 7 && intr > lastintr)) {
+			if (immediate_interrupts) {
+				regs.stopped = 0;
+				unset_special(SPCFLAG_STOP);
+				Exception(intr + 24);
+				regs.intmask = intr;
+				doint();
+				set_special(SPCFLAG_INT);
+			} else {
+				M68000_SetSpecial(SPCFLAG_INT);
+			}
+		}
+		lastintr = intr;
+	}
 }
 
 void Uae2026OpcodeTestModeFinish(void)
 {
 	if (!opcode_test_mode_active)
 		return;
+
+	/* The experimental JIT can hand control back to m68k_go at a clean
+	 * compiled-block boundary before the harness sentinel/STOP trailer has
+	 * executed.  If we are exactly at the harness' MOVEA.L #sentinel,A6
+	 * trailer, complete that trailer before dumping so the opcode result is
+	 * compared after the same architectural stop point as the interpreter. */
+	if (get_word(m68k_getpc()) == 0x2c7c) {
+		uaecptr pc = m68k_getpc();
+		m68k_areg(regs, 6) = get_long(pc + 2);
+		m68k_setpc(pc + 6);
+		if (get_word(m68k_getpc()) == 0x4e72) {
+			regs.sr = get_word(m68k_getpc() + 2);
+			MakeFromSR();
+			regs.stopped = 1;
+			set_special(SPCFLAG_STOP);
+			m68k_setpc(m68k_getpc() + 4);
+		}
+	}
+
 	opcode_test_mode_active = false;
 	if (opcode_test_dump_enabled()) {
 		MakeSR();

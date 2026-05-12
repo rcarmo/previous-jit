@@ -62,6 +62,7 @@
 #include "compemu_arm.h"
 #include <SDL2/SDL.h>
 
+extern "C" void Uae2026JitCanonicalizePcAfterFallback(void);
 
 /* ARM64 JIT is PIE-compatible: it uses register-indirect addressing
  * (R_MEMSTART/R15) rather than PC-relative globals, so code placement
@@ -1079,6 +1080,24 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 	   allocator. End the block after them so following instructions reload the
 	   canonical state instead of using stale native A0/VBR/stack values. */
 	if (jit_allow_ram_dispatch_env() && (op == 0x4e7a || op == 0x4e7b))
+		return true;
+
+	/* RAM/MMU dispatch must preserve 68040 restart state for auto-update EAs.
+	   The generated native ARM64 paths update An before a later MMU fault can
+	   longjmp back to the bridge, but the interpreter paths publish mmufixup[]
+	   entries that restore those registers before Exception() builds the frame.
+	   Keep all postincrement/predecrement memory forms on the exact fallback
+	   path while RAM dispatch is enabled. */
+	if (jit_allow_ram_dispatch_env() &&
+		(table68k[op].smode == Aipi || table68k[op].smode == Apdi ||
+		 table68k[op].dmode == Aipi || table68k[op].dmode == Apdi))
+		return true;
+
+	/* 68040 MMU exception handlers commonly return to low user virtual PCs via
+	   RTE/RTR/RTS-style control transfers. Keep return-family opcodes exact in
+	   RAM dispatch mode until branch/return target xlate is fully audited. */
+	if (jit_allow_ram_dispatch_env() &&
+		(op == 0x4e73 || op == 0x4e74 || op == 0x4e75 || op == 0x4e76 || op == 0x4e77))
 		return true;
 
 	/* Environment-gated barriers for debugging (B2_JIT_RESTORE_BARRIERS). */
@@ -4224,9 +4243,10 @@ static inline bool jit_ram_const_direct_read_addr(uae_u32 addr, int size)
     const uae_u32 end = addr + (uae_u32)size;
     if (end < addr)
         return false;
-    /* JIT direct reads are safe only from immutable ROM shadows.  Writable RAM,
-       stack/MMU aliases (0x0bxxxxxx), and devices must use Previous's live
-       addrbank helpers so interpreter/device side effects see the same memory. */
+    /* Constant direct reads are safe from immutable ROM shadows.  Do not
+       direct-read RAM while RAM/MMU dispatch is enabled: once the kernel turns
+       on the 040 MMU, even apparent 0x04xxxxxx data references may require
+       ATC/TTR permission checks and modified/used-bit side effects. */
     if (addr < 0x00020000u && end <= 0x00020000u)
         return true;
     if (addr >= 0x01000000u && end <= 0x01020000u)
@@ -4248,6 +4268,22 @@ static inline bool jit_ram_use_bank_for_mem_vreg(int address, int size, bool is_
     return true;
 }
 
+extern "C" uae_u32 Uae2026JitLastInstructionPc;
+
+static inline void jit_sync_fault_pc_for_bank_helper(void)
+{
+#if defined(CPU_AARCH64)
+    /* Previous's 040 MMU/bus-error path reads regs.pc/fault_pc, while the
+       vendored JIT tracks the live PC in PC_P/m68k_pc_offset.  Before any
+       native bank helper that can fault, publish the current instruction PC
+       (not the post-extension PC) so Exception() builds a restartable frame. */
+    const uae_u32 pc = get_virtual_address(comp_pc_p + m68k_pc_offset);
+    compemu_raw_mov_l_mi((uintptr)&regs.pc, pc);
+    compemu_raw_mov_l_mi((uintptr)&regs.fault_pc, pc);
+    compemu_raw_mov_l_mi((uintptr)&Uae2026JitLastInstructionPc, pc);
+#endif
+}
+
 static void writemem_real(int address, int source, int size)
 {
     if (currprefs.address_space_24) {
@@ -4267,6 +4303,7 @@ static void writemem_real(int address, int source, int size)
 
 static inline void writemem_special(int address, int source, int offset)
 {
+    jit_sync_fault_pc_for_bank_helper();
     jnf_MEM_WRITEMEMBANK(address, source, offset);
 }
 
@@ -4342,6 +4379,7 @@ static void readmem_real(int address, int dest, int size)
 
 static inline void readmem_special(int address, int dest, int offset)
 {
+    jit_sync_fault_pc_for_bank_helper();
     jnf_MEM_READMEMBANK(dest, address, offset);
 }
 
@@ -4398,8 +4436,12 @@ void get_n_addr(int address, int dest)
 void get_n_addr_jmp(int address, int dest)
 {
     /* For this, we need to get the same address as the rest of UAE
-       would --- otherwise we end up translating everything twice */
-    if (special_mem || distrust_addr() || jit_n_addr_unsafe)
+       would --- otherwise we end up translating everything twice.
+       In RAM/MMU mode, do not form PC_P as MEMBaseDiff+logical-PC:
+       use the bank xlate hook so the 040 MMU translation path decides the
+       host pointer for branch/JSR/RTS/RTE targets. */
+    if ((jit_allow_ram_dispatch_env() && address >= 0 && address < VREGS) ||
+        special_mem || distrust_addr() || jit_n_addr_unsafe)
         get_n_addr_old(address, dest);
     else
         jnf_MEM_GETADR_JMP_OFF(dest, address);
@@ -5905,7 +5947,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         (uae_u32)do_get_mem_word(opw + 2);
                     const uae_u32 target_pc = op_m68k_pc + 2u + (uae_u32)(uae_s32)disp;
                     uintptr helper = 0;
-                    if ((op_m68k_pc == 0x0100969cu || op_m68k_pc == 0x0100ce26u) && target_pc == 0x010024ccu)
+                    if ((op_m68k_pc == 0x01007922u || op_m68k_pc == 0x0100969cu || op_m68k_pc == 0x0100ce26u) && target_pc == 0x010024ccu)
                         helper = (uintptr)jit_op_rom_delay_bsr_callsite;
                     else if (op_m68k_pc == 0x0100139au && target_pc == 0x010003c2u)
                         helper = (uintptr)jit_op_rom_vbr_global_lookup_callsite;
@@ -6309,10 +6351,10 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 
                     if (jit_force_interpreter_barrier_opcode((uae_u16)opcode)) {
                         /* Interpreter barrier opcodes already executed via the
-                           fallback call above. Runtime keeps using the normal
-                           execute_normal() handoff. In verifier mode, if the
-                           traced block ends exactly at this barrier, stop at the
-                           current regs.pc_p so the comparison stays block-local. */
+                           fallback call above. Some exact helpers (notably RTE)
+                           update regs.pc with m68k_setpci(), leaving pc_p stale;
+                           rebuild pc_p/pc_oldp from regs.pc before resuming. */
+                        compemu_raw_call((uintptr)Uae2026JitCanonicalizePcAfterFallback);
                         compemu_raw_mov_l_rm(0, (uintptr)specflags);
 #if defined(USE_DATA_BUFFER)
                         data_check_end(12, 64);

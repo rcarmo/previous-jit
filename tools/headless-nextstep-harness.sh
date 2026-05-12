@@ -12,6 +12,7 @@ SHELL_WAIT="${PREVIOUS_SHELL_WAIT:-5}"
 FSCK_WAIT="${PREVIOUS_FSCK_WAIT:-90}"
 DESKTOP_TIMEOUT="${PREVIOUS_DESKTOP_TIMEOUT:-1200}"
 DESKTOP_POLL="${PREVIOUS_DESKTOP_POLL:-30}"
+STABLE_WAIT="${PREVIOUS_STABLE_WAIT:-0}"
 
 pick_display() {
   local n
@@ -156,7 +157,8 @@ python3 "$ROOT/tools/previous_headless_vnc.py" \
   --shell-wait "$SHELL_WAIT" \
   --fsck-wait "$FSCK_WAIT" \
   --desktop-timeout "$DESKTOP_TIMEOUT" \
-  --desktop-poll "$DESKTOP_POLL"
+  --desktop-poll "$DESKTOP_POLL" \
+  --stable-wait "$STABLE_WAIT"
 RC=$?
 set -e
 

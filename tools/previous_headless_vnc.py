@@ -153,6 +153,8 @@ def main() -> int:
     parser.add_argument("--fsck-wait", type=int, default=90)
     parser.add_argument("--desktop-timeout", type=int, default=1200)
     parser.add_argument("--desktop-poll", type=int, default=30)
+    parser.add_argument("--stable-wait", type=int, default=0,
+                        help="seconds to keep the desktop running after first detection before a final capture")
     args = parser.parse_args()
 
     outdir = Path(args.outdir)
@@ -163,8 +165,10 @@ def main() -> int:
 
     status: dict[str, str] = {
         "desktop_reached": "0",
+        "stable_reached": "0",
         "install_activated": "0",
         "final_tag": "",
+        "stable_tag": "",
     }
 
     time.sleep(args.boot_wait)
@@ -189,10 +193,19 @@ def main() -> int:
         status["final_tag"] = tag
         if DESKTOP_RE.search(text):
             status["desktop_reached"] = "1"
-            write_result(outdir, status)
             print(f"METRIC desktop_reached=1")
             print(f"METRIC desktop_tag={tag}")
-            return 0
+            if args.stable_wait > 0:
+                time.sleep(args.stable_wait)
+                stable_tag = f"stable_{args.stable_wait}s"
+                stable_text = client.capture(stable_tag)
+                status["stable_tag"] = stable_tag
+                if DESKTOP_RE.search(stable_text):
+                    status["stable_reached"] = "1"
+                print(f"METRIC stable_reached={status['stable_reached']}")
+                print(f"METRIC stable_tag={stable_tag}")
+            write_result(outdir, status)
+            return 0 if status["stable_reached"] == "1" or args.stable_wait <= 0 else 3
         if INSTALL_RE.search(text) and not install_activated:
             client.command("")
             install_activated = True

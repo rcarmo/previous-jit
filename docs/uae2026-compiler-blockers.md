@@ -32,7 +32,9 @@ prelude, without linking it into `Previous` yet.
 
 - syntax probe: **passing**
 - object compile probe: **passing**
-- emulator/runtime integration of vendored compiler entry points: **not yet wired**
+- emulator/runtime integration of vendored compiler entry points: **wired under `ENABLE_EXPERIMENTAL_UAE2026_JIT`**
+- default/ROM translated execution reaches the NEXTSTEP desktop and passed a 60s stability smoke in the latest commit check
+- RAM/MMU dispatch mode is still experimental and remains blocked in nested 68040 MMU exception / RTE page-fault state
 
 ## Remaining blocker classes
 
@@ -118,9 +120,7 @@ Implication:
 
 ## Immediate next targets
 
-1. decide which compatibility pieces should stay probe-only and which should
-   become real runtime shims
-2. start compiling the minimum vendored compiler/runtime objects inside the
-   tree under an experimental, non-dispatch build target
-3. wire a real `compiler_init()` bring-up path while keeping translated block
-   dispatch disabled
+1. keep the direct compiler probes passing as guardrails while runtime work continues
+2. preserve default/ROM JIT desktop stability while RAM/MMU dispatch changes land
+3. add a targeted regression for the current RAM-mode blocker: auto-update-EA MMU fault followed by MMU-handler `RTE` back to low user virtual PCs
+4. audit bridge/JIT state materialization before `Exception(2)`, especially PC/SR/USP/ISP and live D/A register spill during RTE-triggered page faults

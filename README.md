@@ -26,15 +26,17 @@ What is already in tree:
 
 What is **not** finished yet:
 
-- stable translated JIT execution inside Previous
-- opcode-family parity with the BasiliskII/macemu JIT work
-- full NeXT desktop boot under translated execution
+- RAM/MMU dispatch-mode translated execution through the full NeXT boot
+- complete opcode-family parity with the BasiliskII/macemu JIT work
+- final RAM-mode desktop validation and screenshot capture
 
 Right now the project is at the stage where:
 
 - interpreter-backed validation works
 - JIT bootstrap/plumbing works
-- translated execution still crashes early and is being brought up incrementally
+- the opcode-equivalence harness is clean (`pass=62 fail=0 score=100` as of 2026-05-12)
+- default/ROM JIT reaches the NEXTSTEP desktop and remained stable for 60s in the latest smoke check
+- RAM-mode JIT reaches true RAM dispatch and gets past early kernel/device activity, but still fails before the desktop in the 68040 MMU RTE/page-fault path
 
 ## Project layout
 
@@ -87,6 +89,7 @@ Notes:
 - automated boot harnesses use a **fresh copied disk image per run**
 - Linux startup disables host ASLR by default for deterministic JIT mappings
 - `PREVIOUS_UAE2026_JIT=0` gives an interpreter baseline for harness comparison
+- `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch path; this is still the active correctness frontier
 
 ## What is being migrated
 

@@ -3,13 +3,14 @@
 ## Status
 
 - Repository: `/workspace/projects/previous`
-- Branch: `audit/uae-jit-port-plan`
+- Branch: `main` (JIT fork / bring-up branch)
 - Base build-fix commit: `59b1131` (`Fix AArch64/GCC build for Previous on modern toolchains`)
 - Native binary currently builds at: `build-clean/src/Previous`
 - Experimental VNC output path is now available via `PREVIOUS_VNC=1` (port with `PREVIOUS_VNC_PORT`, default `5900`)
 - Vendored BasiliskII UAE 2026 subtree is now staged under `src/cpu/uae_cpu_2026/`
 - Headless fresh-image harness is now available at `tools/headless-nextstep-harness.sh`
 - Experimental bridge smoke harness is now available at `tools/headless-jit-bridge-smoke.sh`
+- Default/ROM translated execution now reaches the NEXTSTEP desktop; RAM/MMU dispatch mode is the active remaining boot blocker.
 - Early bootstrap probe harness is now available at `tools/headless-jit-bootstrap-probe.sh`
 - Compiler-facing prefs shim now lives in `src/cpu/uae2026_compiler_prefs_shim.cpp`
 - Direct vendored compiler blocker inventory now lives in `docs/uae2026-compiler-blockers.md`
@@ -136,13 +137,16 @@ Why:
 
 1. **MMU correctness**
    - NeXTSTEP/OpenStep depend on 68030/68040 MMU behavior
-   - this is the biggest correctness risk for any JIT attempt
+   - this is the biggest correctness risk for RAM-mode JIT dispatch
+   - current active frontier: nested 68040 MMU bus-error handling when the MMU handler returns with `RTE` to low user virtual PCs
 
 2. **Exception / restart semantics**
    - page faults, bus faults, restartable FPU/MMU instructions
+   - do not conflate `fault_pc` / `instruction_pc` with `mmu_fault_addr`; a diagnostic rewrite of that state was tested and rejected
 
 3. **Memory mapping model**
    - JIT assumptions about addressability and translated memory vs Previous's NeXT bus/memory model
+   - RAM dispatch now needs code-space MMU translation both for branch targets and for dispatch PC materialization
 
 4. **Generated table compatibility**
    - BasiliskII's JIT generator output and Previous's active CPU tables need reconciliation

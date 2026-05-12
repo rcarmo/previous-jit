@@ -65,6 +65,55 @@ int mmu040_movem;
 uaecptr mmu040_movem_ea;
 uae_u32 mmu040_move16[4];
 
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+ALWAYS_INLINE int mmu_match_ttr(uaecptr addr, bool super, bool data);
+uaecptr mmu_translate(uaecptr addr, uae_u32 val, bool super, bool data, bool write, int size);
+
+uae_u32 Uae2026JitMmuXlateData(uaecptr addr)
+{
+    if (mmu_match_ttr(addr, regs.s != 0, true) == TTR_NO_MATCH && regs.mmu_enabled)
+        addr = mmu_translate(addr, 0, regs.s != 0, true, false, sz_byte);
+    return addr;
+}
+
+uae_u32 Uae2026JitMmuXlateCode(uaecptr addr)
+{
+    if (mmu_match_ttr(addr, regs.s != 0, false) == TTR_NO_MATCH && regs.mmu_enabled)
+        addr = mmu_translate(addr, 0, regs.s != 0, false, false, sz_word);
+    return addr;
+}
+
+uae_u32 Uae2026JitMmuGetByte(uaecptr addr)
+{
+    return get_byte_mmu040(addr);
+}
+
+uae_u32 Uae2026JitMmuGetWord(uaecptr addr)
+{
+    return get_word_mmu040(addr);
+}
+
+uae_u32 Uae2026JitMmuGetLong(uaecptr addr)
+{
+    return get_long_mmu040(addr);
+}
+
+void Uae2026JitMmuPutByte(uaecptr addr, uae_u32 value)
+{
+    put_byte_mmu040(addr, value);
+}
+
+void Uae2026JitMmuPutWord(uaecptr addr, uae_u32 value)
+{
+    put_word_mmu040(addr, value);
+}
+
+void Uae2026JitMmuPutLong(uaecptr addr, uae_u32 value)
+{
+    put_long_mmu040(addr, value);
+}
+#endif
+
 static void mmu_dump_ttr(const TCHAR * label, uae_u32 ttr)
 {
     DUNUSED(label);

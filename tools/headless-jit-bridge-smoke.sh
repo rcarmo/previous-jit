@@ -21,6 +21,7 @@ PREVIOUS_UAE2026_JIT_FPU="${PREVIOUS_UAE2026_JIT_FPU:-0}" \
 PREVIOUS_UAE2026_JIT_LAZY_FLUSH="${PREVIOUS_UAE2026_JIT_LAZY_FLUSH:-1}" \
 PREVIOUS_UAE2026_JIT_CONST_JUMP="${PREVIOUS_UAE2026_JIT_CONST_JUMP:-1}" \
 PREVIOUS_UAE2026_JIT_RAM="${PREVIOUS_UAE2026_JIT_RAM:-0}" \
+PREVIOUS_JIT_TRACE_DC="${PREVIOUS_JIT_TRACE_DC:-1}" \
 "$ROOT/tools/headless-nextstep-harness.sh" >"$OUTDIR/harness.log" 2>&1
 RC=$?
 set -e
@@ -34,6 +35,7 @@ bootstrap_ready=0
 bootstrap_active=0
 aslr_active=0
 desktop_reached=0
+stable_reached=0
 jit_dispatch_lines=0
 jit_ram_dispatch_seen=0
 jit_last_pc=
@@ -53,10 +55,13 @@ fi
 if [[ -f "$RESULT_ENV" ]] && grep -q '^desktop_reached=1$' "$RESULT_ENV"; then
   desktop_reached=1
 fi
+if [[ -f "$RESULT_ENV" ]] && grep -q '^stable_reached=1$' "$RESULT_ENV"; then
+  stable_reached=1
+fi
 if [[ -f "$PREVIOUS_LOG" ]]; then
   jit_dispatch_lines=$(grep -c '^DC\[' "$PREVIOUS_LOG" 2>/dev/null || true)
-  jit_last_pc=$(grep '^DC\[' "$PREVIOUS_LOG" 2>/dev/null | sed -n 's/.* pc=\([0-9a-fA-F]*\).*/\1/p' | tail -1)
-  if grep '^DC\[' "$PREVIOUS_LOG" 2>/dev/null | awk '
+  jit_last_pc=$(grep '^DC\[' "$PREVIOUS_LOG" 2>/dev/null | sed -n 's/.* pc=\([0-9a-fA-F]*\).*/\1/p' | tail -1 || true)
+  if [[ "$jit_dispatch_lines" -gt 0 ]] && grep '^DC\[' "$PREVIOUS_LOG" 2>/dev/null | awk '
     { pc=""; for (i=1; i<=NF; i++) if ($i ~ /^pc=/) { pc=substr($i,4); break } }
     pc >= "04000000" && pc < "08000000" { found=1 }
     END { exit(found ? 0 : 1) }'; then
@@ -64,12 +69,13 @@ if [[ -f "$PREVIOUS_LOG" ]]; then
   fi
 fi
 
-cat > "$OUTDIR/result.env" <<EOF
+cat > "$RESULT_ENV" <<EOF
 bridge_compiled=$bridge_compiled
 bootstrap_ready=$bootstrap_ready
 bootstrap_active=$bootstrap_active
 aslr_active=$aslr_active
 desktop_reached=$desktop_reached
+stable_reached=$stable_reached
 jit_dispatch_lines=$jit_dispatch_lines
 jit_ram_dispatch_seen=$jit_ram_dispatch_seen
 jit_last_pc=$jit_last_pc
@@ -81,12 +87,13 @@ previous_log=$PREVIOUS_LOG
 harness_env=$HARNESS_ENV
 EOF
 
-cat "$OUTDIR/result.env"
+cat "$RESULT_ENV"
 echo "METRIC bridge_compiled=$bridge_compiled"
 echo "METRIC bootstrap_ready=$bootstrap_ready"
 echo "METRIC bootstrap_active=$bootstrap_active"
 echo "METRIC aslr_active=$aslr_active"
 echo "METRIC desktop_reached=$desktop_reached"
+echo "METRIC stable_reached=$stable_reached"
 echo "METRIC jit_dispatch_lines=$jit_dispatch_lines"
 echo "METRIC jit_ram_dispatch_seen=$jit_ram_dispatch_seen"
 echo "METRIC jit_ram_requested=${PREVIOUS_UAE2026_JIT_RAM:-0}"
@@ -94,4 +101,7 @@ echo "OUTDIR=$OUTDIR"
 
 if [[ "$bridge_compiled" != "1" || "$bootstrap_ready" != "1" || "$bootstrap_active" != "1" || "$desktop_reached" != "1" || "$RC" != "0" ]]; then
   exit 2
+fi
+if [[ "${PREVIOUS_STABLE_WAIT:-0}" != "0" && "$stable_reached" != "1" ]]; then
+  exit 3
 fi

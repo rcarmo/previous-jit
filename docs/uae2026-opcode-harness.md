@@ -42,7 +42,7 @@ known to exercise the brittle parts of the old generated `compemu` pipeline:
 
 Absolute scratch addresses were remapped from BasiliskII-style low RAM to Previous RAM at `0x0400xxxx`.
 
-## Latest run (2026-04-27)
+## Latest run (2026-05-12)
 
 Command:
 
@@ -52,17 +52,23 @@ Command:
 
 Observed metrics:
 
-- `total=58`
-- `interp_ok=58`
-- `jit_ok=0`
-- `pass=0`
-- `infra_fail=58`
+- `total=62`
+- `interp_ok=62`
+- `jit_ok=62`
+- `pass=62`
+- `fail=0`
+- `infra_fail=0`
+- `score=100`
+
+Recent artifact example:
+
+- `/workspace/tmp/previous-opcode-harness-20260512-064010`
 
 Interpretation:
 
-- the **opcode harness itself is working**: all 58 vectors reach `REGDUMP` in interpreter mode
-- the **bridge still crashes before producing a register dump** on every curated vector
-- current failure mode is consistent with the known early JIT crash in `execute_normal()` after `JIT_ENTRY`
+- the opcode harness is now a passing regression gate for the current curated vector set
+- RAM-mode boot failures are therefore being debugged as MMU/exception/restart state bugs rather than broad opcode-harness regressions
+- new RAM/MMU fixes should keep this harness at `pass=62 fail=0 score=100` before heavier boot smokes are trusted
 
 ## Why this matters
 

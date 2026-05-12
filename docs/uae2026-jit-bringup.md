@@ -21,9 +21,10 @@ Update it as code lands so the repository always explains the current experiment
 - The bridge now includes a **Previous-specific compiler-facing prefs shim** that drives the vendored `compemu_prefs.cpp` logic from Previous state/env and reports whether a runtime-disabled compiler bootstrap would be safe (`requested`, `bootstrap_ready`, `aslr`, cache size, MMU/FPU state).
 - The bridge now performs a **runtime-disabled bootstrap allocation probe**: it allocates and clears an executable cache buffer when the experimental JIT is requested and the safety checks pass, but still does not hand execution to translated code.
 - `tools/headless-jit-bootstrap-probe.sh` verifies the bridge/bootstrap path without waiting for a full desktop boot.
-- `tools/headless-jit-bridge-smoke.sh` rebuilds the experimental binary and currently proves bridge logging, ASLR active, bootstrap allocation active, and desktop reachability with ROM translated execution enabled.
+- `tools/headless-jit-bridge-smoke.sh` rebuilds the experimental binary and proves bridge logging, ASLR active, bootstrap allocation active, and desktop reachability with default/ROM translated execution enabled.
+- `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch mode. RAM mode now records true RAM dispatch, but remains blocked before desktop in the 68040 MMU RTE/page-fault path.
 - `tools/uae2026-compiler-syntax-probe.sh` records the current compile-time blocker set for direct vendored compiler integration.
-- `tools/uae2026-compiler-object-probe.sh` compiles the vendored ARM64 compiler core to an object file under the probe prelude without linking it into `Previous` yet.
+- `tools/uae2026-compiler-object-probe.sh` compiles the vendored ARM64 compiler core to an object file under the probe prelude.
 - Current blocker inventory lives in `docs/uae2026-compiler-blockers.md`.
 
 ## Implemented milestones
@@ -209,17 +210,18 @@ This injects short M68K opcode vectors into the ROM mirror, runs one interpreter
 and compares the resulting `REGDUMP:` state instead of waiting for a full NeXT boot.
 See `docs/uae2026-opcode-harness.md` for the current vector set and latest results.
 
-Latest translated-execution debug checkpoint (2026-05-01):
-- opcode harness passes: `total=62`, `jit_ok=62`, `pass=62`, `fail=0`, `infra_fail=0`, `score=100`
-- JIT entry SIGSEGV was fixed by ensuring the vendored VM allocator uses executable `mmap`/`mprotect` memory instead of a `calloc` fallback
-- opcode-test translated execution now syncs the JIT shadow ROM after the test harness patches `NEXTRom`; stale shadow ROM was the cause of the previous `+0x100` PC drift
-- RAM translation remains gated by `PREVIOUS_UAE2026_JIT_RAM=1` while RAM/shadow coherency and device-helper side effects are being debugged
-- first-principles comparison with the normal emulator found the translated path was returning from `m68k_do_compile_execute()` with `UseJIT=false`, but the outer bridge predicate ignored that flag and immediately re-entered translated dispatch; `Uae2026JitBridgeIsActive()` now respects `UseJIT`
-- the JIT specialty path now mirrors the normal `do_interrupt()` side effects for delivered interrupts (`STOP` clear, exception, interrupt mask update, and INT re-arm)
-- smoke now passes: latest run reported `bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`, `aslr_active=1`, `desktop_reached=1`
-- next work is to make writable RAM/shadow coherency robust enough to keep translated execution enabled beyond ROM code
-- harness tracking now records `jit_dispatch_lines`, `jit_ram_dispatch_seen`, `jit_last_pc`, and `jit_ram_requested`; set `PREVIOUS_UAE2026_JIT_RAM=1` to attempt experimental RAM translation and distinguish ROM-only desktop success from RAM-translated progress
-- experimental RAM mode now has stricter RAM-dispatch accounting: `jit_ram_dispatch_seen` only counts `0x04000000..0x07ffffff`, not bogus `pc=00000000`; current RAM-requested runs still fail before true writable-RAM dispatch, after ROM delay/device progress, with `pc=00000000` and bus errors around invalid/near-device addresses
+Latest translated-execution debug checkpoint (2026-05-12):
+- opcode harness passes: `total=62`, `jit_ok=62`, `pass=62`, `fail=0`, `infra_fail=0`, `score=100` (`/workspace/tmp/previous-opcode-harness-20260512-064010`)
+- default/ROM JIT smoke passes and stayed stable for 60 seconds: `desktop_reached=1`, `stable_reached=1`, `jit_ram_requested=0`, `jit_ram_dispatch_seen=0` in `/workspace/tmp/previous-jit-bridge-smoke-default-commitcheck-20260512-063147`
+- RAM translation remains gated by `PREVIOUS_UAE2026_JIT_RAM=1`
+- RAM-mode smoke now records true RAM dispatch (`jit_ram_dispatch_seen=1`) instead of only ROM execution
+- the current RAM-mode blocker is not default JIT, opcode harness parity, or early NBIC/MO/SCR2/RTC bring-up; it is nested 68040 MMU exception delivery around an RTE from the MMU handler back to low user virtual PCs
+- recent RAM-mode fixes under test restore both MMU fixup slots, add conservative auto-update EA rollback, force auto-update and return-family opcodes through exact fallback barriers, add code-space MMU translation for branch/dispatch PCs, canonicalize post-exception PC/SR, save the active supervisor exception SP/ISP across bridge catches, and remove the RAM direct `MOVES.* reg,(An)+` shortcut
+- the latest RAM-mode traces no longer reproduce the original advanced-A1 `00003334` corruption, but still fail before desktop with a kernel `exception_handler` panic after RTE-triggered page-fault handling
+- do **not** rewrite `fault_pc`/`instruction_pc` to `mmu_fault_addr` for RTE faults; that diagnostic was tested and rejected because the opcode context and access address must remain distinct
+- harness tracking records `jit_dispatch_lines`, `jit_ram_dispatch_seen`, `jit_last_pc`, and `jit_ram_requested`; set `PREVIOUS_UAE2026_JIT_RAM=1` to attempt experimental RAM translation and distinguish ROM-only desktop success from RAM-translated progress
+- experimental RAM mode has stricter RAM-dispatch accounting: `jit_ram_dispatch_seen` only counts `0x04000000..0x07ffffff`, not bogus `pc=00000000`
+- current RAM-requested runs do enter true RAM dispatch and reach early kernel activity past `root on sd@`, but still fail before Workspace/File Viewer because RTE/page-fault state is not yet fully JIT-safe
 - follow-up wiring replaced the no-op MOVEC bridge stubs with control-register state updates (`VBR`, stack pointers, `TC`, `TT*`, `SRP/URP`, `CACR`); default smoke and opcode harness still pass
 - NBIC/device access now requests a JIT block exit instead of delegating to the interpreter; current RAM-mode runs no longer use interpreter-resume scaffolding, and the first post-NBIC bad return into `0x0b03f800` was narrowed to ROM `delay()` call/return handling on the VRAM-backed stack
 - the legacy Hatari Python UI is now build-gated behind `ENABLE_HATARI_PYTHON_UI=OFF` by default; it is not part of the JIT/headless path
@@ -240,11 +242,11 @@ Expected success metrics:
 
 ## Next steps
 
-1. Move from bridge-owned bootstrap allocation to actual vendored compiler bootstrap entry points (`compiler_init` / cache plumbing) while keeping translated dispatch disabled.
-2. Add a dedicated compile/bootstrap probe that can validate compiler init separately from full desktop boot.
-3. Reduce the blocker list in `docs/uae2026-compiler-blockers.md` until `compemu_support_arm.cpp` and its direct object compile pass under probe conditions.
-4. Start compiling the minimum additional vendored compiler/runtime objects needed for a true no-dispatch bootstrap target inside `Previous`.
-5. Only then start wiring translated block dispatch into `newcpu`.
+1. Keep `./tools/uae2026-opcode-harness.sh` green before and after every RAM/MMU change.
+2. Preserve the default/ROM JIT desktop smoke (`desktop_reached=1`, preferably with `PREVIOUS_STABLE_WAIT=60`) while debugging RAM mode.
+3. Add a minimal targeted regression for the confirmed RAM/MMU pattern: MMU fault during an auto-update EA followed by MMU-handler `RTE` back to a low user virtual PC.
+4. Audit RTE/page-fault state without conflating `fault_pc`/`instruction_pc` and `mmu_fault_addr`; the remaining likely seam is full live JIT register/PC/SR/USP/ISP materialization before bridge-delivered `Exception(2)`.
+5. Once RAM mode reaches desktop, capture the final RAM-mode screenshot and update this log with metrics.
 
 ## Guardrails
 

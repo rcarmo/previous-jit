@@ -2,6 +2,16 @@
  * Included only from compemu_support.cpp after compemu_support_arm.cpp.
  */
 
+extern "C" bool mmu_restart;
+extern "C" uae_u16 mmu_opcode;
+extern "C" int mmu040_movem;
+extern "C" uaecptr mmu040_movem_ea;
+struct previous_mmufixup_entry { int reg; uae_u32 value; };
+extern "C" previous_mmufixup_entry mmufixup[2];
+extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
+extern "C" uae_u32 Uae2026JitLastInstructionPc = 0;
+extern "C" struct flag_struct Uae2026JitLastFlags = { 0, 0 };
+
 static inline bool legacy_needflags_enabled(void)
 {
 	return needflags != 0;
@@ -86,7 +96,7 @@ static inline bool legacy_bsr_l_target(uae_u32 pc, uae_u16 opcode, uae_u32 expec
 
 static inline bool legacy_rom_delay_bsr_callsite(uae_u32 pc, uae_u16 opcode, uae_u32 *retpc)
 {
-	if (pc != 0x0100969cu && pc != 0x0100ce26u)
+	if (pc != 0x01007922u && pc != 0x0100969cu && pc != 0x0100ce26u)
 		return false;
 	return legacy_bsr_l_target(pc, opcode, 0x010024ccu, retpc);
 }
@@ -102,6 +112,100 @@ static inline bool legacy_rom_rtc_read_bsr_callsite(uae_u32 pc, uae_u16 opcode, 
 {
 	(void)pc;
 	return legacy_bsr_l_target(pc, opcode, 0x010077aau, retpc);
+}
+
+extern "C" void dfc_put_long(uaecptr addr, uae_u32 val);
+extern "C" void dfc_put_word(uaecptr addr, uae_u16 val);
+extern "C" void dfc_put_byte(uaecptr addr, uae_u8 val);
+extern "C" uae_u32 sfc_get_long(uaecptr addr);
+extern "C" uae_u16 sfc_get_word(uaecptr addr);
+extern "C" uae_u8 sfc_get_byte(uaecptr addr);
+
+static inline bool legacy_ram_direct_movem_long_predec(uae_u32 pc, uae_u16 opcode)
+{
+	if (!jit_allow_ram_dispatch_env() || pc < 0x04000000u || pc >= 0x08000000u)
+		return false;
+	if ((opcode & 0xfff8u) != 0x48e0u)
+		return false;
+	const uae_u32 dstreg = opcode & 7u;
+	const uae_u16 mask = (uae_u16)Uae2026JitLiveGetWord(pc + 2);
+	uaecptr srca = m68k_areg(regs, dstreg);
+	uae_u16 amask = mask & 0xffu;
+	uae_u16 dmask = (mask >> 8) & 0xffu;
+	mmu040_movem = 1;
+	mmu040_movem_ea = srca;
+	while (amask) {
+		srca -= 4;
+		Uae2026JitMmuPutLong(srca, m68k_areg(regs, movem_index2[amask]));
+		amask = movem_next[amask];
+	}
+	while (dmask) {
+		srca -= 4;
+		Uae2026JitMmuPutLong(srca, m68k_dreg(regs, movem_index2[dmask]));
+		dmask = movem_next[dmask];
+	}
+	m68k_areg(regs, dstreg) = srca;
+	mmu040_movem = 0;
+	jit_set_guest_pc_fast(pc + 4);
+	return true;
+}
+
+static inline bool legacy_ram_direct_moves_an_post(uae_u32 pc, uae_u16 opcode)
+{
+	if (!jit_allow_ram_dispatch_env() || pc < 0x04000000u || pc >= 0x08000000u)
+		return false;
+	int size = 0;
+	if ((opcode & 0xfff8u) == 0x0e18u)
+		size = 1;
+	else if ((opcode & 0xfff8u) == 0x0e58u)
+		size = 2;
+	else if ((opcode & 0xfff8u) == 0x0e98u)
+		size = 4;
+	else
+		return false;
+	if (!regs.s) {
+		Exception(8, 0);
+		return true;
+	}
+	const uae_u32 dstreg = opcode & 7u;
+	const uae_u16 extra = (uae_u16)Uae2026JitLiveGetWord(pc + 2);
+	const int reg = (extra >> 12) & 15;
+	const uaecptr ea = m68k_areg(regs, dstreg);
+	const int inc = size == 1 ? areg_byteinc[dstreg] : size;
+	if (extra & 0x0800) {
+		const uae_u32 src = regs.regs[reg];
+		mmufixup[0].reg = (int)dstreg;
+		mmufixup[0].value = ea;
+		m68k_areg(regs, dstreg) += inc;
+		jit_set_guest_pc_fast(pc + 4);
+		mmu_restart = false;
+		if (size == 1)
+			dfc_put_byte(ea, (uae_u8)src);
+		else if (size == 2)
+			dfc_put_word(ea, (uae_u16)src);
+		else
+			dfc_put_long(ea, src);
+		mmufixup[0].reg = -1;
+	} else {
+		uae_u32 src;
+		if (size == 1)
+			src = (uae_u32)(uae_s32)(uae_s8)sfc_get_byte(ea);
+		else if (size == 2)
+			src = (uae_u32)(uae_s32)(uae_s16)sfc_get_word(ea);
+		else
+			src = sfc_get_long(ea);
+		m68k_areg(regs, dstreg) += inc;
+		if (extra & 0x8000)
+			m68k_areg(regs, reg & 7) = src;
+		else if (size == 1)
+			m68k_dreg(regs, reg) = (m68k_dreg(regs, reg) & ~0xff) | (src & 0xff);
+		else if (size == 2)
+			m68k_dreg(regs, reg) = (m68k_dreg(regs, reg) & ~0xffff) | (src & 0xffff);
+		else
+			m68k_dreg(regs, reg) = src;
+		jit_set_guest_pc_fast(pc + 4);
+	}
+	return true;
 }
 
 static inline bool legacy_rom_rtc_write_bsr_callsite(uae_u32 pc, uae_u16 opcode, uae_u32 *retpc)
@@ -874,7 +978,18 @@ void exec_nostats(void)
 	static unsigned long trace_count = 0;
 	for (;;) {
 		uae_u32 before_pc = m68k_getpc();
+		regs.fault_pc = before_pc;
+		Uae2026JitLastInstructionPc = before_pc;
+		Uae2026JitLastFlags = regflags;
 		uae_u32 opcode = GET_OPCODE;
+		mmu_restart = true;
+		mmu_opcode = (uae_u16)opcode;
+		if (legacy_ram_direct_movem_long_predec(before_pc, (uae_u16)opcode)) {
+			cpu_check_ticks();
+			if (SPCFLAGS_TEST(SPCFLAG_ALL))
+				return;
+			continue;
+		}
 		{
 			uae_u32 retpc = 0;
 			if ((legacy_rom_delay_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
@@ -982,11 +1097,13 @@ void execute_normal(void)
 					regs.regs[0], regs.regs[1], regs.regs[8], regs.regs[15],
 					(unsigned)regs.sr, (unsigned)regs.spcflags, (void*)regs.pc_oldp,
 					(unsigned)regs.isp, (unsigned)regs.msp, regs.s, regs.m);
-			/* Check if the guest Mac address is in valid executable memory:
-			   - RAM: 0 <= pc < RAMSize
+			/* Check if the guest address is in valid executable memory:
+			   - Basilisk-style RAM: 0 <= pc < RAMSize
+			   - Previous RAM: 0x04000000 <= pc < 0x04000000 + RAMSize
 			   - ROM: ROMBaseMac <= pc < ROMBaseMac + ROMSize
 			   Anything else (NuBus space, frame buffer, unmapped) is a bus error. */
 			bool valid_mac_pc = (safe_pc < (uae_u32)RAMSize) ||
+				(safe_pc >= 0x04000000u && safe_pc < 0x04000000u + (uae_u32)RAMSize) ||
 				(safe_pc >= (uae_u32)ROMBaseMac && safe_pc < (uae_u32)(ROMBaseMac + ROMSize));
 			if (!valid_mac_pc) {
 				/* Guest PC points to unmapped memory (e.g. NuBus slot probe).
@@ -1078,11 +1195,13 @@ void execute_normal(void)
 					uaecptr a0v = m68k_areg(regs, 0);
 					uaecptr a3v = m68k_areg(regs, 3);
 					fprintf(stderr,
-						"PCTMEM %08x m1e4=%08x m1e8=%08x m20c=%08x ma0m4=%08x ma3=%08x ma3p4=%08x\n",
+						"PCTMEM %08x m1e4=%08x m1e8=%08x m20c=%08x m40b0334=%08x m40c31b0=%08x ma0m4=%08x ma3=%08x ma3p4=%08x\n",
 						pc,
 						(unsigned)get_long(0x1e4),
 						(unsigned)get_long(0x1e8),
 						(unsigned)get_long(0x20c),
+						(unsigned)get_long(0x040b0334),
+						(unsigned)get_long(0x040c31b0),
 						(unsigned)get_long(a0v >= 4 ? a0v - 4 : a0v),
 						(unsigned)get_long(a3v),
 						(unsigned)get_long(a3v + 4));
@@ -1125,7 +1244,17 @@ void execute_normal(void)
 		for (;;) {
 			pc_hist[blocklen++].location = (uae_u16 *)regs.pc_p;
 			uae_u32 pc_before_op = m68k_getpc();
+			regs.fault_pc = pc_before_op;
+			Uae2026JitLastInstructionPc = pc_before_op;
+			Uae2026JitLastFlags = regflags;
 			uae_u32 opcode = GET_OPCODE;
+			mmu_restart = true;
+			mmu_opcode = (uae_u16)opcode;
+			if (legacy_ram_direct_movem_long_predec(pc_before_op, (uae_u16)opcode)) {
+				cpu_check_ticks();
+				total_cycles += 4 * CYCLE_UNIT;
+				return;
+			}
 			uae_u32 delay_retpc = 0;
 			bool helper_callsite = (legacy_rom_delay_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
 				jit_op_rom_delay_bsr_callsite(pc_before_op, delay_retpc)) ||
@@ -1748,7 +1877,7 @@ extern "C" void jit_op_stop(void)
     regs.sr = new_sr;
     MakeFromSR();
     regs.stopped = 1;
-    SPCFLAGS_SET(SPCFLAG_STOP);
+    regs.spcflags |= 0x002; /* Previous SPCFLAG_STOP */
 }
 
 extern "C" void jit_op_trap(void)

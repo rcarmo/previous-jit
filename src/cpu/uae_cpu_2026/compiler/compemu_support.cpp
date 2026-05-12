@@ -102,6 +102,7 @@ extern "C" void Uae2026JitSyncVideoFromShadow(void);
 extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr);
+extern "C" uae_u32 Uae2026JitMmuXlateCode(uae_u32 addr);
 extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitLivePutLong(uae_u32 addr, uae_u32 value);
@@ -109,6 +110,20 @@ extern "C" void Uae2026JitFastClearLongs(uae_u32 addr, uae_u32 count);
 extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count);
 extern "C" uae_u8 Uae2026JitRtcReadByte(uae_u32 addr);
 extern "C" void Uae2026JitRtcWriteByte(uae_u32 addr, uae_u32 val);
+extern "C" uae_u32 Uae2026JitLastExceptionSp = 0;
+
+extern "C" void Uae2026JitCanonicalizePcAfterFallback(void)
+{
+	const uae_u32 pc = regs.pc;
+	regs.fault_pc = pc;
+	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled) {
+		const uae_u32 phys_pc = Uae2026JitMmuXlateCode(pc);
+		regs.pc_p = (uae_u8 *)((uintptr)MEMBaseDiff + (uintptr)phys_pc);
+	} else {
+		regs.pc_p = get_real_address(pc, 0, sz_word);
+	}
+	regs.pc_oldp = regs.pc_p;
+}
 
 static inline void jit_set_guest_pc_fast(uae_u32 pc)
 {
@@ -119,7 +134,7 @@ static inline void jit_set_guest_pc_fast(uae_u32 pc)
 
 static inline bool jit_fast_return_from_subroutine(void)
 {
-	uae_u32 ret = get_long(regs.regs[15]);
+	uae_u32 ret = Uae2026JitLiveGetLong(regs.regs[15]);
 	regs.regs[15] += 4;
 	jit_set_guest_pc_fast(ret);
 	return true;
@@ -149,7 +164,7 @@ static inline bool jit_emulate_rom_vbr_global_lookup(uae_u32 pc)
 	   compiled/fallback mixed path can keep stale A0 in the register allocator
 	   after MOVEC2 writes A0 through the canonical regs array. */
 	regs.regs[8] = regs.vbr;
-	regs.regs[0] = get_long(regs.vbr + 4);
+	regs.regs[0] = Uae2026JitLiveGetLong(regs.vbr + 4);
 	return jit_fast_return_from_subroutine();
 }
 
@@ -159,7 +174,7 @@ extern "C" bool jit_op_rom_vbr_global_lookup_callsite(uae_u32 pc, uae_u32 retpc)
 		return false;
 	(void)pc;
 	regs.regs[8] = regs.vbr;
-	regs.regs[0] = get_long(regs.vbr + 4);
+	regs.regs[0] = Uae2026JitLiveGetLong(regs.vbr + 4);
 	jit_set_guest_pc_fast(retpc ? retpc : (pc + 6));
 	return true;
 }
@@ -229,8 +244,8 @@ static inline bool jit_emulate_rom_delay_call(uae_u32 pc)
 	   visible stack-argument mutation and call/return shape, but compresses the
 	   delay loops to bounded tick delivery. */
 	const uae_u32 arg_addr = regs.regs[15] + 4;
-	const uae_u32 arg = get_long(arg_addr);
-	put_long(arg_addr, arg - 3u);
+	const uae_u32 arg = Uae2026JitLiveGetLong(arg_addr);
+	Uae2026JitLivePutLong(arg_addr, arg - 3u);
 	jit_charge_rom_delay_ticks(arg);
 	return jit_fast_return_from_subroutine();
 }
@@ -243,7 +258,7 @@ static inline bool jit_emulate_rom_delay_body(uae_u32 pc)
 	   caller block, dispatch can resume at the delay body.  Charge based on the
 	   already-mutated stack argument and return instead of native-emitting the
 	   cache/DBF body against VRAM-backed stack memory. */
-	jit_charge_rom_delay_ticks(get_long(regs.regs[15] + 4) + 3u);
+	jit_charge_rom_delay_ticks(Uae2026JitLiveGetLong(regs.regs[15] + 4) + 3u);
 	return jit_fast_return_from_subroutine();
 }
 
@@ -266,6 +281,56 @@ static inline bool jit_emulate_rom_cache_restore(uae_u32 pc, uae_u16 op)
 		return false;
 	jit_set_guest_pc_fast(0x010024fc);
 	return true;
+}
+
+static inline bool jit_live_frame_addr(uae_u32 addr)
+{
+	return (addr >= 0x04000000u && addr < 0x08000000u) ||
+		(addr >= 0x0b000000u && addr < 0x0b040000u);
+}
+
+static inline bool jit_emulate_rom_scc_clock_reset(uae_u32 pc)
+{
+	if (pc < 0x01007900u || pc > 0x01007a8eu)
+		return false;
+	/* ROM SCC clock/reset helper.  The real routine bit-bangs the SCC clock
+	   programming registers at the 0x021180xx BMAP alias and calls a delay/math
+	   helper from inside the device-write sequence.  In RAM-mode dispatch, those
+	   special-memory writes can split a compiled block with stale continuation
+	   state.  Complete the routine natively from any known in-routine resume PC:
+	   preserve the visible ROM-global side effect, restore the outer frame, and
+	   return to the original caller. */
+	const uae_u32 global = Uae2026JitLiveGetLong(regs.vbr + 4);
+	if (global)
+		Uae2026JitLivePutByte(global + 4, Uae2026JitLiveGetByte(global + 4) & 0xcfu);
+
+	if (pc == 0x01007900u)
+		return jit_fast_return_from_subroutine();
+
+	uae_u32 fp = regs.regs[14];
+	uae_u32 outer_fp = 0;
+	if (pc <= 0x01007954u) {
+		outer_fp = fp;
+	} else if (pc <= 0x010079f0u) {
+		if (!jit_live_frame_addr(fp))
+			return false;
+		outer_fp = Uae2026JitLiveGetLong(fp);
+	} else {
+		if (!jit_live_frame_addr(fp))
+			return false;
+		uae_u32 caller_fp = Uae2026JitLiveGetLong(fp);
+		if (!jit_live_frame_addr(caller_fp))
+			return false;
+		outer_fp = Uae2026JitLiveGetLong(caller_fp);
+	}
+	if (!jit_live_frame_addr(outer_fp))
+		return false;
+
+	regs.regs[10] = Uae2026JitLiveGetLong(outer_fp - 8); /* A2 */
+	regs.regs[11] = Uae2026JitLiveGetLong(outer_fp - 4); /* A3 */
+	regs.regs[14] = Uae2026JitLiveGetLong(outer_fp);     /* caller FP */
+	regs.regs[15] = outer_fp + 4;                       /* caller return address */
+	return jit_fast_return_from_subroutine();
 }
 
 static inline bool jit_emulate_bulk_clear_loop(uae_u32 pc, uae_u16 op)
@@ -303,6 +368,7 @@ static inline void jit_maybe_apply_runtime_helpers(void)
 		jit_emulate_rom_delay_call(pc) ||
 		jit_emulate_rom_delay_dbf(pc, op) ||
 		jit_emulate_rom_cache_restore(pc, op) ||
+		jit_emulate_rom_scc_clock_reset(pc) ||
 		jit_emulate_rom_delay_body(pc) ||
 		jit_emulate_bulk_clear_loop(pc, op))
 		return;
@@ -679,8 +745,15 @@ void m68k_do_compile_execute(void)
 	if (!regs.mem_banks)
 		regs.mem_banks = (uintptr)mem_banks;
 	regs.cache_tags = (uintptr)cache_tags;
-	fprintf(stderr, "JIT_ENTRY pc=%08x spc=%08x a7=%08x\n", m68k_getpc(), (unsigned)regs.spcflags, regs.regs[15]);
-	fflush(stderr);
+	{
+		static int entry_trace = -1;
+		if (entry_trace < 0) {
+			const char *env = getenv("B2_JIT_ENTRY_TRACE");
+			entry_trace = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+		}
+		if (entry_trace)
+			fprintf(stderr, "JIT_ENTRY pc=%08x spc=%08x a7=%08x\n", m68k_getpc(), (unsigned)regs.spcflags, regs.regs[15]);
+	}
 	static unsigned long _dc = 0;
 #if defined(CPU_AARCH64)
 	extern bool tick_inhibit;
@@ -701,13 +774,18 @@ void m68k_do_compile_execute(void)
 	for (;;) {
 #if defined(CPU_AARCH64)
 		jit_maybe_apply_runtime_helpers();
+		if (SPCFLAGS_TEST(SPCFLAG_ALL)) {
+			MakeSR();
+			if (m68k_do_specialties())
+				return;
+		}
 		{
 			extern bool UseJIT;
 			static bool ram_synced_for_dispatch = false;
 			uae_u32 _pc = m68k_getpc();
 			if (_pc == 0 && jit_allow_ram_dispatch_env()) {
 				static unsigned long zero_pc_log = 0;
-				uae_u32 vec2 = regs.vbr ? get_long(regs.vbr + 8) : get_long(8);
+				uae_u32 vec2 = regs.vbr ? Uae2026JitLiveGetLong(regs.vbr + 8) : Uae2026JitLiveGetLong(8);
 				if (zero_pc_log < 16 || (zero_pc_log % 1024) == 0) {
 					fprintf(stderr, "JIT_ZERO_PC dispatch=%lu vbr=%08x vec2=%08x a7=%08x spc=%08x\n",
 						zero_pc_log + 1, (unsigned)regs.vbr, (unsigned)vec2,
@@ -717,7 +795,24 @@ void m68k_do_compile_execute(void)
 				if (vec2) {
 					jit_set_guest_pc_fast(vec2);
 					_pc = vec2;
+					if (jit_allow_ram_dispatch_env()) {
+						regs.s = 1;
+						regs.m = 0;
+						if (Uae2026JitLastExceptionSp)
+							regs.isp = Uae2026JitLastExceptionSp;
+						m68k_areg(regs, 7) = regs.isp;
+						MakeSR();
+						fprintf(stderr, "JIT_ZERO_PC recovered pc=%08x sr=%04x a7=%08x isp=%08x last_ex_sp=%08x\n",
+							(unsigned)vec2, (unsigned)regs.sr, (unsigned)m68k_areg(regs, 7),
+							(unsigned)regs.isp, (unsigned)Uae2026JitLastExceptionSp);
+					}
 				}
+			}
+			if (jit_allow_ram_dispatch_env() && regs.mmu_enabled) {
+				uae_u32 phys_pc = Uae2026JitMmuXlateCode(_pc);
+				regs.pc = _pc;
+				regs.pc_p = (uae_u8 *)((uintptr)MEMBaseDiff + (uintptr)phys_pc);
+				regs.pc_oldp = regs.pc_p;
 			}
 			const bool in_rom = (_pc >= 0x01000000 && _pc < 0x01020000);
 			const bool in_ram = (_pc >= 0x04000000 && _pc < 0x08000000);
@@ -745,43 +840,105 @@ void m68k_do_compile_execute(void)
 #endif
 		_dc++;
 		{
-			static unsigned long dc_log = 0;
-			if (++dc_log % 10000 == 0 || (dc_log <= 500)) {
+			static unsigned long rom_exc_trace = 0;
+			static int rom_exc_trace_enabled = -1;
+			if (rom_exc_trace_enabled < 0) {
+				const char *env = getenv("PREVIOUS_JIT_TRACE_ROM_EXC");
+				rom_exc_trace_enabled = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+			}
+			if (rom_exc_trace_enabled && rom_exc_trace < 80) {
 				uae_u32 _pc = m68k_getpc();
-				if (dc_log % 10000 == 0 || dc_log <= 500) {
+				if (_pc >= 0x010016d8u && _pc <= 0x01001746u) {
+					uae_u32 fp = regs.regs[14];
+					uae_u32 f8c = 0, f8e = 0, f92 = 0, f44 = 0;
+					if ((fp >= 0x0b000000u && fp < 0x0b040000u) || (fp >= 0x04000000u && fp < 0x08000000u)) {
+						f8c = Uae2026JitLiveGetLong(fp + 0x8c);
+						f8e = Uae2026JitLiveGetLong(fp + 0x8e);
+						f92 = Uae2026JitLiveGetLong(fp + 0x92);
+						f44 = Uae2026JitLiveGetLong(fp + 0x44);
+					}
+					fprintf(stderr, "ROMEXC[%lu] pc=%08x d0=%08x d1=%08x d4=%08x d5=%08x d6=%08x a3=%08x a4=%08x a5=%08x fp=%08x a7=%08x f44=%08x f8c=%08x f8e=%08x f92=%08x sr=%04x\n",
+						++rom_exc_trace, _pc, (unsigned)regs.regs[0], (unsigned)regs.regs[1],
+						(unsigned)regs.regs[4], (unsigned)regs.regs[5], (unsigned)regs.regs[6],
+						(unsigned)regs.regs[11], (unsigned)regs.regs[12], (unsigned)regs.regs[13],
+						(unsigned)fp, (unsigned)regs.regs[15], (unsigned)f44,
+						(unsigned)f8c, (unsigned)f8e, (unsigned)f92, (unsigned)regs.sr);
+				}
+			}
+			static unsigned long gfx_loop_trace = 0;
+			static int gfx_loop_trace_enabled = -1;
+			if (gfx_loop_trace_enabled < 0) {
+				const char *env = getenv("PREVIOUS_JIT_TRACE_GFXLOOP");
+				gfx_loop_trace_enabled = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+			}
+			if (gfx_loop_trace_enabled && gfx_loop_trace < 240) {
+				uae_u32 _pc = m68k_getpc();
+				if (_pc >= 0x010084f0u && _pc <= 0x01008820u) {
+					uae_u32 a2 = regs.regs[10];
+					uae_u32 w154 = 0, w156 = 0, l324 = 0, l328 = 0, l348 = 0;
+					if (a2 >= 0x0b000000u && a2 < 0x0b040000u) {
+						w154 = Uae2026JitLiveGetWord(a2 + 0x154);
+						w156 = Uae2026JitLiveGetWord(a2 + 0x156);
+						l324 = Uae2026JitLiveGetLong(a2 + 0x324);
+						l328 = Uae2026JitLiveGetLong(a2 + 0x328);
+						l348 = Uae2026JitLiveGetLong(a2 + 0x348);
+					}
+					fprintf(stderr, "GFXLOOP[%lu] pc=%08x d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x a1=%08x a2=%08x a3=%08x a5=%08x w154=%04x w156=%04x l324=%08x l328=%08x l348=%08x sr=%04x\n",
+						++gfx_loop_trace, _pc,
+						(unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[2],
+						(unsigned)regs.regs[3], (unsigned)regs.regs[4], (unsigned)regs.regs[5],
+						(unsigned)regs.regs[6], (unsigned)regs.regs[7], (unsigned)regs.regs[9],
+						(unsigned)regs.regs[10], (unsigned)regs.regs[11], (unsigned)regs.regs[13],
+						(unsigned)w154, (unsigned)w156, (unsigned)l324, (unsigned)l328,
+						(unsigned)l348, (unsigned)regs.sr);
+				}
+			}
+			static int dc_trace_enabled = -1;
+			if (dc_trace_enabled < 0) {
+				const char *env = getenv("PREVIOUS_JIT_TRACE_DC");
+				if (env && *env)
+					dc_trace_enabled = (strcmp(env, "0") != 0) ? 1 : 0;
+				else
+					dc_trace_enabled = 0;
+			}
+			if (dc_trace_enabled) {
+				static unsigned long dc_log = 0;
+				if (++dc_log % 10000 == 0 || (dc_log <= 500)) {
+					uae_u32 _pc = m68k_getpc();
 					fprintf(stderr, "DC[%lu] pc=%08x sr=%04x intmask=%u spc=%08x",
 						dc_log, _pc, (unsigned)regs.sr, (unsigned)regs.intmask,
 						(unsigned)regs.spcflags);
-					if (dc_log <= 30)
+					if (dc_log <= 30) {
 						fprintf(stderr, " D0=%08x D3=%08x D7=%08x A0=%08x A7=%08x",
 							regs.regs[0], regs.regs[3], regs.regs[7],
 							regs.regs[8], regs.regs[15]);
+					}
 					fprintf(stderr, "\n");
-				}
-				static int dump_once = 0;
-				if (!dump_once && _pc < 0x00800000 && dc_log > 30000) {
-					dump_once = 1;
-					uae_u8 *p = get_real_address(_pc);
-					fprintf(stderr, "RAMDUMP pc=%08x:", _pc);
-					for (int _i = 0; _i < 32; _i++)
-						fprintf(stderr, " %02x", p[_i]);
-					fprintf(stderr, "\n");
-					fprintf(stderr, "REGDUMP2 D0=%08x D1=%08x D2=%08x D3=%08x D4=%08x D5=%08x D6=%08x D7=%08x\n",
-						regs.regs[0], regs.regs[1], regs.regs[2], regs.regs[3],
-						regs.regs[4], regs.regs[5], regs.regs[6], regs.regs[7]);
-					fprintf(stderr, "REGDUMP2 A0=%08x A1=%08x A2=%08x A3=%08x A4=%08x A5=%08x A6=%08x A7=%08x\n",
-						regs.regs[8], regs.regs[9], regs.regs[10], regs.regs[11],
-						regs.regs[12], regs.regs[13], regs.regs[14], regs.regs[15]);
-					fprintf(stderr, "REGDUMP2 pc_p=%p pc_oldp=%p pc=%08x sr=%04x isp=%08x usp=%08x msp=%08x\n",
-						(void*)regs.pc_p, (void*)regs.pc_oldp, regs.pc,
-						regs.sr, regs.isp, regs.usp, regs.msp);
-					/* Also dump what pc_p actually points to */
-					if (regs.pc_p) {
-						uae_u8 *pp = (uae_u8*)regs.pc_p;
-						fprintf(stderr, "CODEAT pc_p:");
+					static int dump_once = 0;
+					if (!dump_once && _pc < 0x00800000 && dc_log > 30000) {
+						dump_once = 1;
+						uae_u8 *p = get_real_address(_pc);
+						fprintf(stderr, "RAMDUMP pc=%08x:", _pc);
 						for (int _i = 0; _i < 32; _i++)
-							fprintf(stderr, " %02x", pp[_i]);
+							fprintf(stderr, " %02x", p[_i]);
 						fprintf(stderr, "\n");
+						fprintf(stderr, "REGDUMP2 D0=%08x D1=%08x D2=%08x D3=%08x D4=%08x D5=%08x D6=%08x D7=%08x\n",
+							regs.regs[0], regs.regs[1], regs.regs[2], regs.regs[3],
+							regs.regs[4], regs.regs[5], regs.regs[6], regs.regs[7]);
+						fprintf(stderr, "REGDUMP2 A0=%08x A1=%08x A2=%08x A3=%08x A4=%08x A5=%08x A6=%08x A7=%08x\n",
+							regs.regs[8], regs.regs[9], regs.regs[10], regs.regs[11],
+							regs.regs[12], regs.regs[13], regs.regs[14], regs.regs[15]);
+						fprintf(stderr, "REGDUMP2 pc_p=%p pc_oldp=%p pc=%08x sr=%04x isp=%08x usp=%08x msp=%08x\n",
+							(void*)regs.pc_p, (void*)regs.pc_oldp, regs.pc,
+							regs.sr, regs.isp, regs.usp, regs.msp);
+						/* Also dump what pc_p actually points to */
+						if (regs.pc_p) {
+							uae_u8 *pp = (uae_u8*)regs.pc_p;
+							fprintf(stderr, "CODEAT pc_p:");
+							for (int _i = 0; _i < 32; _i++)
+								fprintf(stderr, " %02x", pp[_i]);
+							fprintf(stderr, "\n");
+						}
 					}
 				}
 			}
@@ -817,14 +974,26 @@ void m68k_do_compile_execute(void)
 
 void m68k_compile_execute(void)
 {
-	for (;;) {
-		if (quit_program > 0) {
-			if (quit_program == 1)
-				break;
-			quit_program = 0;
-			m68k_reset();
+setjmpagain:
+	TRY(prb) {
+		for (;;) {
+			if (quit_program > 0) {
+				if (quit_program == 1)
+					break;
+				quit_program = 0;
+				m68k_reset();
+			}
+			m68k_do_compile_execute();
 		}
-		m68k_do_compile_execute();
+	}
+	CATCH(prb) {
+		fprintf(stderr,
+			"m68k_compile_execute: exception %d pc=%08x fault_pc=%08x addr=%08x sp=%08x\n",
+			(int)prb, (unsigned)m68k_getpc(), (unsigned)regs.fault_pc,
+			(unsigned)regs.mmu_fault_addr, (unsigned)regs.regs[15]);
+		flush_icache();
+		Exception(prb, 0);
+		goto setjmpagain;
 	}
 }
 
@@ -851,8 +1020,8 @@ extern "C" bool jit_op_rom_delay_bsr_callsite(uae_u32 pc, uae_u32 retpc)
 	   pushing a temporary return address through the 0x0bxxxxxx VRAM/MMU stack
 	   path during block tracing/native execution. */
 	uae_u32 sp = regs.regs[15];
-	uae_u32 arg = get_long(sp);
-	put_long(sp, arg - 3u);
+	uae_u32 arg = Uae2026JitLiveGetLong(sp);
+	Uae2026JitLivePutLong(sp, arg - 3u);
 	jit_charge_rom_delay_ticks(arg);
 	jit_set_guest_pc_fast(retpc ? retpc : (pc + 6));
 	return true;

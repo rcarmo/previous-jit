@@ -948,6 +948,23 @@ static void Exception_mmu (int nr, uaecptr oldpc)
 			Exception_build_stack_frame(oldpc, currpc, regs.mmu_ssw, nr, 0x7);
 		else
 			Exception_build_stack_frame(regs.mmu_fault_addr, currpc, regs.mmu_fslw, nr, 0x4);
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+		{
+			static unsigned long jit_mmu_frame_log_count = 0;
+			if (jit_mmu_frame_log_count < 64 || currpc == 0x00003334u || oldpc == 0x04001660u) {
+				fprintf(stderr,
+					"JIT_MMU_FRAME[%lu] nr=%d currpc=%08x oldpc=%08x newpc=%08x sp=%08x sr=%04x s=%u usp=%08x isp=%08x msp=%08x ssw=%04x fault=%08x effective=%08x wb2=%04x wb3=%04x\n",
+					++jit_mmu_frame_log_count, nr, (unsigned)currpc, (unsigned)oldpc,
+					(unsigned)newpc, (unsigned)m68k_areg(regs, 7), (unsigned)regs.sr,
+					(unsigned)regs.s, (unsigned)regs.usp, (unsigned)regs.isp,
+					(unsigned)regs.msp, (unsigned)regs.mmu_ssw,
+					(unsigned)regs.mmu_fault_addr, (unsigned)regs.mmu_effective_addr,
+					(unsigned)regs.wb2_status, (unsigned)regs.wb3_status);
+			}
+			else
+				jit_mmu_frame_log_count++;
+		}
+#endif
 	} else if (nr == 3) { // address error
         Exception_build_stack_frame(last_fault_for_exception_3, currpc, 0, nr, 0x2);
 		write_log (_T("Exception %d (%x) at %x!\n"), nr, last_fault_for_exception_3, currpc);
@@ -1538,6 +1555,19 @@ void m68k_go (int may_quit)
             run_func ();
         }
 		if (Uae2026OpcodeTestModeActive()) {
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+			/* The JIT bridge can return at compiled-block boundaries (for example
+			 * DBcc terminal paths) before the opcode-test STOP has executed.  In
+			 * opcode-test mode, keep driving the CPU until STOP/BRK instead of
+			 * dumping a mid-block-boundary state. */
+			if (!(regs.spcflags & SPCFLAG_BRK)) {
+				uae_u16 test_op = get_word(m68k_getpc());
+				if (test_op == 0x2c7c || /* MOVEA.L #sentinel,A6 */
+					(Uae2026JitBridgeIsActive() && !regs.stopped &&
+					 !(regs.spcflags & SPCFLAG_STOP)))
+					continue;
+			}
+#endif
 			unset_special(SPCFLAG_BRK);
 			break;
 		}

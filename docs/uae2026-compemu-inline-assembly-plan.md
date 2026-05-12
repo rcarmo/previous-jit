@@ -163,5 +163,6 @@ Current RAM-mode lessons for the migration plan:
 - Keep vendored compiler globals renamed away from Previous-native globals. In particular, Basilisk/UAE compiler prefs use `uae2026_currprefs`/`uae2026_changed_prefs`; Previous-native `currprefs`/`changed_prefs` have a different struct layout and must not share symbols.
 - The remaining RAM-mode frontier is nested 68040 MMU exception delivery around handler `RTE` back to low user virtual PCs. Keep `fault_pc`/`instruction_pc` distinct from `mmu_fault_addr`; rewriting one into the other produced worse/incorrect exception-frame behavior.
 - If `RTE` has already switched from supervisor to user mode before an instruction-fetch/page fault, preserve the interpreter-updated post-pop `regs.isp`; do not overwrite it with the cached pre-RTE exception-frame SP except as a last-ditch fallback when `regs.isp` is missing.
+- For native RAM/MMU bank and code-host helper calls, publish the current flushed JIT flag snapshot to `Uae2026JitLastFlags` before the helper can fault; the bridge restart path restores this snapshot when `mmu_restart` is set.
 
 Immediate harness gap: add a minimal RAM/MMU regression that reproduces “auto-update EA fault -> MMU handler -> `RTE` to low user virtual PC” without waiting for a full boot.

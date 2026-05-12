@@ -34,9 +34,9 @@ Right now the project is at the stage where:
 
 - interpreter-backed validation works
 - JIT bootstrap/plumbing works
-- the opcode-equivalence harness is clean (`pass=62 fail=0 score=100` as of 2026-05-12; latest audit run `/workspace/tmp/previous-opcode-harness-20260512-204115`)
-- default/ROM JIT reaches the NEXTSTEP desktop and remained stable for 60s in the latest smoke check (`/workspace/tmp/previous-jit-bridge-smoke-rte-isp-default-20260512-204632`)
-- RAM-mode JIT reaches true RAM dispatch and gets past early kernel/device activity, but still fails before the desktop in the 68040 MMU RTE/page-fault path; preserving post-RTE ISP avoids the immediate panic but still times out at/after `root on sd@` (`/workspace/tmp/previous-jit-bridge-smoke-ram-rte-isp-preserve-20260512-203155`)
+- the opcode-equivalence harness is clean (`pass=62 fail=0 score=100` as of 2026-05-12; latest audit run `/workspace/tmp/previous-opcode-harness-20260512-213730`)
+- default/ROM JIT reaches the NEXTSTEP desktop and remained stable for 60s in the latest smoke check (`/workspace/tmp/previous-jit-bridge-smoke-mmu-flags-default-20260512-214256`)
+- RAM-mode JIT reaches true RAM dispatch and gets past early kernel/device activity, but still fails before the desktop in the 68040 MMU RTE/page-fault path; preserving post-RTE ISP and publishing current JIT flags before MMU helper faults avoids the immediate panic but still times out at/after `root on sd@` (`/workspace/tmp/previous-jit-bridge-smoke-ram-mmu-flags-final-20260512-214851`)
 
 ## Project layout
 

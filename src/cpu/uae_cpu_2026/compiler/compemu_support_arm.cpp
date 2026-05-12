@@ -3808,6 +3808,18 @@ static void op_fullsr_mv2sr_w_comp_ff(uae_u32 opcode)
         (uintptr)(comp_pc_p + m68k_pc_offset_thisinst), opcode, 0, false);
 }
 
+extern "C" struct flag_struct Uae2026JitLastFlags;
+
+static inline void jit_publish_last_flags_for_mmu_helper(void)
+{
+#if defined(CPU_AARCH64)
+    compemu_raw_mov_l_rm(REG_WORK1, (uintptr)&regflags.nzcv);
+    compemu_raw_mov_l_mr((uintptr)&Uae2026JitLastFlags.nzcv, REG_WORK1);
+    compemu_raw_mov_l_rm(REG_WORK1, (uintptr)&regflags.x);
+    compemu_raw_mov_l_mr((uintptr)&Uae2026JitLastFlags.x, REG_WORK1);
+#endif
+}
+
 #if defined(CPU_AARCH64) 
 #include "compemu_midfunc_arm64.cpp"
 #include "compemu_midfunc_arm64_2.cpp"
@@ -4427,6 +4439,7 @@ STATIC_INLINE void get_n_addr_jmp_mmu(int address, int dest)
 
     address = readreg_specific(address, REG_PAR1);
     prepare_for_call_1();
+    jit_publish_last_flags_for_mmu_helper();
     unlock2(address);
     prepare_for_call_2();
     compemu_raw_call((uintptr)Uae2026JitMmuXlateCodeHost);

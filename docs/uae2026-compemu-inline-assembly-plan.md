@@ -162,5 +162,6 @@ Current RAM-mode lessons for the migration plan:
 - Keep the two paths explicit: `Uae2026JitMmuXlateCodeHost()` is for instruction/branch/return/dispatch host pointers; the private RAM/MMU bank `xlateaddr` remains data-space via `Uae2026JitMmuXlateData()`.
 - Keep vendored compiler globals renamed away from Previous-native globals. In particular, Basilisk/UAE compiler prefs use `uae2026_currprefs`/`uae2026_changed_prefs`; Previous-native `currprefs`/`changed_prefs` have a different struct layout and must not share symbols.
 - The remaining RAM-mode frontier is nested 68040 MMU exception delivery around handler `RTE` back to low user virtual PCs. Keep `fault_pc`/`instruction_pc` distinct from `mmu_fault_addr`; rewriting one into the other produced worse/incorrect exception-frame behavior.
+- If `RTE` has already switched from supervisor to user mode before an instruction-fetch/page fault, preserve the interpreter-updated post-pop `regs.isp`; do not overwrite it with the cached pre-RTE exception-frame SP except as a last-ditch fallback when `regs.isp` is missing.
 
 Immediate harness gap: add a minimal RAM/MMU regression that reproduces “auto-update EA fault -> MMU handler -> `RTE` to low user virtual PC” without waiting for a full boot.

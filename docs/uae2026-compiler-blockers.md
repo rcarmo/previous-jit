@@ -33,8 +33,8 @@ prelude, without linking it into `Previous` yet.
 - syntax probe: **passing**
 - object compile probe: **passing**
 - emulator/runtime integration of vendored compiler entry points: **wired under `ENABLE_EXPERIMENTAL_UAE2026_JIT`**
-- default/ROM translated execution reaches the NEXTSTEP desktop and passed a 60s stability smoke in the latest audit check (`/workspace/tmp/previous-jit-bridge-smoke-audit-clean-20260512-191843`)
-- RAM/MMU dispatch mode is still experimental and remains blocked in nested 68040 MMU exception / RTE page-fault state; latest audit RAM smoke reached true RAM dispatch but ended before desktop (`/workspace/tmp/previous-jit-bridge-smoke-ram-audit-clean-20260512-192418`)
+- default/ROM translated execution reaches the NEXTSTEP desktop and passed a 60s stability smoke in the latest audit check (`/workspace/tmp/previous-jit-bridge-smoke-rte-isp-default-20260512-204632`)
+- RAM/MMU dispatch mode is still experimental and remains blocked in nested 68040 MMU exception / RTE page-fault state; latest audit RAM smoke reached true RAM dispatch and avoided the immediate panic after preserving post-RTE ISP, but still timed out before desktop (`/workspace/tmp/previous-jit-bridge-smoke-ram-rte-isp-preserve-20260512-203155`)
 - latest build-hygiene audit removes the prior compiler/linker warning set by renaming vendored compiler prefs away from Previous-native `currprefs`/`changed_prefs`, guarding duplicate `USE_JIT`, casting AArch64 instruction-word emissions, and adding a defensive ARM64 vreg status bounds check
 
 ## Remaining blocker classes

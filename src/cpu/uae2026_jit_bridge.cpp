@@ -469,7 +469,11 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
         }
         bridge_restore_autoea_fault_side_effects(regs.fault_pc);
         const bool bridge_rte_fault = bridge_live_peek_word(regs.fault_pc) == 0x4e73u;
-        if (!regs.s && Uae2026JitLastExceptionSp && bridge_rte_fault) {
+        /* If RTE already switched to user mode before faulting, MakeFromSR()
+         * should have saved the post-pop supervisor stack in regs.isp.  Do not
+         * overwrite that with the pre-RTE exception-frame SP; use the cached
+         * value only as a last-ditch fallback for missing ISP state. */
+        if (!regs.s && Uae2026JitLastExceptionSp && bridge_rte_fault && regs.isp == 0) {
             regs.isp = Uae2026JitLastExceptionSp;
         }
         {

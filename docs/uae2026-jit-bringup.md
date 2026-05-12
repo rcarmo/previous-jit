@@ -211,8 +211,8 @@ and compares the resulting `REGDUMP:` state instead of waiting for a full NeXT b
 See `docs/uae2026-opcode-harness.md` for the current vector set and latest results.
 
 Latest translated-execution debug checkpoint (2026-05-12):
-- opcode harness passes: `total=62`, `jit_ok=62`, `pass=62`, `fail=0`, `infra_fail=0`, `score=100` (`/workspace/tmp/previous-opcode-harness-20260512-191256`)
-- default/ROM JIT smoke passes and stayed stable for 60 seconds: `desktop_reached=1`, `stable_reached=1`, `jit_ram_requested=0`, `jit_ram_dispatch_seen=0`, `jit_dispatch_lines=4805`, `jit_last_pc=0100bb08` in `/workspace/tmp/previous-jit-bridge-smoke-audit-clean-20260512-191843`
+- opcode harness passes: `total=62`, `jit_ok=62`, `pass=62`, `fail=0`, `infra_fail=0`, `score=100` (`/workspace/tmp/previous-opcode-harness-20260512-204115`)
+- default/ROM JIT smoke passes and stayed stable for 60 seconds: `desktop_reached=1`, `stable_reached=1`, `jit_ram_requested=0`, `jit_ram_dispatch_seen=0`, `jit_dispatch_lines=4805`, `jit_last_pc=0100bb08` in `/workspace/tmp/previous-jit-bridge-smoke-rte-isp-default-20260512-204632`
 - RAM translation remains gated by `PREVIOUS_UAE2026_JIT_RAM=1`
 - RAM-mode smoke now records true RAM dispatch (`jit_ram_dispatch_seen=1`) instead of only ROM execution
 - the current RAM-mode blocker is not default JIT, opcode harness parity, or early NBIC/MO/SCR2/RTC bring-up; it is nested 68040 MMU exception delivery around an RTE from the MMU handler back to low user virtual PCs
@@ -222,7 +222,8 @@ Latest translated-execution debug checkpoint (2026-05-12):
 - noisy 68040 MMU exception-frame logging is gated behind `B2_JIT_TRACE_MMU_FRAME=1` rather than being emitted by default
 - follow-up build-hygiene audit fixes keep vendored compiler prefs renamed away from Previous-native `currprefs`/`changed_prefs`, guard duplicate `USE_JIT`, cast AArch64 instruction words before emission, and add a defensive vreg bounds check around ARM64 `set_status()`
 - the latest clean build had no compiler/linker warnings in `/workspace/tmp/build-audit-prefs.log`
-- the latest RAM-mode traces no longer reproduce the original advanced-A1 `00003334` corruption, but still fail before desktop; the audit RAM smoke reached true RAM dispatch (`jit_dispatch_lines=191698`, `jit_ram_dispatch_seen=1`, `jit_last_pc=040a268a`) and ended before desktop in `/workspace/tmp/previous-jit-bridge-smoke-ram-audit-clean-20260512-192418`
+- preserving `regs.isp` after an `RTE` has already switched to user mode avoids overwriting the interpreter's post-pop supervisor stack with the cached pre-RTE exception-frame SP; this removes the immediate panic in the latest RAM smoke but does not reach desktop
+- the latest RAM-mode traces no longer reproduce the original advanced-A1 `00003334` corruption, but still fail before desktop; the ISP-preserving RAM smoke reached true RAM dispatch (`jit_dispatch_lines=205839`, `jit_ram_dispatch_seen=1`, `jit_last_pc=0405ff62`) and timed out at/after `root on sd@` without a log/OCR panic in `/workspace/tmp/previous-jit-bridge-smoke-ram-rte-isp-preserve-20260512-203155`
 - do **not** rewrite `fault_pc`/`instruction_pc` to `mmu_fault_addr` for RTE faults; that diagnostic was tested and rejected because the opcode context and access address must remain distinct
 - harness tracking records `jit_dispatch_lines`, `jit_ram_dispatch_seen`, `jit_last_pc`, and `jit_ram_requested`; set `PREVIOUS_UAE2026_JIT_RAM=1` to attempt experimental RAM translation and distinguish ROM-only desktop success from RAM-translated progress
 - experimental RAM mode has stricter RAM-dispatch accounting: `jit_ram_dispatch_seen` only counts `0x04000000..0x07ffffff`, not bogus `pc=00000000`

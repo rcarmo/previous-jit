@@ -63,6 +63,7 @@
 #include <SDL2/SDL.h>
 
 extern "C" void Uae2026JitCanonicalizePcAfterFallback(void);
+extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
 
 /* ARM64 JIT is PIE-compatible: it uses register-indirect addressing
  * (R_MEMSTART/R15) rather than PC-relative globals, so code placement
@@ -4416,6 +4417,27 @@ STATIC_INLINE void get_n_addr_old(int address, int dest)
     readmem_special(address, dest, SIZEOF_VOID_P * 6);
 }
 
+STATIC_INLINE void get_n_addr_jmp_mmu(int address, int dest)
+{
+    clobber_flags();
+    if (dest != address)
+        forget_about(dest);
+
+    address = readreg_specific(address, REG_PAR1);
+    prepare_for_call_1();
+    unlock2(address);
+    prepare_for_call_2();
+    compemu_raw_call((uintptr)Uae2026JitMmuXlateCodeHost);
+
+    live.nat[REG_RESULT].holds[0] = dest;
+    live.nat[REG_RESULT].nholds = 1;
+    live.nat[REG_RESULT].touched = touchcnt++;
+    live.state[dest].realreg = REG_RESULT;
+    live.state[dest].realind = 0;
+    live.state[dest].val = 0;
+    set_status(dest, DIRTY);
+}
+
 STATIC_INLINE void get_n_addr_real(int address, int dest)
 {
     if (currprefs.address_space_24)
@@ -4437,11 +4459,12 @@ void get_n_addr_jmp(int address, int dest)
 {
     /* For this, we need to get the same address as the rest of UAE
        would --- otherwise we end up translating everything twice.
-       In RAM/MMU mode, do not form PC_P as MEMBaseDiff+logical-PC:
-       use the bank xlate hook so the 040 MMU translation path decides the
-       host pointer for branch/JSR/RTS/RTE targets. */
-    if ((jit_allow_ram_dispatch_env() && address >= 0 && address < VREGS) ||
-        special_mem || distrust_addr() || jit_n_addr_unsafe)
+       In RAM/MMU mode, do not form PC_P as MEMBaseDiff+logical-PC and do
+       not use the data-space bank xlate hook: instruction fetch uses MMU
+       code-space translation for branch/JSR/RTS/RTE targets. */
+    if (jit_allow_ram_dispatch_env() && address >= 0 && address < VREGS)
+        get_n_addr_jmp_mmu(address, dest);
+    else if (special_mem || distrust_addr() || jit_n_addr_unsafe)
         get_n_addr_old(address, dest);
     else
         jnf_MEM_GETADR_JMP_OFF(dest, address);

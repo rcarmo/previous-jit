@@ -146,7 +146,8 @@ Why:
 
 3. **Memory mapping model**
    - JIT assumptions about addressability and translated memory vs Previous's NeXT bus/memory model
-   - RAM dispatch now needs code-space MMU translation both for branch targets and for dispatch PC materialization
+   - RAM dispatch needs code-space MMU translation both for branch targets and for dispatch PC materialization
+   - data effective-address translation must remain data-space: the private RAM/MMU bank `xlateaddr` uses `Uae2026JitMmuXlateData()`, while branch/return/dispatch PC paths use the dedicated code-space host helper
 
 4. **Generated table compatibility**
    - BasiliskII's JIT generator output and Previous's active CPU tables need reconciliation
@@ -176,6 +177,8 @@ Why:
 
 ### Phase 5 — MMU/NeXT boot validation
 - only after basic runtime survival, attempt real booting under JIT
+- preserve default/ROM JIT desktop stability while iterating on RAM/MMU dispatch
+- use short RAM-mode smokes to track true RAM dispatch, panic prompt/frontier shifts, and final desktop reachability separately
 
 ## Concrete next code areas to compare
 

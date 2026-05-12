@@ -157,7 +157,9 @@ Current RAM-mode lessons for the migration plan:
 - Auto-update EA opcodes (`Aipi`/`Apdi`) are high-risk under 68040 MMU restart because native paths can update address registers before a helper longjmps out for a page fault. RAM dispatch therefore routes those forms through exact fallback barriers while restart/fixup handling is audited.
 - `MOVES.* reg,(An)+` is no longer short-circuited by the RAM direct helper. It must use exact interpreter/helper semantics until SFC/DFC, restart, and exception-frame behavior are covered by a targeted regression.
 - Return-family opcodes, especially `RTE`, need hard barriers and post-fallback PC canonicalization because interpreter helpers may use `m68k_setpci()` and leave `pc_p` stale for JIT resumption.
-- Code-space MMU translation is required for RAM dispatch PC materialization and branch/return targets. Data-space translation is not sufficient for instruction fetch.
+- Bridge-delivered MMU restarts should use full `m68k_setpc()` materialization, not `m68k_setpci()`, when the next translated handoff depends on a coherent `regs.pc`/`pc_p`/`pc_oldp` tuple.
+- Code-space MMU translation is required for RAM dispatch PC materialization and branch/return targets. Data-space translation is not sufficient for instruction fetch, but it is still required for ordinary data effective-address `xlateaddr` use.
+- Keep the two paths explicit: `Uae2026JitMmuXlateCodeHost()` is for instruction/branch/return/dispatch host pointers; the private RAM/MMU bank `xlateaddr` remains data-space via `Uae2026JitMmuXlateData()`.
 - The remaining RAM-mode frontier is nested 68040 MMU exception delivery around handler `RTE` back to low user virtual PCs. Keep `fault_pc`/`instruction_pc` distinct from `mmu_fault_addr`; rewriting one into the other produced worse/incorrect exception-frame behavior.
 
 Immediate harness gap: add a minimal RAM/MMU regression that reproduces “auto-update EA fault -> MMU handler -> `RTE` to low user virtual PC” without waiting for a full boot.

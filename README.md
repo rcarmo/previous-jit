@@ -34,9 +34,9 @@ Right now the project is at the stage where:
 
 - interpreter-backed validation works
 - JIT bootstrap/plumbing works
-- the opcode-equivalence harness is clean (`pass=62 fail=0 score=100` as of 2026-05-12)
-- default/ROM JIT reaches the NEXTSTEP desktop and remained stable for 60s in the latest smoke check
-- RAM-mode JIT reaches true RAM dispatch and gets past early kernel/device activity, but still fails before the desktop in the 68040 MMU RTE/page-fault path
+- the opcode-equivalence harness is clean (`pass=62 fail=0 score=100` as of 2026-05-12; latest audit run `/workspace/tmp/previous-opcode-harness-20260512-154820`)
+- default/ROM JIT reaches the NEXTSTEP desktop and remained stable for 60s in the latest smoke check (`/workspace/tmp/previous-jit-bridge-smoke-audit-20260512-180833`)
+- RAM-mode JIT reaches true RAM dispatch and gets past early kernel/device activity, but still fails before the desktop in the 68040 MMU RTE/page-fault path (`/workspace/tmp/previous-jit-bridge-smoke-ram-audit-20260512-181409`)
 
 ## Project layout
 
@@ -90,6 +90,7 @@ Notes:
 - Linux startup disables host ASLR by default for deterministic JIT mappings
 - `PREVIOUS_UAE2026_JIT=0` gives an interpreter baseline for harness comparison
 - `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch path; this is still the active correctness frontier
+- RAM/MMU code paths must keep data-space and code-space translations separate: the private bank `xlateaddr` is for data effective addresses, while branch/return/dispatch PC materialization uses the dedicated code-space host translator
 
 ## What is being migrated
 

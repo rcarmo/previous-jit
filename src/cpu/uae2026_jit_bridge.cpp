@@ -459,7 +459,7 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
             regflags = Uae2026JitLastFlags;
             const uae_u32 restart_pc = regs.fault_pc ? regs.fault_pc :
                 (Uae2026JitLastInstructionPc ? Uae2026JitLastInstructionPc : regs.instruction_pc);
-            m68k_setpci(restart_pc);
+            m68k_setpc(restart_pc);
         }
         for (unsigned fixup_index = 0; fixup_index < 2; fixup_index++) {
             if (mmufixup[fixup_index].reg >= 0) {

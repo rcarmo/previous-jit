@@ -188,12 +188,21 @@ struct Uae2026JitBankCompat {
     int flags;
 };
 
-static uintptr_t Uae2026JitBankXlate(uaecptr addr)
+extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr)
 {
     if (!jit_MEMBaseDiff)
         return 0;
     if (Uae2026JitRuntimeMmuEnabled())
         addr = Uae2026JitMmuXlateCode(addr);
+    return (uintptr_t)(jit_MEMBaseDiff + addr);
+}
+
+static uintptr_t Uae2026JitBankXlate(uaecptr addr)
+{
+    if (!jit_MEMBaseDiff)
+        return 0;
+    if (Uae2026JitRuntimeMmuEnabled())
+        addr = Uae2026JitMmuXlateData(addr);
     return (uintptr_t)(jit_MEMBaseDiff + addr);
 }
 

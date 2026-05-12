@@ -102,7 +102,7 @@ extern "C" void Uae2026JitSyncVideoFromShadow(void);
 extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr);
-extern "C" uae_u32 Uae2026JitMmuXlateCode(uae_u32 addr);
+extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
 extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitLivePutLong(uae_u32 addr, uae_u32 value);
@@ -110,15 +110,14 @@ extern "C" void Uae2026JitFastClearLongs(uae_u32 addr, uae_u32 count);
 extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count);
 extern "C" uae_u8 Uae2026JitRtcReadByte(uae_u32 addr);
 extern "C" void Uae2026JitRtcWriteByte(uae_u32 addr, uae_u32 val);
-extern "C" uae_u32 Uae2026JitLastExceptionSp = 0;
+extern "C" { uae_u32 Uae2026JitLastExceptionSp = 0; }
 
 extern "C" void Uae2026JitCanonicalizePcAfterFallback(void)
 {
 	const uae_u32 pc = regs.pc;
 	regs.fault_pc = pc;
 	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled) {
-		const uae_u32 phys_pc = Uae2026JitMmuXlateCode(pc);
-		regs.pc_p = (uae_u8 *)((uintptr)MEMBaseDiff + (uintptr)phys_pc);
+		regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(pc);
 	} else {
 		regs.pc_p = get_real_address(pc, 0, sz_word);
 	}
@@ -128,7 +127,11 @@ extern "C" void Uae2026JitCanonicalizePcAfterFallback(void)
 static inline void jit_set_guest_pc_fast(uae_u32 pc)
 {
 	regs.pc = pc;
-	regs.pc_p = get_real_address(regs.pc, 0, sz_word);
+	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled) {
+		regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(pc);
+	} else {
+		regs.pc_p = get_real_address(regs.pc, 0, sz_word);
+	}
 	regs.pc_oldp = regs.pc_p;
 }
 
@@ -786,7 +789,8 @@ void m68k_do_compile_execute(void)
 			if (_pc == 0 && jit_allow_ram_dispatch_env()) {
 				static unsigned long zero_pc_log = 0;
 				uae_u32 vec2 = regs.vbr ? Uae2026JitLiveGetLong(regs.vbr + 8) : Uae2026JitLiveGetLong(8);
-				if (zero_pc_log < 16 || (zero_pc_log % 1024) == 0) {
+				const bool log_zero_pc = zero_pc_log < 16 || (zero_pc_log % 1024) == 0;
+				if (log_zero_pc) {
 					fprintf(stderr, "JIT_ZERO_PC dispatch=%lu vbr=%08x vec2=%08x a7=%08x spc=%08x\n",
 						zero_pc_log + 1, (unsigned)regs.vbr, (unsigned)vec2,
 						(unsigned)regs.regs[15], (unsigned)regs.spcflags);
@@ -802,16 +806,17 @@ void m68k_do_compile_execute(void)
 							regs.isp = Uae2026JitLastExceptionSp;
 						m68k_areg(regs, 7) = regs.isp;
 						MakeSR();
-						fprintf(stderr, "JIT_ZERO_PC recovered pc=%08x sr=%04x a7=%08x isp=%08x last_ex_sp=%08x\n",
-							(unsigned)vec2, (unsigned)regs.sr, (unsigned)m68k_areg(regs, 7),
-							(unsigned)regs.isp, (unsigned)Uae2026JitLastExceptionSp);
+						if (log_zero_pc) {
+							fprintf(stderr, "JIT_ZERO_PC recovered pc=%08x sr=%04x a7=%08x isp=%08x last_ex_sp=%08x\n",
+								(unsigned)vec2, (unsigned)regs.sr, (unsigned)m68k_areg(regs, 7),
+								(unsigned)regs.isp, (unsigned)Uae2026JitLastExceptionSp);
+						}
 					}
 				}
 			}
 			if (jit_allow_ram_dispatch_env() && regs.mmu_enabled) {
-				uae_u32 phys_pc = Uae2026JitMmuXlateCode(_pc);
 				regs.pc = _pc;
-				regs.pc_p = (uae_u8 *)((uintptr)MEMBaseDiff + (uintptr)phys_pc);
+				regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(_pc);
 				regs.pc_oldp = regs.pc_p;
 			}
 			const bool in_rom = (_pc >= 0x01000000 && _pc < 0x01020000);

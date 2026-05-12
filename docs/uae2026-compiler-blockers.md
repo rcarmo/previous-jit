@@ -33,8 +33,8 @@ prelude, without linking it into `Previous` yet.
 - syntax probe: **passing**
 - object compile probe: **passing**
 - emulator/runtime integration of vendored compiler entry points: **wired under `ENABLE_EXPERIMENTAL_UAE2026_JIT`**
-- default/ROM translated execution reaches the NEXTSTEP desktop and passed a 60s stability smoke in the latest commit check
-- RAM/MMU dispatch mode is still experimental and remains blocked in nested 68040 MMU exception / RTE page-fault state
+- default/ROM translated execution reaches the NEXTSTEP desktop and passed a 60s stability smoke in the latest audit check (`/workspace/tmp/previous-jit-bridge-smoke-audit-20260512-180833`)
+- RAM/MMU dispatch mode is still experimental and remains blocked in nested 68040 MMU exception / RTE page-fault state; latest audit RAM smoke reached true RAM dispatch but ended before desktop at the kernel panic prompt (`/workspace/tmp/previous-jit-bridge-smoke-ram-audit-20260512-181409`)
 
 ## Remaining blocker classes
 
@@ -124,3 +124,4 @@ Implication:
 2. preserve default/ROM JIT desktop stability while RAM/MMU dispatch changes land
 3. add a targeted regression for the current RAM-mode blocker: auto-update-EA MMU fault followed by MMU-handler `RTE` back to low user virtual PCs
 4. audit bridge/JIT state materialization before `Exception(2)`, especially PC/SR/USP/ISP and live D/A register spill during RTE-triggered page faults
+5. keep RAM/MMU data effective-address translation (`Uae2026JitMmuXlateData`) separate from code/branch/dispatch-PC translation (`Uae2026JitMmuXlateCodeHost`) when adding native paths

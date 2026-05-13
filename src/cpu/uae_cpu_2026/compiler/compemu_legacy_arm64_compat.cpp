@@ -11,7 +11,20 @@ extern "C" previous_mmufixup_entry mmufixup[2];
 extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
 extern "C" {
 uae_u32 Uae2026JitLastInstructionPc = 0;
+uae_u32 Uae2026JitLastSr = 0;
+uae_u32 Uae2026JitLastA7 = 0;
 struct flag_struct Uae2026JitLastFlags = { 0, 0 };
+}
+
+extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode)
+{
+	regs.fault_pc = pc;
+	Uae2026JitLastInstructionPc = pc;
+	Uae2026JitLastSr = regs.sr;
+	Uae2026JitLastA7 = m68k_areg(regs, 7);
+	Uae2026JitLastFlags = regflags;
+	mmu_restart = true;
+	mmu_opcode = (uae_u16)opcode;
 }
 
 static inline bool legacy_needflags_enabled(void)
@@ -980,12 +993,8 @@ void exec_nostats(void)
 	static unsigned long trace_count = 0;
 	for (;;) {
 		uae_u32 before_pc = m68k_getpc();
-		regs.fault_pc = before_pc;
-		Uae2026JitLastInstructionPc = before_pc;
-		Uae2026JitLastFlags = regflags;
 		uae_u32 opcode = GET_OPCODE;
-		mmu_restart = true;
-		mmu_opcode = (uae_u16)opcode;
+		Uae2026JitPublishFallbackState(before_pc, opcode);
 		if (legacy_ram_direct_movem_long_predec(before_pc, (uae_u16)opcode)) {
 			cpu_check_ticks();
 			if (SPCFLAGS_TEST(SPCFLAG_ALL))
@@ -1246,12 +1255,8 @@ void execute_normal(void)
 		for (;;) {
 			pc_hist[blocklen++].location = (uae_u16 *)regs.pc_p;
 			uae_u32 pc_before_op = m68k_getpc();
-			regs.fault_pc = pc_before_op;
-			Uae2026JitLastInstructionPc = pc_before_op;
-			Uae2026JitLastFlags = regflags;
 			uae_u32 opcode = GET_OPCODE;
-			mmu_restart = true;
-			mmu_opcode = (uae_u16)opcode;
+			Uae2026JitPublishFallbackState(pc_before_op, opcode);
 			if (legacy_ram_direct_movem_long_predec(pc_before_op, (uae_u16)opcode)) {
 				cpu_check_ticks();
 				total_cycles += 4 * CYCLE_UNIT;

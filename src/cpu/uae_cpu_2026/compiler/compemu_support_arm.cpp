@@ -4293,6 +4293,7 @@ static inline bool jit_ram_use_bank_for_mem_vreg(int address, int size, bool is_
 }
 
 extern "C" uae_u32 Uae2026JitLastInstructionPc;
+extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode);
 
 static inline void jit_sync_fault_pc_for_bank_helper(void)
 {
@@ -6369,6 +6370,9 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     compemu_raw_set_pc_i((uintptr)pc_hist[i].location);
                     compemu_raw_mov_l_rm(REG_WORK1, (uintptr)&regs.pc_p);
                     compemu_raw_mov_l_mr((uintptr)&regs.pc_oldp, REG_WORK1);
+                    compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
+                    compemu_raw_mov_l_ri(REG_PAR2, opcode & 0xffff);
+                    compemu_raw_call((uintptr)Uae2026JitPublishFallbackState);
                     if (jit_trace_target_pc(op_m68k_pc)) {
                         compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
                         compemu_raw_mov_l_ri(REG_PAR2, (2u << 16) | (opcode & 0xffff));

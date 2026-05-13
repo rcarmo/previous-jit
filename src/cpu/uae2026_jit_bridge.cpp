@@ -55,6 +55,8 @@ extern "C" uintptr_t Uae2026JitRamMmuBankTable(void);
 extern "C" void Uae2026JitSyncRamToShadow(void);
 extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLastInstructionPc;
+extern "C" uae_u32 Uae2026JitLastSr;
+extern "C" uae_u32 Uae2026JitLastA7;
 extern "C" uae_u32 Uae2026JitLastExceptionSp;
 extern "C" struct flag_struct Uae2026JitLastFlags;
 
@@ -469,6 +471,20 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
         }
         bridge_restore_autoea_fault_side_effects(regs.fault_pc);
         const bool bridge_rte_fault = bridge_live_peek_word(regs.fault_pc) == 0x4e73u;
+        /* If a RAM/MMU fault escapes while RTE has only partially completed,
+         * the generated 040 handler has already loaded the frame SR and may
+         * have switched A7 to USP.  Exception(2) must describe the faulting RTE
+         * instruction, not stack a synthetic user-mode fault against the handler
+         * itself; restore the cached pre-instruction supervisor state first. */
+        if (bridge_rte_fault && !regs.s && (Uae2026JitLastSr & 0x2000u)) {
+            regs.sr = (uae_u16)Uae2026JitLastSr;
+            MakeFromSR();
+            m68k_areg(regs, 7) = Uae2026JitLastA7;
+            if (regs.m)
+                regs.msp = Uae2026JitLastA7;
+            else
+                regs.isp = Uae2026JitLastA7;
+        }
         /* If RTE already switched to user mode before faulting, MakeFromSR()
          * should have saved the post-pop supervisor stack in regs.isp.  Do not
          * overwrite that with the pre-RTE exception-frame SP; use the cached

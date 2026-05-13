@@ -3820,6 +3820,15 @@ static inline void jit_publish_last_flags_for_mmu_helper(void)
 #endif
 }
 
+static inline void jit_prepare_for_mmu_helper_call(void)
+{
+    if (jit_allow_ram_dispatch_env())
+        flush(1);
+    else
+        prepare_for_call_1();
+    jit_publish_last_flags_for_mmu_helper();
+}
+
 #if defined(CPU_AARCH64) 
 #include "compemu_midfunc_arm64.cpp"
 #include "compemu_midfunc_arm64_2.cpp"
@@ -4438,8 +4447,7 @@ STATIC_INLINE void get_n_addr_jmp_mmu(int address, int dest)
         forget_about(dest);
 
     address = readreg_specific(address, REG_PAR1);
-    prepare_for_call_1();
-    jit_publish_last_flags_for_mmu_helper();
+    jit_prepare_for_mmu_helper_call();
     unlock2(address);
     prepare_for_call_2();
     compemu_raw_call((uintptr)Uae2026JitMmuXlateCodeHost);

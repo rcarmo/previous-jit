@@ -224,6 +224,7 @@ Latest translated-execution debug checkpoint (2026-05-12):
 - the latest clean build had no compiler/linker warnings in `/workspace/tmp/build-audit-prefs.log`
 - preserving `regs.isp` after an `RTE` has already switched to user mode avoids overwriting the interpreter's post-pop supervisor stack with the cached pre-RTE exception-frame SP; this removes the immediate panic in the latest RAM smokes but does not reach desktop
 - native RAM/MMU helper calls now publish the current JIT flag snapshot into `Uae2026JitLastFlags` after flushing live state and before calling bank/code-translation helpers that can raise a 68040 MMU exception; otherwise the bridge restart path can restore stale flags after a helper fault
+- follow-up RAM/MMU helper hardening now uses a full `flush(1)` before RAM-dispatch bank helpers and code-host translation helpers can raise a 68040 MMU exception, so dirty/constant live D/A/PC/SR state is materialized before the bridge delivers `Exception(2)`; opcode harness and default/ROM desktop smoke still pass, but RAM mode still times out before desktop in the RTE/page-fault loop (`/workspace/tmp/previous-jit-bridge-smoke-mmu-fullflush-ram-20260513-141618`, `jit_dispatch_lines=364826`, `jit_last_pc=040a5348`)
 - diagnostic disassembly of the post-panic frontier showed a hardclock/SCR2 path around `0406bb40..0406bbd8` that saves SR, raises interrupt mask to `0x2300`, manipulates queue/list entries, then restores SR before returning; the latest timeout remains in this hardclock/soft-interrupt activity rather than the earlier immediate panic
 - the latest RAM-mode traces no longer reproduce the original advanced-A1 `00003334` corruption, but still fail before desktop; the MMU-flag-publishing RAM smoke reached true RAM dispatch (`jit_dispatch_lines=204174`, `jit_ram_dispatch_seen=1`, `jit_last_pc=040602fe`) and timed out at/after `root on sd@` without a log/OCR panic in `/workspace/tmp/previous-jit-bridge-smoke-ram-mmu-flags-final-20260512-214851`
 - do **not** rewrite `fault_pc`/`instruction_pc` to `mmu_fault_addr` for RTE faults; that diagnostic was tested and rejected because the opcode context and access address must remain distinct
@@ -253,7 +254,7 @@ Expected success metrics:
 1. Keep `./tools/uae2026-opcode-harness.sh` green before and after every RAM/MMU change.
 2. Preserve the default/ROM JIT desktop smoke (`desktop_reached=1`, preferably with `PREVIOUS_STABLE_WAIT=60`) while debugging RAM mode.
 3. Add a minimal targeted regression for the confirmed RAM/MMU pattern: MMU fault during an auto-update EA followed by MMU-handler `RTE` back to a low user virtual PC.
-4. Audit RTE/page-fault state without conflating `fault_pc`/`instruction_pc` and `mmu_fault_addr`; the remaining likely seam is full live JIT register/PC/SR/USP/ISP materialization before bridge-delivered `Exception(2)` and before handler `RTE` resumes low user virtual PCs.
+4. Audit RTE/page-fault state without conflating `fault_pc`/`instruction_pc` and `mmu_fault_addr`; RAM/MMU helper calls now force a full live-state flush before helper-delivered `Exception(2)`, so the remaining likely seam is RTE restart/frame state across nested handler returns to low user virtual PCs.
 5. Once RAM mode reaches desktop, capture the final RAM-mode screenshot and update this log with metrics.
 
 ## Guardrails

@@ -8267,8 +8267,7 @@ MIDFUNC(3,jnf_MEM_READMEMBANK,(W4 dest, RR4 adr, IM8 offset))
 	}
 
 	adr = readreg_specific(adr, REG_PAR1);
-	prepare_for_call_1();
-	jit_publish_last_flags_for_mmu_helper();
+	jit_prepare_for_mmu_helper_call();
 	unlock2(adr);
 	prepare_for_call_2();
 
@@ -8302,8 +8301,7 @@ MIDFUNC(3,jnf_MEM_WRITEMEMBANK,(RR4 adr, RR4 source, IM8 offset))
 
 	adr = readreg_specific(adr, REG_PAR1);
 	source = readreg_specific(source, REG_PAR2);
-	prepare_for_call_1();
-	jit_publish_last_flags_for_mmu_helper();
+	jit_prepare_for_mmu_helper_call();
 	unlock2(adr);
 	unlock2(source);
 	prepare_for_call_2();

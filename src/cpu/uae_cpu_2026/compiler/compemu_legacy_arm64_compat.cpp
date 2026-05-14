@@ -9,6 +9,7 @@ extern "C" uaecptr mmu040_movem_ea;
 struct previous_mmufixup_entry { int reg; uae_u32 value; };
 extern "C" previous_mmufixup_entry mmufixup[2];
 extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
+extern "C" uae_u32 Uae2026JitMmuFetchOpcode(uae_u32 pc);
 extern "C" {
 uae_u32 Uae2026JitLastInstructionPc = 0;
 uae_u32 Uae2026JitLastSr = 0;
@@ -25,6 +26,29 @@ extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode)
 	Uae2026JitLastFlags = regflags;
 	mmu_restart = true;
 	mmu_opcode = (uae_u16)opcode;
+}
+
+extern "C" uae_u32 Uae2026JitPrefetchGuard(uae_u32 pc, uae_u32 opcode)
+{
+	/* Preserve interpreter-style restart publication around a faultable 040
+	 * instruction fetch while still allowing the native JIT body to run after a
+	 * successful fetch.  If the fetch faults, mmu_opcode intentionally remains
+	 * 0xffff, matching the primary interpreter prefetch path; if a later native
+	 * data access faults, publish the opcode that the 040 MMU fetch actually saw
+	 * rather than the compile-time opcode literal. */
+	Uae2026JitPublishFallbackState(pc, 0xffffu);
+	regs.fault_pc = pc;
+	mmu_restart = true;
+	mmu_opcode = (uae_u16)-1;
+	const uae_u16 fetched_opcode = (uae_u16)Uae2026JitMmuFetchOpcode(pc);
+	if (fetched_opcode != (uae_u16)opcode && getenv("B2_JIT_TRACE_PREFETCH_GUARD")) {
+		static unsigned long mismatch_count;
+		if (mismatch_count++ < 50)
+			fprintf(stderr, "JIT_PREFETCH_GUARD_MISMATCH pc=%08x compiled=%04x fetched=%04x\n",
+				(unsigned)pc, (unsigned)(opcode & 0xffffu), (unsigned)fetched_opcode);
+	}
+	Uae2026JitPublishFallbackState(pc, fetched_opcode);
+	return fetched_opcode;
 }
 
 static inline bool legacy_needflags_enabled(void)

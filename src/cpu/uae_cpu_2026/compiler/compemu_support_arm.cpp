@@ -1064,6 +1064,47 @@ static inline bool jit_force_exact_exec_nostats_pc(uae_u32 pc)
 	return false;
 }
 
+static inline bool jit_low_virtual_prefetch_guard_enabled(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("B2_JIT_LOW_VIRTUAL_PREFETCH_GUARD");
+		cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+	}
+	return cached != 0;
+}
+
+static inline uae_u32 jit_low_virtual_prefetch_guard_start(void)
+{
+	static uae_u32 value = 0x00003200u;
+	static bool init = false;
+	if (!init) {
+		const char *env = getenv("B2_JIT_LOW_VIRTUAL_PREFETCH_START");
+		value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0x00003200u;
+		init = true;
+	}
+	return value;
+}
+
+static inline uae_u32 jit_low_virtual_prefetch_guard_end(void)
+{
+	static uae_u32 value = 0x00003400u;
+	static bool init = false;
+	if (!init) {
+		const char *env = getenv("B2_JIT_LOW_VIRTUAL_PREFETCH_END");
+		value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0x00003400u;
+		init = true;
+	}
+	return value;
+}
+
+static inline bool jit_low_virtual_prefetch_guard_pc(uae_u32 pc)
+{
+	return jit_allow_ram_dispatch_env() && jit_low_virtual_prefetch_guard_enabled() &&
+		pc < 0x01000000u && pc >= jit_low_virtual_prefetch_guard_start() &&
+		pc <= jit_low_virtual_prefetch_guard_end();
+}
+
 static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 {
 	/* ARM64: zero hardcoded barriers.
@@ -4294,6 +4335,7 @@ static inline bool jit_ram_use_bank_for_mem_vreg(int address, int size, bool is_
 
 extern "C" uae_u32 Uae2026JitLastInstructionPc;
 extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode);
+extern "C" uae_u32 Uae2026JitPrefetchGuard(uae_u32 pc, uae_u32 opcode);
 
 static inline void jit_sync_fault_pc_for_bank_helper(void)
 {
@@ -6031,6 +6073,16 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     was_comp = 1;
 
 #if defined(CPU_AARCH64)
+                    if (jit_low_virtual_prefetch_guard_pc(op_m68k_pc)) {
+                        live.flags_are_important = 1;
+                        flush(1);
+                        compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
+                        compemu_raw_mov_l_ri(REG_PAR2, opcode & 0xffffu);
+                        compemu_raw_call((uintptr)Uae2026JitPrefetchGuard);
+                        comp_pc_p = (uae_u8*)pc_hist[i].location;
+                        init_comp();
+                        was_comp = 1;
+                    }
                     uae_u8* _before = get_target();
                     const bool _verify_this_op = jit_verify_target_pc(op_m68k_pc);
                     const bool _trace_this_op = jit_trace_target_pc(op_m68k_pc);

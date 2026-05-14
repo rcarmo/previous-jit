@@ -148,9 +148,9 @@ Every migration step should clear, in order:
 
 That order gives the fastest path from “crashes on first JIT entry” to “opcode-family equivalence under harness”.
 
-## 2026-05-12 Previous RAM/MMU checkpoint
+## 2026-05-14 Previous RAM/MMU checkpoint
 
-The opcode harness is now a reliable green gate for the current curated vector set (`pass=62 fail=0 score=100`), and default/ROM JIT boot reaches the NEXTSTEP desktop with a 60s stability wait. The current blocker has moved out of generic opcode bring-up and into RAM/MMU exception semantics.
+The opcode harness remains a reliable green gate for the current curated vector set (`pass=62 fail=0 score=100`; latest `/workspace/tmp/previous-opcode-harness-prefetch-guard-audit-20260514-150218`), and default/ROM JIT boot reaches the NEXTSTEP desktop with a 60s stability wait (`/workspace/tmp/previous-jit-prefetch-guard-audit-default-stable-20260514-151230`). The current blocker has moved out of generic opcode bring-up and into RAM/MMU exception/restart semantics around low-user-virtual instruction fetches.
 
 Current RAM-mode lessons for the migration plan:
 
@@ -161,8 +161,10 @@ Current RAM-mode lessons for the migration plan:
 - Code-space MMU translation is required for RAM dispatch PC materialization and branch/return targets. Data-space translation is not sufficient for instruction fetch, but it is still required for ordinary data effective-address `xlateaddr` use.
 - Keep the two paths explicit: `Uae2026JitMmuXlateCodeHost()` is for instruction/branch/return/dispatch host pointers; the private RAM/MMU bank `xlateaddr` remains data-space via `Uae2026JitMmuXlateData()`.
 - Keep vendored compiler globals renamed away from Previous-native globals. In particular, Basilisk/UAE compiler prefs use `uae2026_currprefs`/`uae2026_changed_prefs`; Previous-native `currprefs`/`changed_prefs` have a different struct layout and must not share symbols.
-- The remaining RAM-mode frontier is nested 68040 MMU exception delivery around handler `RTE` back to low user virtual PCs. Keep `fault_pc`/`instruction_pc` distinct from `mmu_fault_addr`; rewriting one into the other produced worse/incorrect exception-frame behavior.
+- The remaining RAM-mode frontier is nested 68040 MMU exception delivery around handler `RTE` back to low user virtual PCs, now narrowed to low-ROM probe code around `0x00003200..0x00003400` and the `00003352`/`addr=00000008` failure. Keep `fault_pc`/`instruction_pc` distinct from `mmu_fault_addr`; rewriting one into the other produced worse/incorrect exception-frame behavior.
 - If `RTE` has already switched from supervisor to user mode before an instruction-fetch/page fault, preserve the interpreter-updated post-pop `regs.isp`; do not overwrite it with the cached pre-RTE exception-frame SP except as a last-ditch fallback when `regs.isp` is missing.
 - For native RAM/MMU bank and code-host helper calls, publish the current flushed JIT flag snapshot to `Uae2026JitLastFlags` before the helper can fault; the bridge restart path restores this snapshot when `mmu_restart` is set.
+- The low-user-virtual ROM probe window (`0x00003200..0x00003400`) is now the strongest discriminator for JIT resume after the RTE/page-fault seam: interpreter handoff reaches desktop, low-virtual single-step reaches `root on sd@`, and the native prefetch guard reaches `root on sd@` without fetched/compiled opcode mismatches but still no desktop.
+- A native low-virtual code-fetch guard must publish interpreter-like state both before a faultable opcode fetch (`mmu_opcode=0xffff`, `instruction_pc=fault_pc=pc`) and after a successful fetch (restart opcode equals the MMU-fetched opcode, not a stale compile-time literal) before it can become default RAM behavior.
 
-Immediate harness gap: add a minimal RAM/MMU regression that reproduces “auto-update EA fault -> MMU handler -> `RTE` to low user virtual PC” without waiting for a full boot.
+Immediate harness gaps: add minimal RAM/MMU regressions for “auto-update EA fault -> MMU handler -> `RTE` to low user virtual PC” and for “low-virtual opcode fetch succeeds -> native data access faults with restart opcode state preserved” without waiting for a full boot.

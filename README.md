@@ -34,9 +34,9 @@ Right now the project is at the stage where:
 
 - interpreter-backed validation works
 - JIT bootstrap/plumbing works
-- the opcode-equivalence harness is clean (`pass=62 fail=0 score=100` as of 2026-05-12; latest audit run `/workspace/tmp/previous-opcode-harness-20260512-213730`)
-- default/ROM JIT reaches the NEXTSTEP desktop and remained stable for 60s in the latest smoke check (`/workspace/tmp/previous-jit-bridge-smoke-mmu-flags-default-20260512-214256`)
-- RAM-mode JIT reaches true RAM dispatch and gets past early kernel/device activity, but still fails before the desktop in the 68040 MMU RTE/page-fault path; preserving post-RTE ISP and publishing current JIT flags before MMU helper faults avoids the immediate panic but still times out at/after `root on sd@` (`/workspace/tmp/previous-jit-bridge-smoke-ram-mmu-flags-final-20260512-214851`)
+- the opcode-equivalence harness is clean (`pass=62 fail=0 score=100`; latest audit run `/workspace/tmp/previous-opcode-harness-prefetch-guard-audit-20260514-150218`)
+- default/ROM JIT reaches the NEXTSTEP desktop and remained stable for 60s in the latest smoke check (`/workspace/tmp/previous-jit-prefetch-guard-audit-default-stable-20260514-151230`)
+- RAM-mode JIT reaches true RAM dispatch and gets past early kernel/device activity, but still fails before the desktop. The current audited frontier is low-user-virtual instruction-fetch/MMU restart state around the ROM probe window `0x00003200..0x00003400`: default RAM mode still loops at `00003352`, while the opt-in native prefetch guard (`B2_JIT_LOW_VIRTUAL_PREFETCH_GUARD=1`) reaches `root on sd@` without fetched/compiled opcode mismatches but still times out before Workspace/File Viewer (`/workspace/tmp/previous-jit-prefetch-guard-audit-ram-20260514-151804`).
 
 ## Project layout
 
@@ -90,6 +90,7 @@ Notes:
 - Linux startup disables host ASLR by default for deterministic JIT mappings
 - `PREVIOUS_UAE2026_JIT=0` gives an interpreter baseline for harness comparison
 - `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch path; this is still the active correctness frontier
+- `B2_JIT_LOW_VIRTUAL_SINGLESTEP=1` and `B2_JIT_LOW_VIRTUAL_PREFETCH_GUARD=1` are diagnostics for the confirmed low-user-virtual ROM probe window (`0x00003200..0x00003400` by default); they are not default-on fixes
 - RAM/MMU code paths must keep data-space and code-space translations separate: the private bank `xlateaddr` is for data effective addresses, while branch/return/dispatch PC materialization uses the dedicated code-space host translator
 - the vendored compiler unity build keeps its Basilisk/UAE prefs symbols renamed away from Previous's native `currprefs`/`changed_prefs`; do not reintroduce same-name globals with incompatible struct layouts
 

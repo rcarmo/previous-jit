@@ -10,7 +10,7 @@
 - Vendored BasiliskII UAE 2026 subtree is now staged under `src/cpu/uae_cpu_2026/`
 - Headless fresh-image harness is now available at `tools/headless-nextstep-harness.sh`
 - Experimental bridge smoke harness is now available at `tools/headless-jit-bridge-smoke.sh`
-- Default/ROM translated execution now reaches the NEXTSTEP desktop; RAM/MMU dispatch mode is the active remaining boot blocker.
+- Default/ROM translated execution reaches the NEXTSTEP desktop and passes a 60s stability smoke; RAM/MMU dispatch mode is the active remaining boot blocker. The latest low-virtual prefetch-guard discriminator reaches `root on sd@` in RAM mode but still times out before desktop.
 - Early bootstrap probe harness is now available at `tools/headless-jit-bootstrap-probe.sh`
 - Compiler-facing prefs shim now lives in `src/cpu/uae2026_compiler_prefs_shim.cpp`
 - Direct vendored compiler blocker inventory now lives in `docs/uae2026-compiler-blockers.md`
@@ -138,7 +138,7 @@ Why:
 1. **MMU correctness**
    - NeXTSTEP/OpenStep depend on 68030/68040 MMU behavior
    - this is the biggest correctness risk for RAM-mode JIT dispatch
-   - current active frontier: nested 68040 MMU bus-error handling when the MMU handler returns with `RTE` to low user virtual PCs
+   - current active frontier: nested 68040 MMU bus-error handling when the MMU handler returns with `RTE` to low user virtual PCs, especially the low-ROM probe window around `0x00003200..0x00003400` and the repeated `00003352` / `addr=00000008` failure
 
 2. **Exception / restart semantics**
    - page faults, bus faults, restartable FPU/MMU instructions
@@ -179,7 +179,7 @@ Why:
 ### Phase 5 — MMU/NeXT boot validation
 - only after basic runtime survival, attempt real booting under JIT
 - preserve default/ROM JIT desktop stability while iterating on RAM/MMU dispatch
-- use short RAM-mode smokes to track true RAM dispatch, panic prompt/frontier shifts, and final desktop reachability separately
+- use short RAM-mode smokes to track true RAM dispatch, low-virtual diagnostic behavior (`B2_JIT_LOW_VIRTUAL_SINGLESTEP`, `B2_JIT_LOW_VIRTUAL_PREFETCH_GUARD`), panic/frontier shifts, and final desktop reachability separately
 
 ## Concrete next code areas to compare
 

@@ -73,6 +73,7 @@ uae_u32 Uae2026JitMmuXlateCode(uaecptr addr);
 uae_u32 Uae2026JitMmuGetByte(uaecptr addr);
 uae_u32 Uae2026JitMmuGetWord(uaecptr addr);
 uae_u32 Uae2026JitMmuGetLong(uaecptr addr);
+uae_u32 Uae2026JitMmuFetchOpcode(uaecptr pc);
 void Uae2026JitMmuPutByte(uaecptr addr, uae_u32 value);
 void Uae2026JitMmuPutWord(uaecptr addr, uae_u32 value);
 void Uae2026JitMmuPutLong(uaecptr addr, uae_u32 value);
@@ -119,6 +120,18 @@ void Uae2026JitMmuPutWord(uaecptr addr, uae_u32 value)
 void Uae2026JitMmuPutLong(uaecptr addr, uae_u32 value)
 {
     put_long_mmu040(addr, value);
+}
+
+uae_u32 Uae2026JitMmuFetchOpcode(uaecptr pc)
+{
+    /* Mirror the interpreter's pre-op publication before an instruction fetch
+     * that can fault.  This helper lives in the real Previous MMU translation
+     * unit so it can update fields that the vendored JIT struct does not carry
+     * (notably instruction_pc) before uae_mmu040_get_iword() longjmps. */
+    regs.instruction_pc = pc;
+    regs.fault_pc = pc;
+    m68k_setpci(pc);
+    return uae_mmu040_get_iword(pc);
 }
 #endif
 

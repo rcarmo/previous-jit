@@ -96,7 +96,11 @@ static bool ensure_aarch64_jit_runtime_ready(void)
 }
 
 extern void jit_one_tick(void);
+extern "C" bool mmu_restart;
+extern "C" uae_u16 mmu_opcode;
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
+extern "C" uae_u32 Uae2026JitMmuFetchOpcode(uae_u32 pc);
+extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode);
 extern "C" void Uae2026JitSyncRamToShadow(void);
 extern "C" void Uae2026JitSyncVideoFromShadow(void);
 extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr);
@@ -375,6 +379,59 @@ static inline void jit_maybe_apply_runtime_helpers(void)
 		jit_emulate_rom_delay_body(pc) ||
 		jit_emulate_bulk_clear_loop(pc, op))
 		return;
+}
+
+static inline bool jit_low_virtual_singlestep_enabled(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("B2_JIT_LOW_VIRTUAL_SINGLESTEP");
+		cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+	}
+	return cached != 0;
+}
+
+static inline uae_u32 jit_low_virtual_singlestep_start(void)
+{
+	static uae_u32 value = 0x00003200u;
+	static bool init = false;
+	if (!init) {
+		const char *env = getenv("B2_JIT_LOW_VIRTUAL_SINGLESTEP_START");
+		/* Default to the confirmed ROM probe window only.  Broader ranges are
+		 * useful diagnostics but can perturb later low-ROM paths and stall boot. */
+		value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0x00003200u;
+		init = true;
+	}
+	return value;
+}
+
+static inline uae_u32 jit_low_virtual_singlestep_end(void)
+{
+	static uae_u32 value = 0x00003400u;
+	static bool init = false;
+	if (!init) {
+		const char *env = getenv("B2_JIT_LOW_VIRTUAL_SINGLESTEP_END");
+		value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0x00003400u;
+		init = true;
+	}
+	return value;
+}
+
+static inline bool jit_maybe_singlestep_low_virtual(void)
+{
+	if (!jit_allow_ram_dispatch_env() || !jit_low_virtual_singlestep_enabled() || !regs.mmu_enabled)
+		return false;
+	const uae_u32 pc = m68k_getpc();
+	if (pc >= 0x01000000u || pc < jit_low_virtual_singlestep_start() || pc > jit_low_virtual_singlestep_end())
+		return false;
+	Uae2026JitPublishFallbackState(pc, 0xffffu);
+	regs.fault_pc = pc;
+	mmu_restart = true;
+	mmu_opcode = (uae_u16)Uae2026JitMmuFetchOpcode(pc);
+	Uae2026JitPublishFallbackState(pc, mmu_opcode);
+	(void)(*cpufunctbl[mmu_opcode])(mmu_opcode);
+	cpu_check_ticks();
+	return true;
 }
 
 static inline bool jit_bad_pcp_guard_enabled(void)
@@ -820,6 +877,9 @@ void m68k_do_compile_execute(void)
 					}
 				}
 			}
+			if (jit_maybe_singlestep_low_virtual())
+				continue;
+			_pc = m68k_getpc();
 			if (jit_allow_ram_dispatch_env() && regs.mmu_enabled) {
 				regs.pc = _pc;
 				regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(_pc);

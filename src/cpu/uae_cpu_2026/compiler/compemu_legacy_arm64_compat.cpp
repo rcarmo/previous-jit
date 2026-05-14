@@ -129,17 +129,19 @@ static inline bool legacy_rom_rtc_read_bsr_callsite(uae_u32 pc, uae_u16 opcode, 
 	return legacy_bsr_l_target(pc, opcode, 0x010077aau, retpc);
 }
 
-extern "C" void dfc_put_long(uaecptr addr, uae_u32 val);
-extern "C" void dfc_put_word(uaecptr addr, uae_u16 val);
-extern "C" void dfc_put_byte(uaecptr addr, uae_u8 val);
-extern "C" uae_u32 sfc_get_long(uaecptr addr);
-extern "C" uae_u16 sfc_get_word(uaecptr addr);
-extern "C" uae_u8 sfc_get_byte(uaecptr addr);
-
 static inline bool legacy_ram_direct_movem_long_predec(uae_u32 pc, uae_u16 opcode)
 {
 	if (!jit_allow_ram_dispatch_env() || pc < 0x04000000u || pc >= 0x08000000u)
 		return false;
+	/* This shortcut bypasses the generated 040 MOVEM restart/fixup path.  If
+	 * one of its MMU writes faults, the bridge only sees the partially-emitted
+	 * helper state rather than the interpreter's normal MOVEM bookkeeping.  Keep
+	 * it available for diagnostics, but default to the exact interpreter path. */
+	{
+		const char *env = getenv("B2_JIT_RAM_DIRECT_MOVEM_PREDEC");
+		if (!(env && *env && strcmp(env, "0") != 0))
+			return false;
+	}
 	if ((opcode & 0xfff8u) != 0x48e0u)
 		return false;
 	const uae_u32 dstreg = opcode & 7u;
@@ -162,64 +164,6 @@ static inline bool legacy_ram_direct_movem_long_predec(uae_u32 pc, uae_u16 opcod
 	m68k_areg(regs, dstreg) = srca;
 	mmu040_movem = 0;
 	jit_set_guest_pc_fast(pc + 4);
-	return true;
-}
-
-static inline bool legacy_ram_direct_moves_an_post(uae_u32 pc, uae_u16 opcode)
-{
-	if (!jit_allow_ram_dispatch_env() || pc < 0x04000000u || pc >= 0x08000000u)
-		return false;
-	int size = 0;
-	if ((opcode & 0xfff8u) == 0x0e18u)
-		size = 1;
-	else if ((opcode & 0xfff8u) == 0x0e58u)
-		size = 2;
-	else if ((opcode & 0xfff8u) == 0x0e98u)
-		size = 4;
-	else
-		return false;
-	if (!regs.s) {
-		Exception(8, 0);
-		return true;
-	}
-	const uae_u32 dstreg = opcode & 7u;
-	const uae_u16 extra = (uae_u16)Uae2026JitLiveGetWord(pc + 2);
-	const int reg = (extra >> 12) & 15;
-	const uaecptr ea = m68k_areg(regs, dstreg);
-	const int inc = size == 1 ? areg_byteinc[dstreg] : size;
-	if (extra & 0x0800) {
-		const uae_u32 src = regs.regs[reg];
-		mmufixup[0].reg = (int)dstreg;
-		mmufixup[0].value = ea;
-		m68k_areg(regs, dstreg) += inc;
-		jit_set_guest_pc_fast(pc + 4);
-		mmu_restart = false;
-		if (size == 1)
-			dfc_put_byte(ea, (uae_u8)src);
-		else if (size == 2)
-			dfc_put_word(ea, (uae_u16)src);
-		else
-			dfc_put_long(ea, src);
-		mmufixup[0].reg = -1;
-	} else {
-		uae_u32 src;
-		if (size == 1)
-			src = (uae_u32)(uae_s32)(uae_s8)sfc_get_byte(ea);
-		else if (size == 2)
-			src = (uae_u32)(uae_s32)(uae_s16)sfc_get_word(ea);
-		else
-			src = sfc_get_long(ea);
-		m68k_areg(regs, dstreg) += inc;
-		if (extra & 0x8000)
-			m68k_areg(regs, reg & 7) = src;
-		else if (size == 1)
-			m68k_dreg(regs, reg) = (m68k_dreg(regs, reg) & ~0xff) | (src & 0xff);
-		else if (size == 2)
-			m68k_dreg(regs, reg) = (m68k_dreg(regs, reg) & ~0xffff) | (src & 0xffff);
-		else
-			m68k_dreg(regs, reg) = src;
-		jit_set_guest_pc_fast(pc + 4);
-	}
 	return true;
 }
 

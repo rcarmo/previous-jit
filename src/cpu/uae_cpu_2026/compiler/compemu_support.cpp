@@ -427,6 +427,10 @@ static inline bool jit_maybe_singlestep_low_virtual(void)
 	Uae2026JitPublishFallbackState(pc, 0xffffu);
 	regs.fault_pc = pc;
 	mmu_restart = true;
+	/* Match the primary 040 interpreter loop: publish restart state, then
+	 * clear mmu_opcode before the opcode fetch so an instruction-fetch fault
+	 * is distinguishable from a fault after a decoded opcode. */
+	mmu_opcode = (uae_u16)-1;
 	mmu_opcode = (uae_u16)Uae2026JitMmuFetchOpcode(pc);
 	Uae2026JitPublishFallbackState(pc, mmu_opcode);
 	(void)(*cpufunctbl[mmu_opcode])(mmu_opcode);

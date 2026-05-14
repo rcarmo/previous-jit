@@ -68,6 +68,14 @@ uae_u32 mmu040_move16[4];
 #if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
 ALWAYS_INLINE int mmu_match_ttr(uaecptr addr, bool super, bool data);
 uaecptr mmu_translate(uaecptr addr, uae_u32 val, bool super, bool data, bool write, int size);
+uae_u32 Uae2026JitMmuXlateData(uaecptr addr);
+uae_u32 Uae2026JitMmuXlateCode(uaecptr addr);
+uae_u32 Uae2026JitMmuGetByte(uaecptr addr);
+uae_u32 Uae2026JitMmuGetWord(uaecptr addr);
+uae_u32 Uae2026JitMmuGetLong(uaecptr addr);
+void Uae2026JitMmuPutByte(uaecptr addr, uae_u32 value);
+void Uae2026JitMmuPutWord(uaecptr addr, uae_u32 value);
+void Uae2026JitMmuPutLong(uaecptr addr, uae_u32 value);
 
 uae_u32 Uae2026JitMmuXlateData(uaecptr addr)
 {

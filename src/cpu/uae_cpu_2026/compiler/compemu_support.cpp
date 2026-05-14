@@ -797,20 +797,26 @@ void m68k_do_compile_execute(void)
 				}
 				zero_pc_log++;
 				if (vec2) {
-					jit_set_guest_pc_fast(vec2);
-					_pc = vec2;
 					if (jit_allow_ram_dispatch_env()) {
+						/* Switch to supervisor state before translating the vector PC.
+						 * jit_set_guest_pc_fast() performs code-space MMU translation in
+						 * RAM/MMU mode; doing that while still in user mode faults on the
+						 * handler address and turns a recoverable zero-PC handoff into a
+						 * repeated user-mode access-error loop. */
 						regs.s = 1;
 						regs.m = 0;
 						if (Uae2026JitLastExceptionSp)
 							regs.isp = Uae2026JitLastExceptionSp;
-						m68k_areg(regs, 7) = regs.isp;
+						if (regs.isp)
+							m68k_areg(regs, 7) = regs.isp;
 						MakeSR();
-						if (log_zero_pc) {
-							fprintf(stderr, "JIT_ZERO_PC recovered pc=%08x sr=%04x a7=%08x isp=%08x last_ex_sp=%08x\n",
-								(unsigned)vec2, (unsigned)regs.sr, (unsigned)m68k_areg(regs, 7),
-								(unsigned)regs.isp, (unsigned)Uae2026JitLastExceptionSp);
-						}
+					}
+					jit_set_guest_pc_fast(vec2);
+					_pc = vec2;
+					if (jit_allow_ram_dispatch_env() && log_zero_pc) {
+						fprintf(stderr, "JIT_ZERO_PC recovered pc=%08x sr=%04x a7=%08x isp=%08x last_ex_sp=%08x\n",
+							(unsigned)vec2, (unsigned)regs.sr, (unsigned)m68k_areg(regs, 7),
+							(unsigned)regs.isp, (unsigned)Uae2026JitLastExceptionSp);
 					}
 				}
 			}

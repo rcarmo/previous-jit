@@ -188,7 +188,7 @@ struct Uae2026JitBankCompat {
     int flags;
 };
 
-extern "C" void Uae2026JitSyncCodeRangeToShadow(uae_u32 addr, uae_u32 bytes)
+static void Uae2026JitSyncCodeRangeToShadow(uae_u32 addr, uae_u32 bytes)
 {
     if (!jit_MEMBaseDiff || bytes == 0)
         return;
@@ -199,6 +199,10 @@ extern "C" void Uae2026JitSyncCodeRangeToShadow(uae_u32 addr, uae_u32 bytes)
         return;
     uae_u8 *shadow = (uae_u8 *)(jit_MEMBaseDiff + addr);
     uae_u32 i = 0;
+    if (addr & 1u) {
+        shadow[0] = (uae_u8)Uae2026JitPhysGetByte(addr);
+        i = 1;
+    }
     for (; i + 1 < bytes; i += 2) {
         const uae_u16 w = (uae_u16)Uae2026JitPhysGetWord(addr + i);
         shadow[i] = (uae_u8)(w >> 8);
@@ -219,9 +223,9 @@ extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr)
          * the host pointer to execute_normal()/compiled branch targets; otherwise
          * low user virtual pages can execute stale ROM-overlay/probe bytes even
          * though the 040 code fetch translated to the correct physical page.
-         * Use live byteget() rather than a raw NEXTRam memcpy because the NeXT
-         * memory map can expose freshly generated low-code contents through the
-         * active addrbank path before the raw shadow mirror is coherent. */
+         * Use live addrbank reads rather than a raw NEXTRam memcpy because the
+         * NeXT memory map can expose freshly generated low-code contents through
+         * the active addrbank path before the raw shadow mirror is coherent. */
         const uae_u32 page_base = addr & ~0xffu;
         Uae2026JitSyncCodeRangeToShadow(page_base, 0x100u);
     }

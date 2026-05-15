@@ -30,14 +30,24 @@ extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode)
 	mmu_opcode = (uae_u16)opcode;
 }
 
+static inline void jit_publish_code_fetch_state(uae_u32 pc)
+{
+	regs.pc = pc;
+	regs.fault_pc = pc;
+	Uae2026JitLastInstructionPc = pc;
+	Uae2026JitLastSr = regs.sr;
+	Uae2026JitLastA7 = m68k_areg(regs, 7);
+	Uae2026JitLastFlags = regflags;
+	mmu_restart = true;
+	mmu_opcode = (uae_u16)-1;
+}
+
 static inline void jit_canonicalize_code_pc_if_ram_mmu(void)
 {
 	if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled)
 		return;
 	uae_u32 pc = m68k_getpc() & ~1u;
-	regs.pc = pc;
-	regs.fault_pc = pc;
-	Uae2026JitLastInstructionPc = pc;
+	jit_publish_code_fetch_state(pc);
 	regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(pc);
 	regs.pc_oldp = regs.pc_p;
 }
@@ -45,8 +55,7 @@ static inline void jit_canonicalize_code_pc_if_ram_mmu(void)
 static inline uae_u32 jit_fetch_opcode_for_current_pc(uae_u32 pc)
 {
 	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && pc < 0x01000000u) {
-		mmu_restart = true;
-		mmu_opcode = (uae_u16)-1;
+		jit_publish_code_fetch_state(pc);
 		return (uae_u16)Uae2026JitMmuFetchOpcode(pc);
 	}
 	return GET_OPCODE;

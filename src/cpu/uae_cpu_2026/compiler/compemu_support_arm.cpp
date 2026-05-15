@@ -544,10 +544,11 @@ static inline bool jit_pc_in_env_ranges(const char *env_name, uae_u32 pc)
 		int range_count;
 		range_pair ranges[64];
 	};
-	static cache_entry caches[3] = {
+	static cache_entry caches[4] = {
 		{"B2_JIT_VERIFY_PCS", 0, 0, {}},
 		{"B2_JIT_FLUSH_OP_PCS", 0, 0, {}},
 		{"B2_JIT_TRACE_PCS", 0, 0, {}},
+		{"B2_JIT_EXACT_EXEC_PCS", 0, 0, {}},
 	};
 	cache_entry *cache = NULL;
 	for (size_t ci = 0; ci < sizeof(caches) / sizeof(caches[0]); ci++) {
@@ -1053,6 +1054,8 @@ static inline bool jit_force_exact_exec_nostats_opcode(uae_u16 op)
 
 static inline bool jit_force_exact_exec_nostats_pc(uae_u32 pc)
 {
+	if (jit_pc_in_env_ranges("B2_JIT_EXACT_EXEC_PCS", pc))
+		return true;
 	const uae_u32 rom_pc = (pc < 0x00020000u) ? (pc | 0x01000000u) : pc;
 	if (jit_allow_ram_dispatch_env() && rom_pc >= 0x0100a000u && rom_pc <= 0x0100a700u)
 		return true;
@@ -4491,6 +4494,12 @@ STATIC_INLINE void get_n_addr_jmp_mmu(int address, int dest)
 
     address = readreg_specific(address, REG_PAR1);
     jit_prepare_for_mmu_helper_call();
+    /* Code-space MMU translation can itself fault.  Publish the target PC
+       before calling the helper so the bridge restart path does not reuse
+       the previous instruction's fault_pc. */
+    compemu_raw_mov_l_mr((uintptr)&regs.pc, REG_PAR1);
+    compemu_raw_mov_l_mr((uintptr)&regs.fault_pc, REG_PAR1);
+    compemu_raw_mov_l_mr((uintptr)&Uae2026JitLastInstructionPc, REG_PAR1);
     unlock2(address);
     prepare_for_call_2();
     compemu_raw_call((uintptr)Uae2026JitMmuXlateCodeHost);

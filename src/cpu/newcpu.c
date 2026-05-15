@@ -41,6 +41,10 @@
 #include "uae2026_opcode_test.h"
 #include "uae2026_jit_bridge.h"
 
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+extern uae_u32 Uae2026JitMmuXlateCode(uae_u32 addr);
+#endif
+
 /* Defined here for old WinUAE compatibility declarations in compat.h. */
 int vpos;
 int quit_program;
@@ -1422,6 +1426,91 @@ insretry:
     goto retry;
 }
 
+static bool interp_lowpc_trace_enabled(void)
+{
+	static int enabled = -1;
+	if (enabled < 0) {
+		const char *env = getenv("B2_INTERP_LOWPC_TRACE");
+		enabled = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+	}
+	return enabled != 0;
+}
+
+static uae_u32 interp_lowpc_trace_start(void)
+{
+	static uae_u32 value = 0x00003200;
+	static bool init = false;
+	if (!init) {
+		const char *env = getenv("B2_INTERP_LOWPC_TRACE_START");
+		value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0x00003200;
+		init = true;
+	}
+	return value;
+}
+
+static uae_u32 interp_lowpc_trace_end(void)
+{
+	static uae_u32 value = 0x00003400;
+	static bool init = false;
+	if (!init) {
+		const char *env = getenv("B2_INTERP_LOWPC_TRACE_END");
+		value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0x00003400;
+		init = true;
+	}
+	return value;
+}
+
+static unsigned long interp_lowpc_trace_limit(void)
+{
+	static unsigned long value = 200;
+	static bool init = false;
+	if (!init) {
+		const char *env = getenv("B2_INTERP_LOWPC_TRACE_LIMIT");
+		value = (env && *env) ? strtoul(env, NULL, 0) : 200;
+		init = true;
+	}
+	return value;
+}
+
+static bool interp_lowpc_trace_phys_enabled(void)
+{
+	static int enabled = -1;
+	if (enabled < 0) {
+		const char *env = getenv("B2_INTERP_LOWPC_TRACE_PHYS");
+		enabled = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+	}
+	return enabled != 0;
+}
+
+static void interp_lowpc_trace_log(const char *phase, unsigned long *count, uaecptr pc, uae_u16 opcode, int prb)
+{
+	if (!interp_lowpc_trace_enabled() || pc < interp_lowpc_trace_start() || pc > interp_lowpc_trace_end())
+		return;
+	if (*count >= interp_lowpc_trace_limit())
+		return;
+	const uae_u16 sr_snapshot = regs.sr;
+	uae_u32 code_phys = 0xffffffffu;
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+	/* Keep the trace non-invasive by default.  Translating the PC for logging
+	 * can update MMU state or fault if called after an instruction changed
+	 * mode/context, so physical-code logging is explicitly opt-in. */
+	if (prb == 0 && interp_lowpc_trace_phys_enabled())
+		code_phys = regs.mmu_enabled ? Uae2026JitMmuXlateCode(pc) : (uae_u32)pc;
+#endif
+	fprintf(stderr,
+		"INTERPLOW[%lu] %s pc=%08x phys=%08x op=%04x prb=%d nextpc=%08x fault=%08x sr=%04x mmu_opcode=%04x mmu_restart=%d "
+		"d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
+		"a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x isp=%08x usp=%08x spc=%08x\n",
+		++(*count), phase, (unsigned)pc, (unsigned)code_phys, (unsigned)opcode, prb,
+		(unsigned)m68k_getpc(), (unsigned)regs.mmu_fault_addr, (unsigned)sr_snapshot,
+		(unsigned)mmu_opcode, mmu_restart ? 1 : 0,
+		(unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[2], (unsigned)regs.regs[3],
+		(unsigned)regs.regs[4], (unsigned)regs.regs[5], (unsigned)regs.regs[6], (unsigned)regs.regs[7],
+		(unsigned)regs.regs[8], (unsigned)regs.regs[9], (unsigned)regs.regs[10], (unsigned)regs.regs[11],
+		(unsigned)regs.regs[12], (unsigned)regs.regs[13], (unsigned)regs.regs[14], (unsigned)regs.regs[15],
+		(unsigned)regs.isp, (unsigned)regs.usp, (unsigned)regs.spcflags);
+}
+
 /* Aranym MMU 68040  */
 static void m68k_run_mmu040 (void)
 {
@@ -1432,6 +1521,7 @@ static void m68k_run_mmu040 (void)
 	uaecptr pc;
     int intr = 0;
     int lastintr = 0;
+	unsigned long interp_lowpc_trace_count = 0;
 	
 	for (;;) {
 	TRY (prb) {
@@ -1444,7 +1534,9 @@ static void m68k_run_mmu040 (void)
             Uint64 beforeCycles = nCyclesMainCounter;
 			mmu_opcode = -1;
 			mmu_opcode = opcode = x_prefetch (0);
+			interp_lowpc_trace_log("BEFORE", &interp_lowpc_trace_count, pc, opcode, 0);
 			cpu_cycles = (*cpufunctbl[opcode])(opcode);
+			interp_lowpc_trace_log("AFTER", &interp_lowpc_trace_count, pc, opcode, 0);
             M68000_AddCycles(cpu_cycles);
             
             cpu_cycles = nCyclesMainCounter - beforeCycles;
@@ -1481,6 +1573,7 @@ static void m68k_run_mmu040 (void)
 			}
 		} // end of for(;;)
 	} CATCH (prb) {
+		interp_lowpc_trace_log("CATCH", &interp_lowpc_trace_count, regs.instruction_pc, mmu_opcode, prb);
 
 		if (mmu_restart) {
 			/* restore state if instruction restart */

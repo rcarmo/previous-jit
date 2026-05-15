@@ -10,6 +10,8 @@ struct previous_mmufixup_entry { int reg; uae_u32 value; };
 extern "C" previous_mmufixup_entry mmufixup[2];
 extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
 extern "C" uae_u32 Uae2026JitMmuFetchOpcode(uae_u32 pc);
+extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 pc);
+extern uintptr jit_MEMBaseDiff;
 extern "C" {
 uae_u32 Uae2026JitLastInstructionPc = 0;
 uae_u32 Uae2026JitLastSr = 0;
@@ -951,9 +953,18 @@ void exec_nostats(void)
 					regs.regs[0], regs.regs[1], regs.regs[8], regs.regs[9], regs.regs[10], regs.regs[15],
 					(unsigned)regs.sr, (unsigned)regs.spcflags, (void*)regs.pc_oldp,
 					(void*)jit_last_setpc_value, (unsigned)jit_last_setpc_kind, jit_last_setpc_seq);
-			/* Re-derive pc_p from guest PC */
+			/* Re-derive pc_p from guest PC.  In RAM/MMU mode this must use
+			 * code-space MMU translation; get_real_address() is a direct shadow
+			 * lookup and maps low user virtual PCs to stale ROM-overlay bytes.
+			 * Publish the target first because the code translation itself can
+			 * fault and must restart from safe_pc, not the previous instruction. */
 			regs.pc = safe_pc;
-			regs.pc_p = get_real_address(safe_pc, 0, sz_word);
+			regs.fault_pc = safe_pc;
+			Uae2026JitLastInstructionPc = safe_pc;
+			if (jit_allow_ram_dispatch_env() && regs.mmu_enabled)
+				regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(safe_pc);
+			else
+				regs.pc_p = get_real_address(safe_pc, 0, sz_word);
 			regs.pc_oldp = regs.pc_p;
 		}
 	}
@@ -1081,10 +1092,11 @@ void execute_normal(void)
 			   - Previous RAM: 0x04000000 <= pc < 0x04000000 + RAMSize
 			   - ROM: ROMBaseMac <= pc < ROMBaseMac + ROMSize
 			   Anything else (NuBus space, frame buffer, unmapped) is a bus error. */
+			const bool mmu_code_path = jit_allow_ram_dispatch_env() && regs.mmu_enabled;
 			bool valid_mac_pc = (safe_pc < (uae_u32)RAMSize) ||
 				(safe_pc >= 0x04000000u && safe_pc < 0x04000000u + (uae_u32)RAMSize) ||
 				(safe_pc >= (uae_u32)ROMBaseMac && safe_pc < (uae_u32)(ROMBaseMac + ROMSize));
-			if (!valid_mac_pc) {
+			if (!valid_mac_pc && !mmu_code_path) {
 				/* Guest PC points to unmapped memory (e.g. NuBus slot probe).
 				   Generate a bus error exception to let the ROM's handler
 				   deal with it, just like real hardware would. */
@@ -1100,9 +1112,18 @@ void execute_normal(void)
 				Exception(2, safe_pc);
 				return;
 			}
-			/* Valid Mac address — re-derive pc_p from the guest PC */
+			/* Valid Mac address — re-derive pc_p from the guest PC.  In RAM/MMU
+			 * mode this must use code-space MMU translation; get_real_address()
+			 * maps low user virtual PCs to stale ROM-overlay shadow bytes.  Do
+			 * not pre-filter virtual PCs through direct physical windows when
+			 * the 040 MMU is active; let the code translation decide validity. */
 			regs.pc = safe_pc;
-			regs.pc_p = get_real_address(safe_pc, 0, sz_word);
+			regs.fault_pc = safe_pc;
+			Uae2026JitLastInstructionPc = safe_pc;
+			if (mmu_code_path)
+				regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(safe_pc);
+			else
+				regs.pc_p = get_real_address(safe_pc, 0, sz_word);
 			regs.pc_oldp = regs.pc_p;
 		}
 	}
@@ -1151,8 +1172,9 @@ void execute_normal(void)
 					pctrace_mem = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
 				}
 				unsigned long current_step = pctrace_count++;
-				fprintf(stderr, "PCTRACE %lu %08x d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x sr=%04x nzcv=%08x x=%08x\n",
-					current_step, pc,
+				uintptr_t pcp_phys = (jit_MEMBaseDiff && (uintptr_t)regs.pc_p >= jit_MEMBaseDiff) ? ((uintptr_t)regs.pc_p - jit_MEMBaseDiff) : 0xffffffffu;
+				fprintf(stderr, "PCTRACE %lu %08x phys=%08x pc_p=%p oldp=%p d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x sr=%04x nzcv=%08x x=%08x\n",
+					current_step, pc, (unsigned)pcp_phys, (void*)regs.pc_p, (void*)regs.pc_oldp,
 					regs.regs[0], regs.regs[1], regs.regs[2], regs.regs[3],
 					regs.regs[4], regs.regs[5], regs.regs[6], regs.regs[7],
 					regs.regs[8], regs.regs[9], regs.regs[10], regs.regs[11],

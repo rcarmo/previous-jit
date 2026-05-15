@@ -188,12 +188,43 @@ struct Uae2026JitBankCompat {
     int flags;
 };
 
+extern "C" void Uae2026JitSyncCodeRangeToShadow(uae_u32 addr, uae_u32 bytes)
+{
+    if (!jit_MEMBaseDiff || bytes == 0)
+        return;
+    const uae_u32 ram_base = 0x04000000u;
+    const uae_u32 ram_size = 64u * 1024u * 1024u;
+    const uae_u32 end = addr + bytes;
+    if (end < addr || addr < ram_base || end > ram_base + ram_size)
+        return;
+    uae_u8 *shadow = (uae_u8 *)(jit_MEMBaseDiff + addr);
+    uae_u32 i = 0;
+    for (; i + 1 < bytes; i += 2) {
+        const uae_u16 w = (uae_u16)Uae2026JitPhysGetWord(addr + i);
+        shadow[i] = (uae_u8)(w >> 8);
+        shadow[i + 1] = (uae_u8)w;
+    }
+    if (i < bytes)
+        shadow[i] = (uae_u8)Uae2026JitPhysGetByte(addr + i);
+}
+
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr)
 {
     if (!jit_MEMBaseDiff)
         return 0;
-    if (Uae2026JitRuntimeMmuEnabled())
+    if (Uae2026JitRuntimeMmuEnabled()) {
         addr = Uae2026JitMmuXlateCode(addr);
+        /* Code-space MMU translation returns a physical RAM address.  Keep the
+         * executable JIT shadow coherent with the live memory map before exposing
+         * the host pointer to execute_normal()/compiled branch targets; otherwise
+         * low user virtual pages can execute stale ROM-overlay/probe bytes even
+         * though the 040 code fetch translated to the correct physical page.
+         * Use live byteget() rather than a raw NEXTRam memcpy because the NeXT
+         * memory map can expose freshly generated low-code contents through the
+         * active addrbank path before the raw shadow mirror is coherent. */
+        const uae_u32 page_base = addr & ~0xffu;
+        Uae2026JitSyncCodeRangeToShadow(page_base, 0x100u);
+    }
     return (uintptr_t)(jit_MEMBaseDiff + addr);
 }
 

@@ -30,6 +30,28 @@ extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode)
 	mmu_opcode = (uae_u16)opcode;
 }
 
+static inline void jit_canonicalize_code_pc_if_ram_mmu(void)
+{
+	if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled)
+		return;
+	uae_u32 pc = m68k_getpc() & ~1u;
+	regs.pc = pc;
+	regs.fault_pc = pc;
+	Uae2026JitLastInstructionPc = pc;
+	regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(pc);
+	regs.pc_oldp = regs.pc_p;
+}
+
+static inline uae_u32 jit_fetch_opcode_for_current_pc(uae_u32 pc)
+{
+	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && pc < 0x01000000u) {
+		mmu_restart = true;
+		mmu_opcode = (uae_u16)-1;
+		return (uae_u16)Uae2026JitMmuFetchOpcode(pc);
+	}
+	return GET_OPCODE;
+}
+
 extern "C" uae_u32 Uae2026JitPrefetchGuard(uae_u32 pc, uae_u32 opcode)
 {
 	/* Preserve interpreter-style restart publication around a faultable 040
@@ -932,6 +954,7 @@ void exec_nostats(void)
 	jit_diag_exec_nostats_calls++;
 	jit_diag_dispatch_count++;
 	jit_diag_maybe_print();
+	jit_canonicalize_code_pc_if_ram_mmu();
 	{
 		uintptr pcp = (uintptr)regs.pc_p;
 		uintptr ram_base = (uintptr)RAMBaseHost;
@@ -972,7 +995,7 @@ void exec_nostats(void)
 	static unsigned long trace_count = 0;
 	for (;;) {
 		uae_u32 before_pc = m68k_getpc();
-		uae_u32 opcode = GET_OPCODE;
+		uae_u32 opcode = jit_fetch_opcode_for_current_pc(before_pc);
 		Uae2026JitPublishFallbackState(before_pc, opcode);
 		if (legacy_ram_direct_movem_long_predec(before_pc, (uae_u16)opcode)) {
 			cpu_check_ticks();
@@ -1063,6 +1086,7 @@ void execute_normal(void)
 	}
 
 	jit_diag_maybe_print();
+	jit_canonicalize_code_pc_if_ram_mmu();
 	/* If pc_p is outside valid Mac memory range (corrupt), re-derive it. */
 	{
 		uintptr pcp = (uintptr)regs.pc_p;
@@ -1216,6 +1240,21 @@ void execute_normal(void)
 						fprintf(stderr, " w%lu=%04x", wi, (unsigned)w);
 					}
 					fprintf(stderr, "\n");
+					if (regs.pc_p) {
+						fprintf(stderr, "PCTSHADOW %08x", pc);
+						for (unsigned long wi = 0; wi < pctrace_words; wi++) {
+							uae_u8 *p = regs.pc_p + wi * 2;
+							uae_u16 w = ((uae_u16)p[0] << 8) | p[1];
+							fprintf(stderr, " w%lu=%04x", wi, (unsigned)w);
+						}
+						fprintf(stderr, "\n");
+					}
+					if (pcp_phys != 0xffffffffu) {
+						fprintf(stderr, "PCTLIVE %08x", pc);
+						for (unsigned long wi = 0; wi < pctrace_words; wi++)
+							fprintf(stderr, " w%lu=%04x", wi, (unsigned)Uae2026JitLiveGetWord((uae_u32)pcp_phys + (uae_u32)(wi * 2)));
+						fprintf(stderr, "\n");
+					}
 				}
 			}
 		}
@@ -1245,7 +1284,7 @@ void execute_normal(void)
 		for (;;) {
 			pc_hist[blocklen++].location = (uae_u16 *)regs.pc_p;
 			uae_u32 pc_before_op = m68k_getpc();
-			uae_u32 opcode = GET_OPCODE;
+			uae_u32 opcode = jit_fetch_opcode_for_current_pc(pc_before_op);
 			Uae2026JitPublishFallbackState(pc_before_op, opcode);
 			if (legacy_ram_direct_movem_long_predec(pc_before_op, (uae_u16)opcode)) {
 				cpu_check_ticks();

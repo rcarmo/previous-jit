@@ -1196,6 +1196,7 @@ void execute_normal(void)
 				}
 				static int pctrace_stack = -1;
 				static int pctrace_mem = -1;
+				static int pctrace_live_words = -1;
 				if (pctrace_stack < 0) {
 					const char *env = getenv("B2_JIT_PCTRACE_STACK");
 					pctrace_stack = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
@@ -1203,6 +1204,10 @@ void execute_normal(void)
 				if (pctrace_mem < 0) {
 					const char *env = getenv("B2_JIT_PCTRACE_MEM");
 					pctrace_mem = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+				}
+				if (pctrace_live_words < 0) {
+					const char *env = getenv("B2_JIT_PCTRACE_LIVE");
+					pctrace_live_words = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
 				}
 				unsigned long current_step = pctrace_count++;
 				uintptr_t pcp_phys = (jit_MEMBaseDiff && (uintptr_t)regs.pc_p >= jit_MEMBaseDiff) ? ((uintptr_t)regs.pc_p - jit_MEMBaseDiff) : 0xffffffffu;
@@ -1258,7 +1263,7 @@ void execute_normal(void)
 						}
 						fprintf(stderr, "\n");
 					}
-					if (pcp_phys != 0xffffffffu) {
+					if (pctrace_live_words && pcp_phys != 0xffffffffu) {
 						fprintf(stderr, "PCTLIVE %08x", pc);
 						for (unsigned long wi = 0; wi < pctrace_words; wi++)
 							fprintf(stderr, " w%lu=%04x", wi, (unsigned)Uae2026JitLiveGetWord((uae_u32)pcp_phys + (uae_u32)(wi * 2)));

@@ -101,6 +101,7 @@ extern "C" uae_u16 mmu_opcode;
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 extern "C" uae_u32 Uae2026JitMmuFetchOpcode(uae_u32 pc);
 extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode);
+extern "C" uae_u32 Uae2026JitPrefetchGuard(uae_u32 pc, uae_u32 opcode);
 extern "C" void Uae2026JitSyncRamToShadow(void);
 extern "C" void Uae2026JitSyncVideoFromShadow(void);
 extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr);
@@ -436,6 +437,53 @@ static inline bool jit_maybe_singlestep_low_virtual(void)
 	(void)(*cpufunctbl[mmu_opcode])(mmu_opcode);
 	cpu_check_ticks();
 	return true;
+}
+
+static inline bool jit_dispatch_low_virtual_prefetch_guard_enabled(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("B2_JIT_LOW_VIRTUAL_PREFETCH_GUARD");
+		cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+	}
+	return cached != 0;
+}
+
+static inline uae_u32 jit_dispatch_low_virtual_prefetch_start(void)
+{
+	static uae_u32 value = 0x00003200u;
+	static bool init = false;
+	if (!init) {
+		const char *env = getenv("B2_JIT_LOW_VIRTUAL_PREFETCH_START");
+		value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0x00003200u;
+		init = true;
+	}
+	return value;
+}
+
+static inline uae_u32 jit_dispatch_low_virtual_prefetch_end(void)
+{
+	static uae_u32 value = 0x00003400u;
+	static bool init = false;
+	if (!init) {
+		const char *env = getenv("B2_JIT_LOW_VIRTUAL_PREFETCH_END");
+		value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0x00003400u;
+		init = true;
+	}
+	return value;
+}
+
+static inline void jit_maybe_prefetch_guard_low_virtual_dispatch(uae_u32 pc)
+{
+	if (!jit_allow_ram_dispatch_env() || !jit_dispatch_low_virtual_prefetch_guard_enabled() || !regs.mmu_enabled)
+		return;
+	if (pc >= 0x01000000u || pc < jit_dispatch_low_virtual_prefetch_start() || pc > jit_dispatch_low_virtual_prefetch_end())
+		return;
+	/* Dispatch-level guard: cover low-virtual blocks that execute via
+	 * execute_normal()/fallback as well as blocks that become native L2.  Passing
+	 * 0xffff means there is no compile-time opcode literal to compare against;
+	 * Uae2026JitPrefetchGuard() republishes the MMU-fetched opcode on success. */
+	(void)Uae2026JitPrefetchGuard(pc, 0xffffu);
 }
 
 static inline bool jit_bad_pcp_guard_enabled(void)
@@ -884,6 +932,8 @@ void m68k_do_compile_execute(void)
 			if (jit_maybe_singlestep_low_virtual())
 				continue;
 			_pc = m68k_getpc();
+			jit_maybe_prefetch_guard_low_virtual_dispatch(_pc);
+			_pc = m68k_getpc();
 			if (jit_allow_ram_dispatch_env() && regs.mmu_enabled) {
 				regs.pc = _pc;
 				regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(_pc);
@@ -989,6 +1039,31 @@ void m68k_do_compile_execute(void)
 							regs.regs[8], regs.regs[15]);
 					}
 					fprintf(stderr, "\n");
+					{
+						static int pc_words_initialized = 0;
+						static uae_u32 pc_words_start = 0, pc_words_end = 0;
+						static unsigned long pc_words_limit = 0, pc_words_count = 0;
+						if (!pc_words_initialized) {
+							const char *start_env = getenv("B2_JIT_DUMP_PC_WORDS_START");
+							const char *end_env = getenv("B2_JIT_DUMP_PC_WORDS_END");
+							const char *limit_env = getenv("B2_JIT_DUMP_PC_WORDS_LIMIT");
+							pc_words_start = (start_env && *start_env) ? (uae_u32)strtoul(start_env, NULL, 0) : 0;
+							pc_words_end = (end_env && *end_env) ? (uae_u32)strtoul(end_env, NULL, 0) : pc_words_start;
+							pc_words_limit = (limit_env && *limit_env) ? strtoul(limit_env, NULL, 0) : 64;
+							pc_words_initialized = 1;
+						}
+						if (pc_words_start && _pc >= pc_words_start && _pc <= pc_words_end && pc_words_count < pc_words_limit) {
+							fprintf(stderr, "PCWORDS[%lu] pc=%08x sr=%04x intmask=%u spc=%08x",
+								++pc_words_count, (unsigned)_pc, (unsigned)regs.sr,
+								(unsigned)regs.intmask, (unsigned)regs.spcflags);
+							for (int _wi = 0; _wi < 12; _wi++)
+								fprintf(stderr, " w%d=%04x", _wi, (unsigned)Uae2026JitLiveGetWord(_pc + (uae_u32)(_wi * 2)));
+							fprintf(stderr, " d0=%08x d1=%08x d2=%08x a0=%08x a1=%08x a2=%08x a7=%08x\n",
+								(unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[2],
+								(unsigned)regs.regs[8], (unsigned)regs.regs[9], (unsigned)regs.regs[10],
+								(unsigned)regs.regs[15]);
+						}
+					}
 					static int dump_once = 0;
 					if (!dump_once && _pc < 0x00800000 && dc_log > 30000) {
 						dump_once = 1;

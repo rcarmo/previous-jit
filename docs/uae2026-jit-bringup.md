@@ -22,7 +22,7 @@ Update it as code lands so the repository always explains the current experiment
 - The bridge now performs a **runtime-disabled bootstrap allocation probe**: it allocates and clears an executable cache buffer when the experimental JIT is requested and the safety checks pass, but still does not hand execution to translated code.
 - `tools/headless-jit-bootstrap-probe.sh` verifies the bridge/bootstrap path without waiting for a full desktop boot.
 - `tools/headless-jit-bridge-smoke.sh` rebuilds the experimental binary and proves bridge logging, ASLR active, bootstrap allocation active, and desktop reachability with default/ROM translated execution enabled.
-- `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch mode. RAM mode now records true RAM dispatch, but remains blocked before desktop; the current discriminator is low-user-virtual instruction-fetch/MMU restart state around `0x00003200..0x00003400`.
+- `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch mode. RAM mode now records true RAM dispatch, gets past the earlier `00003352`/`addr=00000008` low-user-virtual probe loop, and reaches `root on sd@`, but remains blocked before desktop; the current discriminator is post-root low-user-virtual state divergence around `00003964`.
 - `tools/uae2026-compiler-syntax-probe.sh` records the current compile-time blocker set for direct vendored compiler integration.
 - `tools/uae2026-compiler-object-probe.sh` compiles the vendored ARM64 compiler core to an object file under the probe prelude.
 - Current blocker inventory lives in `docs/uae2026-compiler-blockers.md`.
@@ -210,11 +210,11 @@ This injects short M68K opcode vectors into the ROM mirror, runs one interpreter
 and compares the resulting `REGDUMP:` state instead of waiting for a full NeXT boot.
 See `docs/uae2026-opcode-harness.md` for the current vector set and latest results.
 
-Latest translated-execution debug checkpoint (2026-05-14):
-- opcode harness passes: `total=62`, `jit_ok=62`, `pass=62`, `fail=0`, `infra_fail=0`, `score=100` (`/workspace/tmp/previous-opcode-harness-prefetch-guard-audit-20260514-150218`)
-- default/ROM JIT smoke passes and stayed stable for 60 seconds: `desktop_reached=1`, `stable_reached=1`, `jit_ram_requested=0`, `jit_ram_dispatch_seen=0`, `jit_dispatch_lines=4805`, `jit_last_pc=0100bb08` in `/workspace/tmp/previous-jit-prefetch-guard-audit-default-stable-20260514-151230`
+Latest translated-execution debug checkpoint (2026-05-15):
+- opcode harness passes: `total=62`, `jit_ok=62`, `pass=62`, `fail=0`, `infra_fail=0`, `score=100` (`/workspace/tmp/previous-opcode-harness-pctrace-live-gate-20260515-154924`)
+- default/ROM JIT smoke passes and stayed stable for 60 seconds: `desktop_reached=1`, `stable_reached=1`, `jit_ram_requested=0`, `jit_ram_dispatch_seen=0`, `jit_last_pc=0100bb08` in `/workspace/tmp/previous-jit-pctrace-live-gate-default-20260515-155450`
 - RAM translation remains gated by `PREVIOUS_UAE2026_JIT_RAM=1`; true RAM dispatch is counted only for `0x04000000..0x07ffffff` dispatch PCs so bogus zero-PC recovery does not look like RAM progress
-- baseline RAM mode still fails before desktop at the low-user-virtual `00003352` probe fault (`CMPI.B #$40,(8,A4)`, `addr=00000008`, `A4=0`), while `B2_JIT_RTE_FAULT_HANDOFF=1` proves the guest state is recoverable by reaching a stable desktop (`/workspace/tmp/previous-jit-bridge-smoke-rte-handoff-stable-ram-20260514-032751`)
+- baseline RAM mode now gets past the earlier low-user-virtual `00003352` probe fault (`CMPI.B #$40,(8,A4)`, `addr=00000008`, `A4=0`) and reaches `root on sd@`; `B2_JIT_RTE_FAULT_HANDOFF=1` remains the interpreter oracle that proves the guest state is recoverable by reaching a stable desktop (`/workspace/tmp/previous-jit-bridge-smoke-rte-handoff-stable-ram-20260514-032751`)
 - committed RAM-mode fixes restore both MMU fixup slots, add conservative auto-update EA rollback, force auto-update and return-family opcodes through exact fallback barriers, add code-space MMU translation for branch/dispatch PCs, canonicalize post-exception PC/SR, save the active supervisor exception SP/ISP across bridge catches, and remove or gate RAM direct shortcuts that bypass 040 restart/fixup bookkeeping
 - RAM/MMU data/code translation remains split: the private bank `xlateaddr` uses data-space `Uae2026JitMmuXlateData()`, while `Uae2026JitMmuXlateCodeHost()` is used for dispatch PC materialization and ARM64 `get_n_addr_jmp()` branch/return targets
 - bridge MMU restart handoff uses `m68k_setpc(restart_pc)` rather than `m68k_setpci(restart_pc)` so `regs.pc`/`pc_p`/`pc_oldp` are coherent before translated execution resumes

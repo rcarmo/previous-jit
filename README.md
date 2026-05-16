@@ -34,9 +34,9 @@ Right now the project is at the stage where:
 
 - interpreter-backed validation works
 - JIT bootstrap/plumbing works
-- the opcode-equivalence harness is clean (`pass=62 fail=0 score=100`; latest audit run `/workspace/tmp/previous-opcode-harness-prefetch-guard-audit-20260514-150218`)
-- default/ROM JIT reaches the NEXTSTEP desktop and remained stable for 60s in the latest smoke check (`/workspace/tmp/previous-jit-prefetch-guard-audit-default-stable-20260514-151230`)
-- RAM-mode JIT reaches true RAM dispatch and gets past early kernel/device activity, but still fails before the desktop. The current audited frontier is low-user-virtual instruction-fetch/MMU restart state around the ROM probe window `0x00003200..0x00003400`: default RAM mode still loops at `00003352`, while the opt-in native prefetch guard (`B2_JIT_LOW_VIRTUAL_PREFETCH_GUARD=1`) reaches `root on sd@` without fetched/compiled opcode mismatches but still times out before Workspace/File Viewer (`/workspace/tmp/previous-jit-prefetch-guard-audit-ram-20260514-151804`).
+- the opcode-equivalence harness is clean (`pass=62 fail=0 score=100`; latest audit run `/workspace/tmp/previous-opcode-harness-pctrace-live-gate-20260515-154924`)
+- default/ROM JIT reaches the NEXTSTEP desktop and remained stable for 60s in the latest smoke check (`/workspace/tmp/previous-jit-pctrace-live-gate-default-20260515-155450`)
+- RAM-mode JIT reaches true RAM dispatch, gets past the earlier repeated `00003352`/`addr=00000008` low-virtual probe fault, and reaches `root on sd@`, but still times out before Workspace/File Viewer. The current audited frontier is post-root low-user-virtual state divergence around `00003964`: JIT arrives at the live `MOVE.L (A2),-(A7)` stream with `A2=00000002`, while the interpreter oracle reaches the same code with `A2=03ffffd8` after the `0000394a..0000395a` prologue/helper path (`/workspace/tmp/previous-jit-postroot-lowpc-trace-20260515-142612`, `/workspace/tmp/previous-jit-oracle-low3900-20260515-145623`).
 
 ## Project layout
 
@@ -90,7 +90,7 @@ Notes:
 - Linux startup disables host ASLR by default for deterministic JIT mappings
 - `PREVIOUS_UAE2026_JIT=0` gives an interpreter baseline for harness comparison
 - `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch path; this is still the active correctness frontier
-- `B2_JIT_LOW_VIRTUAL_SINGLESTEP=1` and `B2_JIT_LOW_VIRTUAL_PREFETCH_GUARD=1` are diagnostics for the confirmed low-user-virtual ROM probe window (`0x00003200..0x00003400` by default); they are not default-on fixes
+- `B2_JIT_LOW_VIRTUAL_SINGLESTEP=1`, `B2_JIT_LOW_VIRTUAL_PREFETCH_GUARD=1`, `B2_JIT_EXACT_EXEC_PCS`, `B2_JIT_PCTRACE_WORDS`, and opt-in `B2_JIT_PCTRACE_LIVE=1` are diagnostics for low-user-virtual MMU/code-fetch and state-divergence analysis; they are not default-on fixes
 - RAM/MMU code paths must keep data-space and code-space translations separate: the private bank `xlateaddr` is for data effective addresses, while branch/return/dispatch PC materialization uses the dedicated code-space host translator
 - the vendored compiler unity build keeps its Basilisk/UAE prefs symbols renamed away from Previous's native `currprefs`/`changed_prefs`; do not reintroduce same-name globals with incompatible struct layouts
 

@@ -10,7 +10,7 @@
 - Vendored BasiliskII UAE 2026 subtree is now staged under `src/cpu/uae_cpu_2026/`
 - Headless fresh-image harness is now available at `tools/headless-nextstep-harness.sh`
 - Experimental bridge smoke harness is now available at `tools/headless-jit-bridge-smoke.sh`
-- Default/ROM translated execution reaches the NEXTSTEP desktop and passes a 60s stability smoke; RAM/MMU dispatch mode is the active remaining boot blocker. The latest low-virtual prefetch-guard discriminator reaches `root on sd@` in RAM mode but still times out before desktop.
+- Default/ROM translated execution reaches the NEXTSTEP desktop and passes a 60s stability smoke; RAM/MMU dispatch mode is the active remaining boot blocker. Plain RAM mode now gets past the earlier `00003352` low-virtual probe loop and reaches `root on sd@`, then times out post-root before desktop with a current low-user-virtual state-divergence frontier around `00003964`.
 - Early bootstrap probe harness is now available at `tools/headless-jit-bootstrap-probe.sh`
 - Compiler-facing prefs shim now lives in `src/cpu/uae2026_compiler_prefs_shim.cpp`
 - Direct vendored compiler blocker inventory now lives in `docs/uae2026-compiler-blockers.md`
@@ -138,7 +138,7 @@ Why:
 1. **MMU correctness**
    - NeXTSTEP/OpenStep depend on 68030/68040 MMU behavior
    - this is the biggest correctness risk for RAM-mode JIT dispatch
-   - current active frontier: nested 68040 MMU bus-error handling when the MMU handler returns with `RTE` to low user virtual PCs, especially the low-ROM probe window around `0x00003200..0x00003400` and the repeated `00003352` / `addr=00000008` failure
+   - current active frontier: nested 68040 MMU bus-error handling and JIT resume after returns to low user virtual PCs. The earlier low-ROM probe loop at `00003352` / `addr=00000008` is cleared by the code-fetch fixes; the current post-root discriminator is `00003964`, where JIT reaches a live `MOVE.L (A2),-(A7)` stream with `A2=00000002` but the interpreter oracle reaches it with `A2=03ffffd8`.
 
 2. **Exception / restart semantics**
    - page faults, bus faults, restartable FPU/MMU instructions

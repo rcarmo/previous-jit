@@ -195,6 +195,65 @@ static int bridge_move_size_increment(uae_u16 opcode, int areg)
     return 0;
 }
 
+static void bridge_set_active_a7(uae_u32 value)
+{
+    m68k_areg(regs, 7) = value;
+    if (!regs.s)
+        regs.usp = value;
+    else if (regs.m)
+        regs.msp = value;
+    else
+        regs.isp = value;
+}
+
+enum class bridge_mmu_txn_kind : uae_u32 {
+    none = 0,
+    call_push = 1,
+};
+
+struct bridge_mmu_txn {
+    bridge_mmu_txn_kind kind = bridge_mmu_txn_kind::none;
+    uae_u32 pc = 0;
+    uae_u16 opcode = 0;
+    uae_u32 pre_sr = 0;
+    uae_u32 pre_a7 = 0;
+    uae_u32 side_old = 0;
+    uae_u32 side_new = 0;
+    uae_u32 aux0 = 0;
+    uae_u32 aux1 = 0;
+};
+
+static bridge_mmu_txn bridge_active_mmu_txn;
+
+static void bridge_clear_mmu_txn()
+{
+    bridge_active_mmu_txn = bridge_mmu_txn{};
+}
+
+static bool bridge_rollback_mmu_txn(uae_u32 fault_pc)
+{
+    if (bridge_active_mmu_txn.kind == bridge_mmu_txn_kind::none)
+        return false;
+
+    const bridge_mmu_txn txn = bridge_active_mmu_txn;
+    bridge_clear_mmu_txn();
+    switch (txn.kind) {
+        case bridge_mmu_txn_kind::call_push:
+            bridge_set_active_a7(txn.pre_a7);
+            if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
+                fprintf(stderr,
+                        "JIT_CALL_TARGET_ROLLBACK_TXN fault_pc=%08x op_pc=%08x op=%04x addr=%08x sp=%08x oldsp=%08x newsp=%08x\n",
+                        (unsigned)fault_pc, (unsigned)txn.pc, (unsigned)txn.opcode,
+                        (unsigned)regs.mmu_fault_addr, (unsigned)txn.pre_a7,
+                        (unsigned)txn.side_old, (unsigned)txn.side_new);
+            }
+            return true;
+        case bridge_mmu_txn_kind::none:
+        default:
+            return false;
+    }
+}
+
 static void bridge_restore_postinc_if_faulted(int areg, int inc, uae_u32 fault_addr)
 {
     if (areg < 0 || areg > 7 || inc <= 0)
@@ -223,6 +282,8 @@ static void bridge_restore_call_target_fault_side_effects(uae_u32 fault_pc)
     const uae_u32 fault_addr = regs.mmu_fault_addr;
     if (!fault_addr || fault_addr == fault_pc)
         return;
+    if (bridge_rollback_mmu_txn(fault_pc))
+        return;
 
     /* Native BSR lowers A7 and stores the return address before control reaches
      * the target fetch.  If that target fetch raises a 040 MMU fault, retrying
@@ -240,13 +301,7 @@ static void bridge_restore_call_target_fault_side_effects(uae_u32 fault_pc)
         if (!bridge_is_bsr_opcode(opcode))
             continue;
         const uae_u32 restored_sp = m68k_areg(regs, 7) + 4;
-        m68k_areg(regs, 7) = restored_sp;
-        if (!regs.s)
-            regs.usp = restored_sp;
-        else if (regs.m)
-            regs.msp = restored_sp;
-        else
-            regs.isp = restored_sp;
+        bridge_set_active_a7(restored_sp);
         if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
             fprintf(stderr,
                     "JIT_CALL_TARGET_ROLLBACK fault_pc=%08x op_pc=%08x op=%04x addr=%08x sp=%08x\n",
@@ -414,6 +469,29 @@ static const char *update_bridge_summary()
 extern "C" bool Uae2026JitBridgeCompiled(void)
 {
     return true;
+}
+
+extern "C" void Uae2026JitMmuTxnClear(void)
+{
+    bridge_clear_mmu_txn();
+}
+
+extern "C" void Uae2026JitMmuTxnBeginCallPush(uae_u32 pc, uae_u32 opcode, uae_u32 pre_a7, uae_u32 pushed_a7, uae_u32 return_pc)
+{
+    bridge_active_mmu_txn.kind = bridge_mmu_txn_kind::call_push;
+    bridge_active_mmu_txn.pc = pc;
+    bridge_active_mmu_txn.opcode = (uae_u16)opcode;
+    bridge_active_mmu_txn.pre_sr = regs.sr;
+    bridge_active_mmu_txn.pre_a7 = pre_a7;
+    bridge_active_mmu_txn.side_old = pre_a7;
+    bridge_active_mmu_txn.side_new = pushed_a7;
+    bridge_active_mmu_txn.aux0 = return_pc;
+    bridge_active_mmu_txn.aux1 = 0;
+}
+
+extern "C" void Uae2026JitMmuTxnCommit(void)
+{
+    bridge_clear_mmu_txn();
 }
 
 extern "C" bool Uae2026JitBridgeRequested(void)

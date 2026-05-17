@@ -213,6 +213,50 @@ static void bridge_restore_predec_if_faulted(int areg, int inc, uae_u32 fault_ad
         value = fault_addr + (uae_u32)inc;
 }
 
+static bool bridge_is_bsr_opcode(uae_u16 opcode)
+{
+    return (opcode & 0xff00u) == 0x6100u;
+}
+
+static void bridge_restore_call_target_fault_side_effects(uae_u32 fault_pc)
+{
+    const uae_u32 fault_addr = regs.mmu_fault_addr;
+    if (!fault_addr || fault_addr == fault_pc)
+        return;
+
+    /* Native BSR lowers A7 and stores the return address before control reaches
+     * the target fetch.  If that target fetch raises a 040 MMU fault, retrying
+     * the BSR without rollback pushes the return address a second time.  The
+     * low virtual post-root failure at 00003372 -> 00012b04 has exactly this
+     * signature; the published fault_pc can be two bytes before the live BSR
+     * word, so scan a tiny window around it rather than trusting only fop. */
+    for (int delta = -2; delta <= 2; delta += 2) {
+        if (delta < 0 && fault_pc < (uae_u32)(-delta))
+            continue;
+        const uae_u32 op_pc = fault_pc + (uae_u32)delta;
+        if (!bridge_live_readable(op_pc, 2))
+            continue;
+        const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(op_pc);
+        if (!bridge_is_bsr_opcode(opcode))
+            continue;
+        const uae_u32 restored_sp = m68k_areg(regs, 7) + 4;
+        m68k_areg(regs, 7) = restored_sp;
+        if (!regs.s)
+            regs.usp = restored_sp;
+        else if (regs.m)
+            regs.msp = restored_sp;
+        else
+            regs.isp = restored_sp;
+        if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
+            fprintf(stderr,
+                    "JIT_CALL_TARGET_ROLLBACK fault_pc=%08x op_pc=%08x op=%04x addr=%08x sp=%08x\n",
+                    (unsigned)fault_pc, (unsigned)op_pc, (unsigned)opcode,
+                    (unsigned)fault_addr, (unsigned)restored_sp);
+        }
+        return;
+    }
+}
+
 static void bridge_restore_autoea_fault_side_effects(uae_u32 fault_pc)
 {
     if (!bridge_live_readable(fault_pc, 2))
@@ -470,6 +514,7 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
             }
         }
         bridge_restore_autoea_fault_side_effects(regs.fault_pc);
+        bridge_restore_call_target_fault_side_effects(regs.fault_pc);
         const bool bridge_rte_fault = bridge_live_peek_word(regs.fault_pc) == 0x4e73u;
         /* If a RAM/MMU fault escapes while RTE has only partially completed,
          * the generated 040 handler has already loaded the frame SR and may

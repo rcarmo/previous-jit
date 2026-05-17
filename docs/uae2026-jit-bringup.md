@@ -249,9 +249,9 @@ Expected success metrics:
 
 1. Keep `./tools/uae2026-opcode-harness.sh` green before and after every RAM/MMU change.
 2. Preserve the default/ROM JIT desktop smoke (`desktop_reached=1`, preferably with `PREVIOUS_STABLE_WAIT=60`) while debugging RAM mode.
-3. Add minimal targeted regressions for the confirmed RAM/MMU patterns: auto-update EA fault -> MMU-handler `RTE` back to low user virtual PC, and low-virtual opcode fetch -> native data fault with fetched opcode restart state preserved.
-4. Audit RTE/page-fault state without conflating `fault_pc`/`instruction_pc` and `mmu_fault_addr`; RAM/MMU helper calls now force a full live-state flush before helper-delivered `Exception(2)`, and the remaining seam is low-user-virtual code-fetch/MMU-safe JIT resume after nested handler returns.
-5. Promote the low-virtual prefetch guard from diagnostic to default RAM behavior only after instruction-fetch faults, successful fetches, and later data faults all match interpreter restart semantics.
+3. Implement the transaction-based RAM/MMU restart model described in `docs/uae2026-jit-mmu-strategy.md`; keep the current BSR target-fetch rollback as the proven compatibility shim until generated code publishes explicit call-push metadata.
+4. Add minimal targeted regressions for the confirmed RAM/MMU patterns: BSR target-fetch fault after return push, auto-update EA fault -> MMU-handler `RTE` back to low user virtual PC, low-virtual opcode fetch -> native data fault with fetched opcode restart state preserved, and RTE return-code fetch after SR/A7 switch.
+5. Audit RTE/page-fault state without conflating `fault_pc`/`instruction_pc` and `mmu_fault_addr`; RAM/MMU helper calls now force a full live-state flush before helper-delivered `Exception(2)`, but all translated code still needs explicit transaction metadata for irreversible side effects before faultable accesses.
 6. Once RAM mode reaches desktop, capture the final RAM-mode screenshot and update this log with metrics.
 
 ## Guardrails

@@ -58,6 +58,7 @@ Right now the project is at the stage where:
 ### Docs
 
 - `docs/uae2026-jit-bringup.md`
+- `docs/uae2026-jit-mmu-strategy.md`
 - `docs/uae2026-compiler-blockers.md`
 - `docs/aarch64-jit-port-audit.md`
 - `docs/uae2026-opcode-harness.md`

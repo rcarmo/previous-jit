@@ -206,8 +206,13 @@ On MMU longjmp:
 - The proven historical seam still logs `JIT_CALL_TARGET_ROLLBACK fault_pc=00003372 op_pc=00003374
   op=61ff addr=00012b04`, not `JIT_CALL_TARGET_ROLLBACK_TXN`, so the bridge scan remains the
   active compatibility shim for that exact case.
-- RAM mode no longer repeats `00003964/A2=00000002`.
-- RAM mode reaches `root on sd@`, then OCR shows `init exited with 212`.
+- Follow-up bridge gating keeps auto-EA rollback limited to restartable MMU faults and prevents
+  the legacy BSR scan from treating stack-push/absolute-control extension words as BSR opcodes.
+  This keeps the old `00003964/A2=00000002` regression away while matching the interpreter's
+  non-restartable `MOVE.L D0,-(SP)` fault at `0000c53c` (A7 remains at the decremented address).
+- Current RAM frontier is now the RTE/page-fault resume seam: normal RAM mode reaches `root on sd@`
+  and then panics with `buserr: bad exception stack format`, while
+  `B2_JIT_RTE_FAULT_HANDOFF=1` remains an oracle that reaches desktop.
 - Deep oracle (`B2_JIT_RTE_FAULT_HANDOFF=1`) reaches desktop and does not visit the JIT-only
   `00012988/000129c6/0000c512/0000ba00/00006162` path in 100k low-PC trace entries.
 - Exacting all low virtual code or kernel text, global optlev0, and flush-each-op do not move

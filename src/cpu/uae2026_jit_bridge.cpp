@@ -287,10 +287,27 @@ static bool bridge_is_bsr_opcode(uae_u16 opcode)
     return (opcode & 0xff00u) == 0x6100u;
 }
 
+static bool bridge_is_absolute_control_opcode(uae_u16 opcode)
+{
+    return opcode == 0x4eb9u || opcode == 0x4ef9u;
+}
+
+static bool bridge_is_stack_push_opcode(uae_u16 opcode)
+{
+    return (opcode & 0xff00u) == 0x2f00u;
+}
+
 static void bridge_restore_call_target_fault_side_effects(uae_u32 fault_pc)
 {
     const uae_u32 fault_addr = regs.mmu_fault_addr;
     if (!fault_addr || fault_addr == fault_pc)
+        return;
+    /* A call-target rollback is only valid after the return-address push
+     * succeeded and a later target code fetch faulted.  If the faulting address
+     * is the just-decremented stack location, this is the call push itself
+     * faulting; the 040 interpreter leaves that stack side effect visible for
+     * exception delivery instead of undoing it here. */
+    if (fault_addr + 4u == m68k_areg(regs, 7))
         return;
     if (bridge_rollback_mmu_txn(fault_pc))
         return;
@@ -310,6 +327,11 @@ static void bridge_restore_call_target_fault_side_effects(uae_u32 fault_pc)
         const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(op_pc);
         if (!bridge_is_bsr_opcode(opcode))
             continue;
+        if (op_pc != fault_pc) {
+            const uae_u16 fault_opcode = bridge_live_peek_word(fault_pc);
+            if (bridge_is_absolute_control_opcode(fault_opcode) || bridge_is_stack_push_opcode(fault_opcode))
+                continue;
+        }
         const uae_u32 restored_sp = m68k_areg(regs, 7) + 4;
         bridge_set_active_a7(restored_sp);
         if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
@@ -637,7 +659,8 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                 mmufixup[fixup_index].reg = -1;
             }
         }
-        bridge_restore_autoea_fault_side_effects(regs.fault_pc);
+        if (mmu_restart)
+            bridge_restore_autoea_fault_side_effects(regs.fault_pc);
         bridge_restore_call_target_fault_side_effects(regs.fault_pc);
         const bool bridge_rte_fault = bridge_live_peek_word(regs.fault_pc) == 0x4e73u;
         /* If a RAM/MMU fault escapes while RTE has only partially completed,

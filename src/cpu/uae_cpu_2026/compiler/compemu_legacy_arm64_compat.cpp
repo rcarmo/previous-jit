@@ -1892,47 +1892,14 @@ extern "C" void jit_op_reset(void)
 
 extern "C" void jit_op_rte(void)
 {
-    /* RTE: pop SR and PC from supervisor stack.
-     * 68040 has different stack frame formats. */
-    uae_u32 sp = m68k_areg(regs, 7);
-    uae_u16 new_sr = get_word(sp); sp += 2;
-    uae_u32 new_pc = get_long(sp); sp += 4;
-    
-    /* Read frame format (68040) */
-    uae_u16 frame_word = get_word(sp); sp += 2;
-    int frame_type = (frame_word >> 12) & 0xF;
-    
-    /* Handle different frame types */
-    switch (frame_type) {
-        case 0: /* Normal 4-word frame */
-            break;
-        case 1: /* Throwaway 4-word frame */
-            break;
-        case 2: /* 6-word frame (instruction error) */
-            sp += 4; /* skip instruction address */
-            break;
-        case 7: /* 68040 access error - 30 word frame */
-            sp += 52; /* skip the 26 additional words */
-            break;
-        case 9: /* Coprocessor mid-instruction, 10 word */
-            sp += 12;
-            break;
-        case 0xA: /* 68040 short bus cycle, 16 word */
-            sp += 24;
-            break;
-        case 0xB: /* 68040 long bus cycle, 46 word */
-            sp += 84;
-            break;
-        default:
-            /* Unknown frame type — treat as normal */
-            break;
-    }
-    
-    m68k_areg(regs, 7) = sp;
-    regs.sr = new_sr;
-    MakeFromSR();
-    regs.pc = new_pc;
-    fill_prefetch_0();
+    /* RTE is exact in RAM/MMU mode because every frame read, SR transition,
+     * stack adjustment, and target prefetch can fault.  Publish the pre-op
+     * state before entering the interpreter implementation so the bridge can
+     * build/restart the same exception frame if any of those accesses escape. */
+    uae_u32 rte_pc = regs.fault_pc ? regs.fault_pc :
+        (Uae2026JitLastInstructionPc ? Uae2026JitLastInstructionPc : m68k_getpc());
+    Uae2026JitPublishFallbackState(rte_pc, 0x4e73u);
+    (*cpufunctbl[0x4e73])(0x4e73);
 }
 
 extern "C" void jit_op_rtr(void)

@@ -102,6 +102,9 @@ extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 extern "C" uae_u32 Uae2026JitMmuFetchOpcode(uae_u32 pc);
 extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode);
 extern "C" uae_u32 Uae2026JitPrefetchGuard(uae_u32 pc, uae_u32 opcode);
+extern "C" void Uae2026JitMmuTxnBeginCallPushPreTarget(uae_u32 pc, uae_u32 opcode, uae_u32 pre_a7, uae_u32 target_pc);
+extern "C" void Uae2026JitMmuTxnBeginCallPushTarget(uae_u32 pc, uae_u32 target_pc);
+extern "C" void Uae2026JitMmuTxnCommit(void);
 extern "C" void Uae2026JitSyncRamToShadow(void);
 extern "C" void Uae2026JitSyncVideoFromShadow(void);
 extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr);
@@ -116,6 +119,41 @@ extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count);
 extern "C" uae_u8 Uae2026JitRtcReadByte(uae_u32 addr);
 extern "C" void Uae2026JitRtcWriteByte(uae_u32 addr, uae_u32 val);
 extern "C" { uae_u32 Uae2026JitLastExceptionSp = 0; }
+
+static inline bool jit_bsr_opcode(uae_u16 opcode)
+{
+	return (opcode & 0xff00u) == 0x6100u;
+}
+
+static inline bool jit_decode_bsr_target(uae_u32 op_pc, uae_u16 opcode, uae_u32 *target_pc)
+{
+	if (!jit_bsr_opcode(opcode) || !target_pc)
+		return false;
+	uae_s32 disp = 0;
+	if ((opcode & 0xffu) == 0x00u) {
+		disp = (uae_s32)(uae_s16)Uae2026JitLiveGetWord(op_pc + 2);
+	} else if ((opcode & 0xffu) == 0xffu) {
+		disp = (uae_s32)((Uae2026JitLiveGetWord(op_pc + 2) << 16) | Uae2026JitLiveGetWord(op_pc + 4));
+	} else {
+		disp = (uae_s32)(uae_s8)(opcode & 0xffu);
+	}
+	*target_pc = op_pc + 2 + (uae_u32)disp;
+	return true;
+}
+
+static inline void jit_maybe_prepare_fallback_call_push_txn(uae_u32 op_pc, uae_u16 opcode)
+{
+	uae_u32 target_pc = 0;
+	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && jit_decode_bsr_target(op_pc, opcode, &target_pc))
+		Uae2026JitMmuTxnBeginCallPushPreTarget(op_pc, opcode, m68k_areg(regs, 7), target_pc);
+}
+
+static inline void jit_maybe_begin_fallback_call_push_txn(uae_u32 op_pc, uae_u16 opcode)
+{
+	uae_u32 target_pc = 0;
+	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && jit_decode_bsr_target(op_pc, opcode, &target_pc))
+		Uae2026JitMmuTxnBeginCallPushTarget(op_pc, target_pc);
+}
 
 extern "C" void Uae2026JitCanonicalizePcAfterFallback(void)
 {
@@ -434,8 +472,10 @@ static inline bool jit_maybe_singlestep_low_virtual(void)
 	mmu_opcode = (uae_u16)-1;
 	mmu_opcode = (uae_u16)Uae2026JitMmuFetchOpcode(pc);
 	Uae2026JitPublishFallbackState(pc, mmu_opcode);
+	jit_maybe_prepare_fallback_call_push_txn(pc, mmu_opcode);
 	(void)(*cpufunctbl[mmu_opcode])(mmu_opcode);
 	cpu_check_ticks();
+	jit_maybe_begin_fallback_call_push_txn(pc, mmu_opcode);
 	return true;
 }
 
@@ -6600,7 +6640,9 @@ void exec_nostats(void)
 {
 	int _run_count = 0;
 	for (;;)  { 
+		uae_u32 op_pc = m68k_getpc();
 		uae_u32 opcode = GET_OPCODE;
+		Uae2026JitMmuTxnCommit();
 #if FLIGHT_RECORDER
 		m68k_record_step(m68k_getpc(), cft_map(opcode));
 #endif
@@ -6617,8 +6659,10 @@ void exec_nostats(void)
 			}
 		}
 #endif
+		jit_maybe_prepare_fallback_call_push_txn(op_pc, (uae_u16)opcode);
 		(*cpufunctbl[opcode])(opcode);
 		cpu_check_ticks();
+		jit_maybe_begin_fallback_call_push_txn(op_pc, (uae_u16)opcode);
 		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL) || ++_run_count >= MAXRUN) {
 			return;
 		}
@@ -6645,12 +6689,16 @@ void execute_normal(void)
 #endif
 		for (;;)  { /* Take note: This is the do-it-normal loop */
 			pc_hist[blocklen++].location = (uae_u16 *)regs.pc_p;
+			uae_u32 op_pc = m68k_getpc();
 			uae_u32 opcode = GET_OPCODE;
+			Uae2026JitMmuTxnCommit();
 #if FLIGHT_RECORDER
 			m68k_record_step(m68k_getpc(), cft_map(opcode));
 #endif
+			jit_maybe_prepare_fallback_call_push_txn(op_pc, (uae_u16)opcode);
 			(*cpufunctbl[opcode])(opcode);
 			cpu_check_ticks();
+			jit_maybe_begin_fallback_call_push_txn(op_pc, (uae_u16)opcode);
 			if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL) || blocklen>=MAXRUN) {
 				compile_block(pc_hist, blocklen);
 				return; /* We will deal with the spcflags in the caller */

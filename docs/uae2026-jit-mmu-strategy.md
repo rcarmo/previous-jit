@@ -178,6 +178,11 @@ On MMU longjmp:
    - removal of the repeated `00003964/A2=2` loop.
 2. **Add the transaction record and helpers** with no behavior change except replacing the BSR
    scan when metadata is present.
+   - Implemented: bridge-side `call_push` records, generated `BSR` producer hooks, generic
+     fallback-loop hooks, compiled-block fallback hooks, and AArch64 legacy-loop hooks.
+   - Current limitation: the historical `00003372/00003374 -> 00012b04` seam still reaches
+     the compatibility scan rather than `JIT_CALL_TARGET_ROLLBACK_TXN`; leave the scan in place
+     until the remaining shifted-PC/native path is covered by explicit metadata.
 3. **Convert call target paths** (`BSR`, `JSR`) to publish `call_push` transactions before
    target code translation/fetch.
 4. **Convert auto-EA paths** to use the transaction record instead of opcode-pattern bridge
@@ -195,6 +200,12 @@ On MMU longjmp:
 ## Current frontier after the BSR fix
 
 - Committed fix: `e7d280b jit: rollback BSR target-fetch faults`.
+- Follow-up transaction coverage adds explicit `call_push` metadata producers for generated BSR,
+  generic fallback BSR, compiled-block fallback BSR, and AArch64 legacy-loop BSR paths; validated
+  with opcode harness `pass=62 fail=0 score=100` and default/ROM desktop smoke.
+- The proven historical seam still logs `JIT_CALL_TARGET_ROLLBACK fault_pc=00003372 op_pc=00003374
+  op=61ff addr=00012b04`, not `JIT_CALL_TARGET_ROLLBACK_TXN`, so the bridge scan remains the
+  active compatibility shim for that exact case.
 - RAM mode no longer repeats `00003964/A2=00000002`.
 - RAM mode reaches `root on sd@`, then OCR shows `init exited with 212`.
 - Deep oracle (`B2_JIT_RTE_FAULT_HANDOFF=1`) reaches desktop and does not visit the JIT-only

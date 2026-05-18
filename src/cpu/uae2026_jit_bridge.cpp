@@ -239,6 +239,16 @@ static bool bridge_rollback_mmu_txn(uae_u32 fault_pc)
     bridge_clear_mmu_txn();
     switch (txn.kind) {
         case bridge_mmu_txn_kind::call_push:
+            if (txn.aux1 && regs.mmu_fault_addr != txn.aux1) {
+                if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
+                    fprintf(stderr,
+                            "JIT_CALL_TARGET_ROLLBACK_TXN_MISS fault_pc=%08x op_pc=%08x op=%04x addr=%08x target=%08x sp=%08x\n",
+                            (unsigned)fault_pc, (unsigned)txn.pc, (unsigned)txn.opcode,
+                            (unsigned)regs.mmu_fault_addr, (unsigned)txn.aux1,
+                            (unsigned)m68k_areg(regs, 7));
+                }
+                return false;
+            }
             bridge_set_active_a7(txn.pre_a7);
             if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
                 fprintf(stderr,
@@ -487,6 +497,42 @@ extern "C" void Uae2026JitMmuTxnBeginCallPush(uae_u32 pc, uae_u32 opcode, uae_u3
     bridge_active_mmu_txn.side_new = pushed_a7;
     bridge_active_mmu_txn.aux0 = return_pc;
     bridge_active_mmu_txn.aux1 = 0;
+}
+
+extern "C" void Uae2026JitMmuTxnBeginCallPushPreTarget(uae_u32 pc, uae_u32 opcode, uae_u32 pre_a7, uae_u32 target_pc)
+{
+    bridge_active_mmu_txn.kind = bridge_mmu_txn_kind::call_push;
+    bridge_active_mmu_txn.pc = pc;
+    bridge_active_mmu_txn.opcode = (uae_u16)opcode;
+    bridge_active_mmu_txn.pre_sr = regs.sr;
+    bridge_active_mmu_txn.pre_a7 = pre_a7;
+    bridge_active_mmu_txn.side_old = pre_a7;
+    bridge_active_mmu_txn.side_new = pre_a7 - 4;
+    bridge_active_mmu_txn.aux0 = 0;
+    bridge_active_mmu_txn.aux1 = target_pc;
+}
+
+extern "C" void Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(uae_u32 pc, uae_u32 target_pc)
+{
+    if (!regs.mmu_enabled)
+        return;
+    const uae_u32 opcode = bridge_live_readable(pc, 2) ? Uae2026JitLiveGetWord(pc) : 0;
+    Uae2026JitMmuTxnBeginCallPushPreTarget(pc, opcode, m68k_areg(regs, 7), target_pc);
+}
+
+extern "C" void Uae2026JitMmuTxnBeginCallPushTarget(uae_u32 pc, uae_u32 target_pc)
+{
+    const uae_u32 pushed_a7 = m68k_areg(regs, 7);
+    const uae_u32 opcode = bridge_live_readable(pc, 2) ? Uae2026JitLiveGetWord(pc) : 0;
+    bridge_active_mmu_txn.kind = bridge_mmu_txn_kind::call_push;
+    bridge_active_mmu_txn.pc = pc;
+    bridge_active_mmu_txn.opcode = (uae_u16)opcode;
+    bridge_active_mmu_txn.pre_sr = regs.sr;
+    bridge_active_mmu_txn.pre_a7 = pushed_a7 + 4;
+    bridge_active_mmu_txn.side_old = pushed_a7 + 4;
+    bridge_active_mmu_txn.side_new = pushed_a7;
+    bridge_active_mmu_txn.aux0 = 0;
+    bridge_active_mmu_txn.aux1 = target_pc;
 }
 
 extern "C" void Uae2026JitMmuTxnCommit(void)

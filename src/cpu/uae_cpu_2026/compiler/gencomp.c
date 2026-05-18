@@ -2206,11 +2206,32 @@ gen_opcode (unsigned int opcode)
 	is_const_jump;
 	genamode (curi->smode, "srcreg", curi->size, "src", GENA_GETV_FETCH, GENA_MOVEM_DO_INC);
 	start_brace();
+	comprintf("\tuae_u32 op_pc=start_pc+((char *)comp_pc_p-(char *)start_pc_p)+m68k_pc_offset_thisinst;\n");
+	switch (curi->size) {
+	 case sz_byte:
+		comprintf("\tuae_s32 bsr_disp=(uae_s32)(uae_s8)(opcode & 255);\n");
+		break;
+	 case sz_word:
+		comprintf("\tuae_s32 bsr_disp=(uae_s32)(uae_s16)comp_get_iword(m68k_pc_offset_thisinst+2);\n");
+		break;
+	 case sz_long:
+		comprintf("\tuae_s32 bsr_disp=(uae_s32)comp_get_ilong(m68k_pc_offset_thisinst+2);\n");
+		break;
+	 default:
+		comprintf("\tuae_s32 bsr_disp=0;\n");
+		break;
+	}
+	comprintf("\tuae_u32 target_pc=op_pc+2+(uae_u32)bsr_disp;\n");
 	comprintf("\tuae_u32 retadd=start_pc+((char *)comp_pc_p-(char *)start_pc_p)+m68k_pc_offset;\n");
 	comprintf("\tint ret=scratchie++;\n"
 		  "\tmov_l_ri(ret,retadd);\n"
 		  "\tsub_l_ri(SP_REG,4);\n"
-		  "\twritelong_clobber(SP_REG,ret,scratchie);\n");
+		  "\twritelong_clobber(SP_REG,ret,scratchie);\n"
+		  "\tprepare_for_call_1();\n"
+		  "\tprepare_for_call_2();\n"
+		  "\tcompemu_raw_mov_l_ri(REG_PAR1,op_pc);\n"
+		  "\tcompemu_raw_mov_l_ri(REG_PAR2,target_pc);\n"
+		  "\tcompemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushTarget);\n");
 	comprintf("\tadd_l_ri(src,m68k_pc_offset_thisinst+2);\n");
 	comprintf("\tm68k_pc_offset=0;\n");
 	comprintf("\tadd_l(PC_P,src);\n");

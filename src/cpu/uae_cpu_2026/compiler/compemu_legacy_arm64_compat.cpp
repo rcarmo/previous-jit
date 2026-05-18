@@ -11,6 +11,8 @@ extern "C" previous_mmufixup_entry mmufixup[2];
 extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
 extern "C" uae_u32 Uae2026JitMmuFetchOpcode(uae_u32 pc);
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 pc);
+extern "C" void Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(uae_u32 pc, uae_u32 target_pc);
+extern "C" void Uae2026JitMmuTxnCommit(void);
 extern uintptr jit_MEMBaseDiff;
 extern "C" {
 uae_u32 Uae2026JitLastInstructionPc = 0;
@@ -153,12 +155,26 @@ static inline int legacy_addr_with_offset(int base, uae_s32 offset)
 	return legacy_addr_with_offset_avoid(base, offset, -1);
 }
 
+static inline bool legacy_bsr_target(uae_u32 pc, uae_u16 opcode, uae_u32 *target_pc)
+{
+	if ((opcode & 0xff00u) != 0x6100u || !target_pc)
+		return false;
+	uae_s32 disp = 0;
+	if ((opcode & 0x00ffu) == 0x0000u)
+		disp = (uae_s32)(uae_s16)get_iword(2);
+	else if ((opcode & 0x00ffu) == 0x00ffu)
+		disp = (uae_s32)(((uae_u32)get_iword(2) << 16) | (uae_u32)get_iword(4));
+	else
+		disp = (uae_s32)(uae_s8)(opcode & 0x00ffu);
+	*target_pc = pc + 2u + (uae_u32)disp;
+	return true;
+}
+
 static inline bool legacy_bsr_l_target(uae_u32 pc, uae_u16 opcode, uae_u32 expected_target, uae_u32 *retpc)
 {
-	if (opcode != 0x61ff)
+	uae_u32 target = 0;
+	if (opcode != 0x61ff || !legacy_bsr_target(pc, opcode, &target))
 		return false;
-	uae_u32 disp = ((uae_u32)get_iword(2) << 16) | (uae_u32)get_iword(4);
-	uae_u32 target = pc + 2u + (uae_u32)(uae_s32)disp;
 	if (target != expected_target)
 		return false;
 	if (retpc)
@@ -1005,6 +1021,7 @@ void exec_nostats(void)
 	for (;;) {
 		uae_u32 before_pc = m68k_getpc();
 		uae_u32 opcode = jit_fetch_opcode_for_current_pc(before_pc);
+		Uae2026JitMmuTxnCommit();
 		Uae2026JitPublishFallbackState(before_pc, opcode);
 		if (legacy_ram_direct_movem_long_predec(before_pc, (uae_u16)opcode)) {
 			cpu_check_ticks();
@@ -1028,6 +1045,11 @@ void exec_nostats(void)
 				continue;
 			}
 		}
+		uae_u32 call_push_target_pc = 0;
+		const bool call_push_txn = jit_allow_ram_dispatch_env() && regs.mmu_enabled &&
+			legacy_bsr_target(before_pc, (uae_u16)opcode, &call_push_target_pc);
+		if (call_push_txn)
+			Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(before_pc, call_push_target_pc);
 		bool trace_this = trace_count < jit_tracewin_limit() && jit_tracewin_match(before_pc);
 		if (trace_this) {
 			fprintf(stderr,
@@ -1299,6 +1321,7 @@ void execute_normal(void)
 			pc_hist[blocklen++].location = (uae_u16 *)regs.pc_p;
 			uae_u32 pc_before_op = m68k_getpc();
 			uae_u32 opcode = jit_fetch_opcode_for_current_pc(pc_before_op);
+			Uae2026JitMmuTxnCommit();
 			Uae2026JitPublishFallbackState(pc_before_op, opcode);
 			if (legacy_ram_direct_movem_long_predec(pc_before_op, (uae_u16)opcode)) {
 				cpu_check_ticks();
@@ -1314,6 +1337,11 @@ void execute_normal(void)
 				jit_op_rom_rtc_write_byte_callsite(pc_before_op, delay_retpc)) ||
 				(legacy_rom_rtc_read_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
 				jit_op_rom_rtc_read_byte_callsite(pc_before_op, delay_retpc));
+			uae_u32 call_push_target_pc = 0;
+			const bool call_push_txn = !helper_callsite && jit_allow_ram_dispatch_env() && regs.mmu_enabled &&
+				legacy_bsr_target(pc_before_op, (uae_u16)opcode, &call_push_target_pc);
+			if (call_push_txn)
+				Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(pc_before_op, call_push_target_pc);
 			if (!helper_callsite)
 				(*cpufunctbl[opcode])(opcode);
 			cpu_check_ticks();

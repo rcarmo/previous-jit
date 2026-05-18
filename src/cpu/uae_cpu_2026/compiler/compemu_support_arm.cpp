@@ -4339,6 +4339,41 @@ static inline bool jit_ram_use_bank_for_mem_vreg(int address, int size, bool is_
 extern "C" uae_u32 Uae2026JitLastInstructionPc;
 extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode);
 extern "C" uae_u32 Uae2026JitPrefetchGuard(uae_u32 pc, uae_u32 opcode);
+extern "C" void Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(uae_u32 pc, uae_u32 target_pc);
+extern "C" void Uae2026JitMmuTxnCommit(void);
+
+static inline bool jit_decode_bsr_target_from_host_words(uae_u16 *opw, uae_u32 op_pc, uae_u16 opcode, uae_u32 *target_pc)
+{
+    if ((opcode & 0xff00u) != 0x6100u || !target_pc)
+        return false;
+    uae_s32 disp = 0;
+    if ((opcode & 0x00ffu) == 0x0000u) {
+        disp = (uae_s32)(uae_s16)do_get_mem_word(opw + 1);
+    } else if ((opcode & 0x00ffu) == 0x00ffu) {
+        disp = (uae_s32)(((uae_u32)do_get_mem_word(opw + 1) << 16) |
+            (uae_u32)do_get_mem_word(opw + 2));
+    } else {
+        disp = (uae_s32)(uae_s8)(opcode & 0x00ffu);
+    }
+    *target_pc = op_pc + 2u + (uae_u32)disp;
+    return true;
+}
+
+static inline void jit_emit_fallback_call_push_txn_begin(uae_u32 op_pc, uae_u16 opcode, uae_u32 target_pc)
+{
+    if (!jit_allow_ram_dispatch_env() || (opcode & 0xff00u) != 0x6100u)
+        return;
+    compemu_raw_mov_l_ri(REG_PAR1, op_pc);
+    compemu_raw_mov_l_ri(REG_PAR2, target_pc);
+    compemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7);
+}
+
+static inline void jit_emit_fallback_call_push_txn_commit(uae_u16 opcode)
+{
+    if (!jit_allow_ram_dispatch_env() || (opcode & 0xff00u) != 0x6100u)
+        return;
+    compemu_raw_call((uintptr)Uae2026JitMmuTxnCommit);
+}
 
 static inline void jit_sync_fault_pc_for_bank_helper(void)
 {
@@ -6434,12 +6469,20 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
                     compemu_raw_mov_l_ri(REG_PAR2, opcode & 0xffff);
                     compemu_raw_call((uintptr)Uae2026JitPublishFallbackState);
+                    uae_u32 fallback_call_push_target_pc = 0;
+                    const bool fallback_call_push_txn = jit_decode_bsr_target_from_host_words(
+                        (uae_u16 *)pc_hist[i].location, op_m68k_pc, (uae_u16)opcode,
+                        &fallback_call_push_target_pc);
+                    if (fallback_call_push_txn)
+                        jit_emit_fallback_call_push_txn_begin(op_m68k_pc, (uae_u16)opcode, fallback_call_push_target_pc);
                     if (jit_trace_target_pc(op_m68k_pc)) {
                         compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
                         compemu_raw_mov_l_ri(REG_PAR2, (2u << 16) | (opcode & 0xffff));
                         compemu_raw_call((uintptr)jit_trace_pc_hit);
                     }
                     compemu_raw_call((uintptr)cputbl[cft_map(opcode)]);
+                    if (fallback_call_push_txn)
+                        jit_emit_fallback_call_push_txn_commit((uae_u16)opcode);
                     /* Trace interpreter-executed family-d instructions */
                     if (((opcode >> 12) & 0xf) == 0xd && getenv("B2_JIT_TRACE_ADD")) {
                         uae_u32 pc_val = (uae_u32)((uintptr)pc_hist[i].location - (uintptr)ROMBaseHost + ROMBaseMac);

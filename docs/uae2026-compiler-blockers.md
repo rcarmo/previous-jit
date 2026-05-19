@@ -33,9 +33,10 @@ prelude, without linking it into `Previous` yet.
 - syntax probe: **passing**
 - object compile probe: **passing**
 - emulator/runtime integration of vendored compiler entry points: **wired under `ENABLE_EXPERIMENTAL_UAE2026_JIT`**
-- default/ROM translated execution reaches the NEXTSTEP desktop and passed a 60s stability smoke in the latest audit check (`/workspace/tmp/previous-jit-pctrace-live-gate-default-20260515-155450`)
-- opcode harness remains clean after the latest RAM/MMU diagnostics (`/workspace/tmp/previous-opcode-harness-pctrace-live-gate-20260515-154924`, `pass=62 fail=0 score=100`)
-- RAM/MMU dispatch mode is still experimental. Baseline RAM mode now gets past the earlier low-user-virtual `00003352` / `addr=00000008` probe loop and reaches `root on sd@`, then times out before desktop. The current frontier is a later low-user-virtual state divergence around `00003964`: JIT arrives with `A2=00000002`, while the interpreter oracle reaches the same live stream with `A2=03ffffd8` after `0000394a: MOVEA.L (-40,A6),A2` and `0000395a: BSR.L 00007ff0`.
+- default/ROM translated execution reaches the NEXTSTEP desktop and passed a 60s stability smoke in the latest audit check (`/workspace/tmp/previous-jit-rte-handoff-default-retry-20260519-164317`)
+- opcode harness remains clean after the latest RAM/MMU changes (`/workspace/tmp/previous-opcode-harness-20260519-163752`, `pass=62 fail=0 score=100`)
+- RAM/MMU dispatch mode is still experimental, but default RAM-requested mode now reaches true RAM dispatch and boots to a stable desktop through a conservative RTE/page-fault handoff to the exact interpreter (`/workspace/tmp/previous-jit-rte-disable-knob-ram-pass-20260519-173759`, `desktop_reached=1`, `stable_reached=1`, `jit_ram_dispatch_seen=1`).
+- `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` is the current native-resume discriminator. With the handoff disabled, RAM mode gets past the former `00003352`, `00003964/A2=2`, `init exited with 212`, and panic-monitor frontiers, but stalls during fsck/root transition with repeated low-user/RAM-boundary faults around `000000de` and `050abffe` (`/workspace/tmp/previous-jit-rte-disable-baseline-ram-20260519-165201`).
 - latest diagnostic audit keeps default `B2_JIT_PCTRACE_WORDS` non-invasive by logging only `PCTOPS` plus executable-shadow `PCTSHADOW`; live addrbank reads are opt-in via `B2_JIT_PCTRACE_LIVE=1` because they can have side effects or fault.
 
 ## Remaining blocker classes
@@ -124,8 +125,8 @@ Implication:
 
 1. keep the direct compiler probes passing as guardrails while runtime work continues
 2. preserve default/ROM JIT desktop stability while RAM/MMU dispatch changes land
-3. add targeted regressions for the confirmed RAM-mode blockers: MMU handler `RTE` returning to the low-user-virtual ROM probe window followed by a faulting low-memory probe, and the later `0000394a..00003964` helper/prologue path where A2 diverges before `MOVE.L (A2),-(A7)`
+3. add targeted regressions for the confirmed RAM-mode blockers: return-target MMU faults after `RTS`/`RTR`, RTE return-code fetch after SR/A7 switch, and the remaining handoff-disabled low-user fault loop around `000000de`/`050abffe`
 4. continue turning the low-virtual code-fetch/MMU-safe path into semantically complete RAM behavior only when restart state, instruction-fetch faults, successful fetches, and later data faults match the interpreter path
-5. audit bridge/JIT state materialization before `Exception(2)`, especially PC/SR/USP/ISP, published restart flags, fetched opcode state, and live D/A register spill during RTE-triggered page faults
+5. audit bridge/JIT state materialization before `Exception(2)` and before resuming JIT after an RTE/page-fault seam, especially PC/SR/USP/ISP, published restart flags, fetched opcode state, and live D/A register spill
 6. keep RAM/MMU data effective-address translation (`Uae2026JitMmuXlateData`) separate from code/branch/dispatch-PC translation (`Uae2026JitMmuXlateCodeHost`) when adding native paths
 7. keep vendored compiler globals (`uae2026_currprefs`, `uae2026_changed_prefs`, `jit_regflags`, `jit_MEMBaseDiff`) separate from Previous-native globals with incompatible layouts

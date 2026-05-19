@@ -42,7 +42,7 @@ known to exercise the brittle parts of the old generated `compemu` pipeline:
 
 Absolute scratch addresses were remapped from BasiliskII-style low RAM to Previous RAM at `0x0400xxxx`.
 
-## Latest run (2026-05-15)
+## Latest run (2026-05-19)
 
 Command:
 
@@ -62,7 +62,7 @@ Observed metrics:
 
 Recent artifact example:
 
-- `/workspace/tmp/previous-opcode-harness-pctrace-live-gate-20260515-154924`
+- `/workspace/tmp/previous-opcode-harness-20260519-163752`
 
 Interpretation:
 

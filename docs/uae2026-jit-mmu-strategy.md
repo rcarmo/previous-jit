@@ -7,10 +7,18 @@ one-off fixes for each newly exposed low-PC seam.
 ## Problem statement
 
 RAM/MMU JIT mode now gets past the historical low-virtual failures (`00003352` and
-`00003964`) but still diverges after `root on sd@` and exits init with `212`. The fixes
-that moved the frontier all point to the same missing abstraction: translated code can
-perform irreversible architectural side effects before a faultable 68040 code/data access,
-and the bridge currently reconstructs restart state heuristically.
+`00003964`), the post-BSR `init exited with 212` divergence, and the later panic-monitor
+`bad exception stack format` failure. Default `PREVIOUS_UAE2026_JIT_RAM=1` now boots to
+a stable desktop by handing bridge-caught RTE/page-fault seams to the exact interpreter.
+The remaining native bug is JIT resume after that seam, preserved by
+`B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`, where the handoff-disabled path stalls during
+fsck/root transition with repeated low-user/RAM-boundary faults around `000000de` and
+`050abffe`.
+
+The fixes that moved the frontier all point to the same missing abstraction: translated
+code can perform irreversible architectural side effects before a faultable 68040
+code/data access, and the bridge currently reconstructs too much restart state
+heuristically.
 
 Concrete examples:
 
@@ -168,7 +176,7 @@ On MMU longjmp:
 5. Deliver `Exception(2)`.
 6. Canonicalize the post-exception PC with `m68k_setpc(handled_pc)`.
 7. Sync active supervisor/user stack pointers after `Exception()`.
-8. If the exception was an RTE fault and `B2_JIT_RTE_FAULT_HANDOFF=1`, disable JIT as oracle.
+8. If the exception was an RTE fault, disable JIT and hand execution to the interpreter when either `B2_JIT_RTE_FAULT_HANDOFF=1` is set or RAM/MMU mode is active without `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`.
 
 ## Migration plan
 
@@ -194,27 +202,16 @@ On MMU longjmp:
    - RTE return-code fetch fault after SR/A7 switch
    - MOVES with DFC/SFC write/read fault
    - MOVEM predecrement MMU fault
-7. **Only then revisit optimization/native lowering** for the remaining post-root `init exited`
-   divergence.
+7. **Only then revisit optimization/native lowering** for the remaining handoff-disabled native
+   RTE-resume divergence.
 
-## Current frontier after the BSR fix
+## Current frontier after the RTE handoff checkpoint
 
-- Committed fix: `e7d280b jit: rollback BSR target-fetch faults`.
-- Follow-up transaction coverage adds explicit `call_push` metadata producers for generated BSR,
-  generic fallback BSR, compiled-block fallback BSR, and AArch64 legacy-loop BSR paths; validated
-  with opcode harness `pass=62 fail=0 score=100` and default/ROM desktop smoke.
-- The proven historical seam still logs `JIT_CALL_TARGET_ROLLBACK fault_pc=00003372 op_pc=00003374
-  op=61ff addr=00012b04`, not `JIT_CALL_TARGET_ROLLBACK_TXN`, so the bridge scan remains the
-  active compatibility shim for that exact case.
-- Follow-up bridge gating keeps auto-EA rollback limited to restartable MMU faults and prevents
-  the legacy BSR scan from treating stack-push/absolute-control extension words as BSR opcodes.
-  This keeps the old `00003964/A2=00000002` regression away while matching the interpreter's
-  non-restartable `MOVE.L D0,-(SP)` fault at `0000c53c` (A7 remains at the decremented address).
-- Current RAM frontier is now the RTE/page-fault resume seam: normal RAM mode reaches `root on sd@`
-  and then panics with `buserr: bad exception stack format`, while
-  `B2_JIT_RTE_FAULT_HANDOFF=1` remains an oracle that reaches desktop.
-- Deep oracle (`B2_JIT_RTE_FAULT_HANDOFF=1`) reaches desktop and does not visit the JIT-only
-  `00012988/000129c6/0000c512/0000ba00/00006162` path in 100k low-PC trace entries.
-- Exacting all low virtual code or kernel text, global optlev0, and flush-each-op do not move
-  the new failure. That suggests the next fix should come from a principled MMU transaction/
-  restart model rather than another local exact-exec discriminator.
+- Committed fix: `e7d280b jit: rollback BSR target-fetch faults`. The proven historical seam still logs `JIT_CALL_TARGET_ROLLBACK fault_pc=00003372 op_pc=00003374 op=61ff addr=00012b04`, not `JIT_CALL_TARGET_ROLLBACK_TXN`, so the bridge scan remains the active compatibility shim for that exact case.
+- Follow-up transaction coverage adds explicit `call_push` metadata producers for generated BSR, generic fallback BSR, compiled-block fallback BSR, and AArch64 legacy-loop BSR paths. Return-family fallback paths now also publish return-pop transactions for `RTS`/`RTR` target-fetch faults.
+- Bridge gating keeps auto-EA rollback limited to restartable cases that need it and prevents the legacy BSR scan from treating stack-push/absolute-control extension words as BSR opcodes. This keeps the old `00003964/A2=00000002` regression away while matching the interpreter's non-restartable `MOVE.L D0,-(SP)` fault at `0000c53c`.
+- The generated/native `jit_op_rte()` helper routes through the exact interpreter RTE implementation, avoiding a duplicate hand-coded frame decoder.
+- Zero-PC vector recovery is disabled while the 040 MMU is enabled; in that mode, zero PC is treated as a symptom to diagnose rather than recovered by jumping to vector 2.
+- Default RAM/MMU mode now hands bridge-caught RTE/page-fault seams to the interpreter unless `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` is set. Validation: `/workspace/tmp/previous-jit-rte-disable-knob-ram-pass-20260519-173759` reached and held the desktop with `jit_ram_dispatch_seen=1`.
+- With `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`, the native resume path remains unfixed: `/workspace/tmp/previous-jit-rte-disable-baseline-ram-20260519-165201` stalls before desktop with repeated faults around `pc=000000de` and `pc=050abffe`. This is the current discriminator for replacing the conservative handoff with a native fix.
+- Exacting all low virtual code or kernel text, global optlev0, and flush-each-op did not move earlier frontiers. The next fix should come from the principled MMU transaction/restart model rather than another broad exact-exec discriminator.

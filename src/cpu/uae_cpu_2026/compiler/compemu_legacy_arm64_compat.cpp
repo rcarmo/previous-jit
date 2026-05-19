@@ -12,6 +12,7 @@ extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
 extern "C" uae_u32 Uae2026JitMmuFetchOpcode(uae_u32 pc);
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 pc);
 extern "C" void Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(uae_u32 pc, uae_u32 target_pc);
+extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7(uae_u32 pc, uae_u32 opcode, uae_u32 pop_bytes);
 extern "C" void Uae2026JitMmuTxnCommit(void);
 extern uintptr jit_MEMBaseDiff;
 extern "C" {
@@ -180,6 +181,22 @@ static inline bool legacy_bsr_l_target(uae_u32 pc, uae_u16 opcode, uae_u32 expec
 	if (retpc)
 		*retpc = pc + 6u;
 	return true;
+}
+
+static inline uae_u32 legacy_return_pop_bytes(uae_u16 opcode)
+{
+	if (opcode == 0x4e75u) /* RTS */
+		return 4;
+	if (opcode == 0x4e77u) /* RTR: PC long + CCR word */
+		return 6;
+	return 0;
+}
+
+static inline void legacy_maybe_begin_return_pop_txn(uae_u32 pc, uae_u16 opcode)
+{
+	const uae_u32 pop_bytes = legacy_return_pop_bytes(opcode);
+	if (pop_bytes && jit_allow_ram_dispatch_env() && regs.mmu_enabled)
+		Uae2026JitMmuTxnBeginReturnPopCurrentA7(pc, opcode, pop_bytes);
 }
 
 static inline bool legacy_rom_delay_bsr_callsite(uae_u32 pc, uae_u16 opcode, uae_u32 *retpc)
@@ -1050,6 +1067,8 @@ void exec_nostats(void)
 			legacy_bsr_target(before_pc, (uae_u16)opcode, &call_push_target_pc);
 		if (call_push_txn)
 			Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(before_pc, call_push_target_pc);
+		else
+			legacy_maybe_begin_return_pop_txn(before_pc, (uae_u16)opcode);
 		bool trace_this = trace_count < jit_tracewin_limit() && jit_tracewin_match(before_pc);
 		if (trace_this) {
 			fprintf(stderr,
@@ -1342,6 +1361,8 @@ void execute_normal(void)
 				legacy_bsr_target(pc_before_op, (uae_u16)opcode, &call_push_target_pc);
 			if (call_push_txn)
 				Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(pc_before_op, call_push_target_pc);
+			else if (!helper_callsite)
+				legacy_maybe_begin_return_pop_txn(pc_before_op, (uae_u16)opcode);
 			if (!helper_callsite)
 				(*cpufunctbl[opcode])(opcode);
 			cpu_check_ticks();

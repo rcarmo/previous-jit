@@ -209,6 +209,7 @@ static void bridge_set_active_a7(uae_u32 value)
 enum class bridge_mmu_txn_kind : uae_u32 {
     none = 0,
     call_push = 1,
+    return_pop = 2,
 };
 
 struct bridge_mmu_txn {
@@ -253,6 +254,36 @@ static bool bridge_rollback_mmu_txn(uae_u32 fault_pc)
             if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
                 fprintf(stderr,
                         "JIT_CALL_TARGET_ROLLBACK_TXN fault_pc=%08x op_pc=%08x op=%04x addr=%08x sp=%08x oldsp=%08x newsp=%08x\n",
+                        (unsigned)fault_pc, (unsigned)txn.pc, (unsigned)txn.opcode,
+                        (unsigned)regs.mmu_fault_addr, (unsigned)txn.pre_a7,
+                        (unsigned)txn.side_old, (unsigned)txn.side_new);
+            }
+            return true;
+        case bridge_mmu_txn_kind::return_pop:
+            if (txn.pc != fault_pc || (txn.opcode != 0x4e75u && txn.opcode != 0x4e77u)) {
+                if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
+                    fprintf(stderr,
+                            "JIT_RETURN_TARGET_ROLLBACK_TXN_MISS fault_pc=%08x op_pc=%08x op=%04x addr=%08x sp=%08x oldsp=%08x newsp=%08x\n",
+                            (unsigned)fault_pc, (unsigned)txn.pc, (unsigned)txn.opcode,
+                            (unsigned)regs.mmu_fault_addr, (unsigned)m68k_areg(regs, 7),
+                            (unsigned)txn.side_old, (unsigned)txn.side_new);
+                }
+                return false;
+            }
+            if (m68k_areg(regs, 7) != txn.side_new && m68k_areg(regs, 7) != txn.pre_a7) {
+                if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
+                    fprintf(stderr,
+                            "JIT_RETURN_TARGET_ROLLBACK_TXN_SP_MISS fault_pc=%08x op_pc=%08x op=%04x addr=%08x sp=%08x oldsp=%08x newsp=%08x\n",
+                            (unsigned)fault_pc, (unsigned)txn.pc, (unsigned)txn.opcode,
+                            (unsigned)regs.mmu_fault_addr, (unsigned)m68k_areg(regs, 7),
+                            (unsigned)txn.side_old, (unsigned)txn.side_new);
+                }
+                return false;
+            }
+            bridge_set_active_a7(txn.pre_a7);
+            if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
+                fprintf(stderr,
+                        "JIT_RETURN_TARGET_ROLLBACK_TXN fault_pc=%08x op_pc=%08x op=%04x addr=%08x sp=%08x oldsp=%08x newsp=%08x\n",
                         (unsigned)fault_pc, (unsigned)txn.pc, (unsigned)txn.opcode,
                         (unsigned)regs.mmu_fault_addr, (unsigned)txn.pre_a7,
                         (unsigned)txn.side_old, (unsigned)txn.side_new);
@@ -344,17 +375,18 @@ static void bridge_restore_call_target_fault_side_effects(uae_u32 fault_pc)
     }
 }
 
-static void bridge_restore_autoea_fault_side_effects(uae_u32 fault_pc)
+static void bridge_restore_autoea_fault_side_effects(uae_u32 fault_pc, bool restartable)
 {
     if (!bridge_live_readable(fault_pc, 2))
         return;
     const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(fault_pc);
     const uae_u32 fault_addr = regs.mmu_fault_addr;
 
-    /* MOVES.<size> <reg>,(An)+ / -(An) and memory->reg variants.  The RAM
-       direct shortcut and native gapfill update An before helper memory access;
-       if that access faults, restore An before the 68040 exception frame is
-       built. */
+    /* MOVES.<size> <reg>,(An)+ / -(An) and memory->reg variants.  Native and
+       mixed fallback paths can update An before helper memory access longjmps
+       to the bridge.  Postincrement rollback is exact and safe whenever the
+       register equals fault_addr+inc; predecrement rollback remains limited to
+       restartable faults so a visible faulting predecrement write is not undone. */
     int moves_inc = 0;
     if ((opcode & 0xfff8u) == 0x0e18u || (opcode & 0xfff8u) == 0x0e20u)
         moves_inc = areg_byteinc[opcode & 7u];
@@ -366,15 +398,15 @@ static void bridge_restore_autoea_fault_side_effects(uae_u32 fault_pc)
         const int reg = opcode & 7u;
         if ((opcode & 0x38u) == 0x18u)
             bridge_restore_postinc_if_faulted(reg, moves_inc, fault_addr);
-        else if ((opcode & 0x38u) == 0x20u)
+        else if (restartable && (opcode & 0x38u) == 0x20u)
             bridge_restore_predec_if_faulted(reg, moves_inc, fault_addr);
         return;
     }
 
     /* Generic MOVE.<size> with auto-update source/destination modes.  This is
-       intentionally conservative: restore only when the updated register value
-       exactly matches the faulting EA relationship, avoiding false rewinds for
-       source postincrement reads that fault before the increment executes. */
+       intentionally conservative: restore postincrement only on the exact
+       fault_addr+inc signature, and restore predecrement only for restartable
+       faults. */
     if ((opcode & 0xc000u) == 0 && (opcode & 0x3000u) != 0) {
         const int src_mode = (opcode >> 3) & 7;
         const int src_reg = opcode & 7;
@@ -384,11 +416,11 @@ static void bridge_restore_autoea_fault_side_effects(uae_u32 fault_pc)
         const int dst_inc = bridge_move_size_increment(opcode, dst_reg);
         if (src_mode == 3)
             bridge_restore_postinc_if_faulted(src_reg, src_inc, fault_addr);
-        else if (src_mode == 4)
+        else if (restartable && src_mode == 4)
             bridge_restore_predec_if_faulted(src_reg, src_inc, fault_addr);
         if (dst_mode == 3)
             bridge_restore_postinc_if_faulted(dst_reg, dst_inc, fault_addr);
-        else if (dst_mode == 4)
+        else if (restartable && dst_mode == 4)
             bridge_restore_predec_if_faulted(dst_reg, dst_inc, fault_addr);
     }
 }
@@ -557,6 +589,37 @@ extern "C" void Uae2026JitMmuTxnBeginCallPushTarget(uae_u32 pc, uae_u32 target_p
     bridge_active_mmu_txn.aux1 = target_pc;
 }
 
+extern "C" void Uae2026JitMmuTxnBeginReturnPop(uae_u32 pc, uae_u32 opcode, uae_u32 pre_a7, uae_u32 pop_bytes)
+{
+    bridge_active_mmu_txn.kind = bridge_mmu_txn_kind::return_pop;
+    bridge_active_mmu_txn.pc = pc;
+    bridge_active_mmu_txn.opcode = (uae_u16)opcode;
+    bridge_active_mmu_txn.pre_sr = regs.sr;
+    bridge_active_mmu_txn.pre_a7 = pre_a7;
+    bridge_active_mmu_txn.side_old = pre_a7;
+    bridge_active_mmu_txn.side_new = pre_a7 + pop_bytes;
+    bridge_active_mmu_txn.aux0 = 0;
+    bridge_active_mmu_txn.aux1 = 0;
+}
+
+extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7(uae_u32 pc, uae_u32 opcode, uae_u32 pop_bytes)
+{
+    if (!regs.mmu_enabled)
+        return;
+    Uae2026JitMmuTxnBeginReturnPop(pc, opcode, m68k_areg(regs, 7), pop_bytes);
+}
+
+extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7ByOpcode(uae_u32 pc, uae_u32 opcode)
+{
+    uae_u32 pop_bytes = 0;
+    if ((uae_u16)opcode == 0x4e75u)
+        pop_bytes = 4;
+    else if ((uae_u16)opcode == 0x4e77u)
+        pop_bytes = 6;
+    if (pop_bytes)
+        Uae2026JitMmuTxnBeginReturnPopCurrentA7(pc, opcode, pop_bytes);
+}
+
 extern "C" void Uae2026JitMmuTxnCommit(void)
 {
     bridge_clear_mmu_txn();
@@ -659,8 +722,7 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                 mmufixup[fixup_index].reg = -1;
             }
         }
-        if (mmu_restart)
-            bridge_restore_autoea_fault_side_effects(regs.fault_pc);
+        bridge_restore_autoea_fault_side_effects(regs.fault_pc, mmu_restart);
         bridge_restore_call_target_fault_side_effects(regs.fault_pc);
         const bool bridge_rte_fault = bridge_live_peek_word(regs.fault_pc) == 0x4e73u;
         /* If a RAM/MMU fault escapes while RTE has only partially completed,
@@ -683,6 +745,20 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
          * value only as a last-ditch fallback for missing ISP state. */
         if (!regs.s && Uae2026JitLastExceptionSp && bridge_rte_fault && regs.isp == 0) {
             regs.isp = Uae2026JitLastExceptionSp;
+        }
+        /* Native/fallback RAM MMU helpers can longjmp after the generated
+         * instruction has advanced regs.pc, but a 68040 access-error frame
+         * must be built from the faulting instruction PC.  Keep this narrow to
+         * kernel RAM text; low-virtual call faults can publish extension-word
+         * PCs and are handled by explicit call/return transactions above. */
+        if (prb == 2 && !bridge_rte_fault && regs.fault_pc >= 0x04000000u && regs.fault_pc < 0x08000000u) {
+            /* Previous's legacy format-7 frame builder stores mmu_effective_addr
+             * as the EA word.  JIT-delivered helper faults may leave that field
+             * stale from an earlier low-virtual fault; make it match the actual
+             * bus fault address for bridge-delivered RAM/MMU cycles. */
+            regs.mmu_effective_addr = regs.mmu_fault_addr;
+            if (m68k_getpc() != regs.fault_pc)
+                m68k_setpc(regs.fault_pc);
         }
         {
             static unsigned long exc_log_count = 0;
@@ -737,7 +813,16 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                     regs.isp = m68k_areg(regs, 7);
             }
             MakeSR();
-            const uae_u32 handled_pc = m68k_getpc();
+            uae_u32 handled_pc = m68k_getpc();
+            if (prb == 2 && handled_pc == 0) {
+                const uae_u32 vec2 = bridge_live_peek_long(regs.vbr + 8);
+                if (vec2) {
+                    handled_pc = vec2;
+                    regs.s = 1;
+                    regs.m = 0;
+                    MakeSR();
+                }
+            }
             /* Exception() can leave the correct post-vector PC represented by
              * the pc/pc_p/pc_oldp triple without committing it to regs.pc.  The
              * bridge deliberately clears pc_p at the next JIT entry, so make the
@@ -745,7 +830,8 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
             m68k_setpc(handled_pc);
             if (prb == 2) {
                 static unsigned long handled_log_count = 0;
-                if (handled_log_count < 64 || (handled_log_count % 1024) == 0) {
+                if (handled_log_count < 64 || (handled_log_count % 1024) == 0 ||
+                    (regs.fault_pc == 0x04001660u && env_truthy("B2_JIT_TRACE_MMU_FRAME", false))) {
                     fprintf(stderr,
                             "UAE2026 bridge: handled MMU exception %d newpc=%08x sr=%04x vbr=%08x sp=%08x sp0=%08x sp4=%08x fr_sr=%04x fr_pc=%08x fr_vec=%04x fr8=%08x fr12=%08x spc=%08x\n",
                             prb, (unsigned)handled_pc, (unsigned)regs.sr,
@@ -761,7 +847,7 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                 }
                 handled_log_count++;
             }
-            if (bridge_rte_fault && env_truthy("B2_JIT_RTE_FAULT_HANDOFF", false)) {
+            if (bridge_rte_fault && (env_truthy("B2_JIT_RTE_FAULT_HANDOFF", false) || env_truthy("PREVIOUS_UAE2026_JIT_RAM", false))) {
                 fprintf(stderr, "UAE2026 bridge: RTE fault handoff to interpreter pc=%08x sr=%04x isp=%08x\n",
                         (unsigned)handled_pc, (unsigned)regs.sr, (unsigned)regs.isp);
                 UseJIT = false;

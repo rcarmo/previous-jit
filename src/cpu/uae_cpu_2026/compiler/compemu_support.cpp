@@ -104,6 +104,7 @@ extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode);
 extern "C" uae_u32 Uae2026JitPrefetchGuard(uae_u32 pc, uae_u32 opcode);
 extern "C" void Uae2026JitMmuTxnBeginCallPushPreTarget(uae_u32 pc, uae_u32 opcode, uae_u32 pre_a7, uae_u32 target_pc);
 extern "C" void Uae2026JitMmuTxnBeginCallPushTarget(uae_u32 pc, uae_u32 target_pc);
+extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7(uae_u32 pc, uae_u32 opcode, uae_u32 pop_bytes);
 extern "C" void Uae2026JitMmuTxnCommit(void);
 extern "C" void Uae2026JitSyncRamToShadow(void);
 extern "C" void Uae2026JitSyncVideoFromShadow(void);
@@ -153,6 +154,22 @@ static inline void jit_maybe_begin_fallback_call_push_txn(uae_u32 op_pc, uae_u16
 	uae_u32 target_pc = 0;
 	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && jit_decode_bsr_target(op_pc, opcode, &target_pc))
 		Uae2026JitMmuTxnBeginCallPushTarget(op_pc, target_pc);
+}
+
+static inline uae_u32 jit_return_pop_bytes(uae_u16 opcode)
+{
+	if (opcode == 0x4e75u) /* RTS */
+		return 4;
+	if (opcode == 0x4e77u) /* RTR: PC long + CCR word */
+		return 6;
+	return 0;
+}
+
+static inline void jit_maybe_prepare_fallback_return_pop_txn(uae_u32 op_pc, uae_u16 opcode)
+{
+	const uae_u32 pop_bytes = jit_return_pop_bytes(opcode);
+	if (pop_bytes && jit_allow_ram_dispatch_env() && regs.mmu_enabled)
+		Uae2026JitMmuTxnBeginReturnPopCurrentA7(op_pc, opcode, pop_bytes);
 }
 
 extern "C" void Uae2026JitCanonicalizePcAfterFallback(void)
@@ -473,6 +490,7 @@ static inline bool jit_maybe_singlestep_low_virtual(void)
 	mmu_opcode = (uae_u16)Uae2026JitMmuFetchOpcode(pc);
 	Uae2026JitPublishFallbackState(pc, mmu_opcode);
 	jit_maybe_prepare_fallback_call_push_txn(pc, mmu_opcode);
+	jit_maybe_prepare_fallback_return_pop_txn(pc, mmu_opcode);
 	(void)(*cpufunctbl[mmu_opcode])(mmu_opcode);
 	cpu_check_ticks();
 	jit_maybe_begin_fallback_call_push_txn(pc, mmu_opcode);
@@ -935,7 +953,7 @@ void m68k_do_compile_execute(void)
 			extern bool UseJIT;
 			static bool ram_synced_for_dispatch = false;
 			uae_u32 _pc = m68k_getpc();
-			if (_pc == 0 && jit_allow_ram_dispatch_env()) {
+			if (_pc == 0 && jit_allow_ram_dispatch_env() && !regs.mmu_enabled) {
 				static unsigned long zero_pc_log = 0;
 				uae_u32 vec2 = regs.vbr ? Uae2026JitLiveGetLong(regs.vbr + 8) : Uae2026JitLiveGetLong(8);
 				const bool log_zero_pc = zero_pc_log < 16 || (zero_pc_log % 1024) == 0;
@@ -6660,6 +6678,7 @@ void exec_nostats(void)
 		}
 #endif
 		jit_maybe_prepare_fallback_call_push_txn(op_pc, (uae_u16)opcode);
+		jit_maybe_prepare_fallback_return_pop_txn(op_pc, (uae_u16)opcode);
 		(*cpufunctbl[opcode])(opcode);
 		cpu_check_ticks();
 		jit_maybe_begin_fallback_call_push_txn(op_pc, (uae_u16)opcode);
@@ -6696,6 +6715,7 @@ void execute_normal(void)
 			m68k_record_step(m68k_getpc(), cft_map(opcode));
 #endif
 			jit_maybe_prepare_fallback_call_push_txn(op_pc, (uae_u16)opcode);
+			jit_maybe_prepare_fallback_return_pop_txn(op_pc, (uae_u16)opcode);
 			(*cpufunctbl[opcode])(opcode);
 			cpu_check_ticks();
 			jit_maybe_begin_fallback_call_push_txn(op_pc, (uae_u16)opcode);

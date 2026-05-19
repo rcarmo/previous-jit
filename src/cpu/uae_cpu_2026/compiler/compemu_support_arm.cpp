@@ -4340,6 +4340,7 @@ extern "C" uae_u32 Uae2026JitLastInstructionPc;
 extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode);
 extern "C" uae_u32 Uae2026JitPrefetchGuard(uae_u32 pc, uae_u32 opcode);
 extern "C" void Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(uae_u32 pc, uae_u32 target_pc);
+extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7ByOpcode(uae_u32 pc, uae_u32 opcode);
 extern "C" void Uae2026JitMmuTxnCommit(void);
 
 static inline bool jit_decode_bsr_target_from_host_words(uae_u16 *opw, uae_u32 op_pc, uae_u16 opcode, uae_u32 *target_pc)
@@ -4371,6 +4372,27 @@ static inline void jit_emit_fallback_call_push_txn_begin(uae_u32 op_pc, uae_u16 
 static inline void jit_emit_fallback_call_push_txn_commit(uae_u16 opcode)
 {
     if (!jit_allow_ram_dispatch_env() || (opcode & 0xff00u) != 0x6100u)
+        return;
+    compemu_raw_call((uintptr)Uae2026JitMmuTxnCommit);
+}
+
+static inline bool jit_return_pop_txn_opcode(uae_u16 opcode)
+{
+    return opcode == 0x4e75u || opcode == 0x4e77u;
+}
+
+static inline void jit_emit_fallback_return_pop_txn_begin(uae_u32 op_pc, uae_u16 opcode)
+{
+    if (!jit_allow_ram_dispatch_env() || !jit_return_pop_txn_opcode(opcode))
+        return;
+    compemu_raw_mov_l_ri(REG_PAR1, op_pc);
+    compemu_raw_mov_l_ri(REG_PAR2, opcode);
+    compemu_raw_call((uintptr)Uae2026JitMmuTxnBeginReturnPopCurrentA7ByOpcode);
+}
+
+static inline void jit_emit_fallback_return_pop_txn_commit(uae_u16 opcode)
+{
+    if (!jit_allow_ram_dispatch_env() || !jit_return_pop_txn_opcode(opcode))
         return;
     compemu_raw_call((uintptr)Uae2026JitMmuTxnCommit);
 }
@@ -6475,6 +6497,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         &fallback_call_push_target_pc);
                     if (fallback_call_push_txn)
                         jit_emit_fallback_call_push_txn_begin(op_m68k_pc, (uae_u16)opcode, fallback_call_push_target_pc);
+                    else if (jit_return_pop_txn_opcode((uae_u16)opcode))
+                        jit_emit_fallback_return_pop_txn_begin(op_m68k_pc, (uae_u16)opcode);
                     if (jit_trace_target_pc(op_m68k_pc)) {
                         compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
                         compemu_raw_mov_l_ri(REG_PAR2, (2u << 16) | (opcode & 0xffff));
@@ -6483,6 +6507,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     compemu_raw_call((uintptr)cputbl[cft_map(opcode)]);
                     if (fallback_call_push_txn)
                         jit_emit_fallback_call_push_txn_commit((uae_u16)opcode);
+                    else if (jit_return_pop_txn_opcode((uae_u16)opcode))
+                        jit_emit_fallback_return_pop_txn_commit((uae_u16)opcode);
                     /* Trace interpreter-executed family-d instructions */
                     if (((opcode >> 12) & 0xf) == 0xd && getenv("B2_JIT_TRACE_ADD")) {
                         uae_u32 pc_val = (uae_u32)((uintptr)pc_hist[i].location - (uintptr)ROMBaseHost + ROMBaseMac);

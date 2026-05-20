@@ -33,10 +33,10 @@ prelude, without linking it into `Previous` yet.
 - syntax probe: **passing**
 - object compile probe: **passing**
 - emulator/runtime integration of vendored compiler entry points: **wired under `ENABLE_EXPERIMENTAL_UAE2026_JIT`**
-- default/ROM translated execution reaches the NEXTSTEP desktop and passed a 60s stability smoke in the latest audit check (`/workspace/tmp/previous-jit-rte-handoff-default-retry-20260519-164317`)
-- opcode harness remains clean after the latest RAM/MMU changes (`/workspace/tmp/previous-opcode-harness-20260519-163752`, `pass=62 fail=0 score=100`)
-- RAM/MMU dispatch mode is still experimental, but default RAM-requested mode now reaches true RAM dispatch and boots to a stable desktop through a conservative RTE/page-fault handoff to the exact interpreter (`/workspace/tmp/previous-jit-rte-disable-knob-ram-pass-20260519-173759`, `desktop_reached=1`, `stable_reached=1`, `jit_ram_dispatch_seen=1`).
-- `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` is the current native-resume discriminator. With the handoff disabled, RAM mode gets past the former `00003352`, `00003964/A2=2`, `init exited with 212`, and panic-monitor frontiers, but stalls during fsck/root transition with repeated low-user/RAM-boundary faults around `000000de` and `050abffe` (`/workspace/tmp/previous-jit-rte-disable-baseline-ram-20260519-165201`).
+- default/ROM translated execution reaches the NEXTSTEP desktop and passed a 60s stability smoke in the latest audit check (`/workspace/tmp/previous-jit-doc-update-default-20260520-185848`)
+- opcode harness remains clean after the latest RAM/MMU changes (`/workspace/tmp/previous-opcode-harness-20260520-180203`, `pass=62 fail=0 score=100`)
+- RAM/MMU dispatch mode is still experimental, but default RAM-requested mode now reaches true RAM dispatch and boots to a stable desktop through a conservative RTE/page-fault handoff to the exact interpreter (`/workspace/tmp/previous-jit-doc-update-ram-handoff-20260520-190438`, `desktop_reached=1`, `stable_reached=1`, `jit_ram_dispatch_seen=1`).
+- `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` is the current native-resume discriminator. With the handoff disabled, narrow call-push transaction producers for confirmed low-user JSR target-fetch seams (`0000003e`, `00003c26`, `0000c52c`) remove the repeated `000000de` loop in the latest completed run, leaving a later RAM-boundary/code-fetch loop around `050abffe` (`/workspace/tmp/previous-jit-3c26-jsr-txn-disable-ram-20260520-172348`). A follow-up source change widens code-shadow sync to 8 KiB pages for translated RAM code; handoff-disabled desktop validation after that change is still pending.
 - latest diagnostic audit keeps default `B2_JIT_PCTRACE_WORDS` non-invasive by logging only `PCTOPS` plus executable-shadow `PCTSHADOW`; live addrbank reads are opt-in via `B2_JIT_PCTRACE_LIVE=1` because they can have side effects or fault.
 
 ## Remaining blocker classes
@@ -125,7 +125,7 @@ Implication:
 
 1. keep the direct compiler probes passing as guardrails while runtime work continues
 2. preserve default/ROM JIT desktop stability while RAM/MMU dispatch changes land
-3. add targeted regressions for the confirmed RAM-mode blockers: return-target MMU faults after `RTS`/`RTR`, RTE return-code fetch after SR/A7 switch, and the remaining handoff-disabled low-user fault loop around `000000de`/`050abffe`
+3. add targeted regressions for the confirmed RAM-mode blockers: return-target MMU faults after `RTS`/`RTR`, RTE return-code fetch after SR/A7 switch, and the remaining handoff-disabled RAM-boundary/code-fetch loop around `050abffe`
 4. continue turning the low-virtual code-fetch/MMU-safe path into semantically complete RAM behavior only when restart state, instruction-fetch faults, successful fetches, and later data faults match the interpreter path
 5. audit bridge/JIT state materialization before `Exception(2)` and before resuming JIT after an RTE/page-fault seam, especially PC/SR/USP/ISP, published restart flags, fetched opcode state, and live D/A register spill
 6. keep RAM/MMU data effective-address translation (`Uae2026JitMmuXlateData`) separate from code/branch/dispatch-PC translation (`Uae2026JitMmuXlateCodeHost`) when adding native paths

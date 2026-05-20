@@ -349,9 +349,7 @@ static void bridge_restore_call_target_fault_side_effects(uae_u32 fault_pc)
      * low virtual post-root failure at 00003372 -> 00012b04 has exactly this
      * signature; the published fault_pc can be two bytes before the live BSR
      * word, so scan a tiny window around it rather than trusting only fop. */
-    for (int delta = -2; delta <= 2; delta += 2) {
-        if (delta < 0 && fault_pc < (uae_u32)(-delta))
-            continue;
+    for (int delta = 0; delta <= 2; delta += 2) {
         const uae_u32 op_pc = fault_pc + (uae_u32)delta;
         if (!bridge_live_readable(op_pc, 2))
             continue;
@@ -572,6 +570,61 @@ extern "C" void Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(uae_u32 pc, uae_
         return;
     const uae_u32 opcode = bridge_live_readable(pc, 2) ? Uae2026JitLiveGetWord(pc) : 0;
     Uae2026JitMmuTxnBeginCallPushPreTarget(pc, opcode, m68k_areg(regs, 7), target_pc);
+}
+
+static uae_u16 bridge_host_word_at_current_pc(uae_u32 pc, uae_u32 word_offset)
+{
+    if (!regs.pc_p || m68k_getpc() != pc)
+        return 0;
+    const uae_u8 *p = regs.pc_p + word_offset;
+    return ((uae_u16)p[0] << 8) | p[1];
+}
+
+extern "C" void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uae_u32 pc, uae_u32 opcode)
+{
+    if (!regs.mmu_enabled)
+        return;
+
+    uae_u32 target_pc = 0;
+    const uae_u16 op = (uae_u16)opcode;
+    if (bridge_is_bsr_opcode(op)) {
+        uae_s32 disp = 0;
+        const uae_u8 low = op & 0xffu;
+        if (low == 0x00u)
+            disp = (uae_s32)(uae_s16)bridge_host_word_at_current_pc(pc, 2);
+        else if (low == 0xffu)
+            disp = (uae_s32)(((uae_u32)bridge_host_word_at_current_pc(pc, 2) << 16) |
+                             (uae_u32)bridge_host_word_at_current_pc(pc, 4));
+        else
+            disp = (uae_s32)(uae_s8)low;
+        target_pc = pc + 2u + (uae_u32)disp;
+    } else if ((op & 0xffc0u) == 0x4e80u) { /* JSR */
+        const int mode = (op >> 3) & 7;
+        const int reg = op & 7;
+        switch (mode) {
+            case 2: /* (An) */
+                target_pc = m68k_areg(regs, reg);
+                break;
+            case 5: /* (d16,An) */
+                target_pc = m68k_areg(regs, reg) + (uae_u32)(uae_s32)(uae_s16)bridge_host_word_at_current_pc(pc, 2);
+                break;
+            case 7:
+                if (reg == 0) { /* (xxx).W */
+                    target_pc = (uae_u32)(uae_s32)(uae_s16)bridge_host_word_at_current_pc(pc, 2);
+                } else if (reg == 1) { /* (xxx).L */
+                    target_pc = ((uae_u32)bridge_host_word_at_current_pc(pc, 2) << 16) |
+                                (uae_u32)bridge_host_word_at_current_pc(pc, 4);
+                } else if (reg == 2) { /* (d16,PC) */
+                    target_pc = pc + 2u + (uae_u32)(uae_s32)(uae_s16)bridge_host_word_at_current_pc(pc, 2);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (target_pc)
+        Uae2026JitMmuTxnBeginCallPushPreTarget(pc, op, m68k_areg(regs, 7), target_pc);
 }
 
 extern "C" void Uae2026JitMmuTxnBeginCallPushTarget(uae_u32 pc, uae_u32 target_pc)

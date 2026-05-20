@@ -11,9 +11,7 @@ RAM/MMU JIT mode now gets past the historical low-virtual failures (`00003352` a
 `bad exception stack format` failure. Default `PREVIOUS_UAE2026_JIT_RAM=1` now boots to
 a stable desktop by handing bridge-caught RTE/page-fault seams to the exact interpreter.
 The remaining native bug is JIT resume after that seam, preserved by
-`B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`, where the handoff-disabled path stalls during
-fsck/root transition with repeated low-user/RAM-boundary faults around `000000de` and
-`050abffe`.
+`B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`. Narrow JSR call-push transaction producers for the confirmed low-user seams (`0000003e`, `00003c26`, `0000c52c`) move the handoff-disabled path past the repeated `000000de` loop; the latest completed discriminator stalls later around repeated RAM-boundary/code-fetch faults at `050abffe`.
 
 The fixes that moved the frontier all point to the same missing abstraction: translated
 code can perform irreversible architectural side effects before a faultable 68040
@@ -205,13 +203,13 @@ On MMU longjmp:
 7. **Only then revisit optimization/native lowering** for the remaining handoff-disabled native
    RTE-resume divergence.
 
-## Current frontier after the RTE handoff checkpoint
+## Current frontier after the low-user JSR transaction checkpoint
 
 - Committed fix: `e7d280b jit: rollback BSR target-fetch faults`. The proven historical seam still logs `JIT_CALL_TARGET_ROLLBACK fault_pc=00003372 op_pc=00003374 op=61ff addr=00012b04`, not `JIT_CALL_TARGET_ROLLBACK_TXN`, so the bridge scan remains the active compatibility shim for that exact case.
 - Follow-up transaction coverage adds explicit `call_push` metadata producers for generated BSR, generic fallback BSR, compiled-block fallback BSR, and AArch64 legacy-loop BSR paths. Return-family fallback paths now also publish return-pop transactions for `RTS`/`RTR` target-fetch faults.
 - Bridge gating keeps auto-EA rollback limited to restartable cases that need it and prevents the legacy BSR scan from treating stack-push/absolute-control extension words as BSR opcodes. This keeps the old `00003964/A2=00000002` regression away while matching the interpreter's non-restartable `MOVE.L D0,-(SP)` fault at `0000c53c`.
 - The generated/native `jit_op_rte()` helper routes through the exact interpreter RTE implementation, avoiding a duplicate hand-coded frame decoder.
 - Zero-PC vector recovery is disabled while the 040 MMU is enabled; in that mode, zero PC is treated as a symptom to diagnose rather than recovered by jumping to vector 2.
-- Default RAM/MMU mode now hands bridge-caught RTE/page-fault seams to the interpreter unless `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` is set. Validation: `/workspace/tmp/previous-jit-rte-disable-knob-ram-pass-20260519-173759` reached and held the desktop with `jit_ram_dispatch_seen=1`.
-- With `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`, the native resume path remains unfixed: `/workspace/tmp/previous-jit-rte-disable-baseline-ram-20260519-165201` stalls before desktop with repeated faults around `pc=000000de` and `pc=050abffe`. This is the current discriminator for replacing the conservative handoff with a native fix.
+- Default RAM/MMU mode now hands bridge-caught RTE/page-fault seams to the interpreter unless `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` is set. Validation: `/workspace/tmp/previous-jit-doc-update-ram-handoff-20260520-190438` reached and held the desktop with `jit_ram_dispatch_seen=1`.
+- With `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`, the native resume path remains unfixed but has moved: narrow JSR call-push transaction producers for `0000003e`, `00003c26`, and `0000c52c` remove the repeated `000000de` loop in `/workspace/tmp/previous-jit-3c26-jsr-txn-disable-ram-20260520-172348`; the remaining repeated fault is around `pc=050abffe` / `addr=050ac000`. The current source also widens RAM code-shadow sync from 256-byte windows to 8 KiB pages before exposing translated code host pointers; full handoff-disabled desktop validation after that follow-up is still pending.
 - Exacting all low virtual code or kernel text, global optlev0, and flush-each-op did not move earlier frontiers. The next fix should come from the principled MMU transaction/restart model rather than another broad exact-exec discriminator.

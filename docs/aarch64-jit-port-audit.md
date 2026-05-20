@@ -10,7 +10,7 @@
 - Vendored BasiliskII UAE 2026 subtree is now staged under `src/cpu/uae_cpu_2026/`
 - Headless fresh-image harness is now available at `tools/headless-nextstep-harness.sh`
 - Experimental bridge smoke harness is now available at `tools/headless-jit-bridge-smoke.sh`
-- Default/ROM translated execution reaches the NEXTSTEP desktop and passes a 60s stability smoke. RAM/MMU dispatch mode now boots to a stable desktop by default through a conservative RTE/page-fault handoff to the exact interpreter; the active remaining blocker is native JIT resume after that seam, reproduced with `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` as repeated low-user/RAM-boundary faults around `000000de` and `050abffe`.
+- Default/ROM translated execution reaches the NEXTSTEP desktop and passes a 60s stability smoke. RAM/MMU dispatch mode now boots to a stable desktop by default through a conservative RTE/page-fault handoff to the exact interpreter; the active remaining blocker is native JIT resume after that seam, reproduced with `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` as a later repeated RAM-boundary/code-fetch fault around `050abffe` after the confirmed low-user JSR call-push seams.
 - Early bootstrap probe harness is now available at `tools/headless-jit-bootstrap-probe.sh`
 - Compiler-facing prefs shim now lives in `src/cpu/uae2026_compiler_prefs_shim.cpp`
 - Direct vendored compiler blocker inventory now lives in `docs/uae2026-compiler-blockers.md`
@@ -138,7 +138,7 @@ Why:
 1. **MMU correctness**
    - NeXTSTEP/OpenStep depend on 68030/68040 MMU behavior
    - this is the biggest correctness risk for RAM-mode JIT dispatch
-   - current active frontier: native JIT resume after an RTE/page-fault seam. The earlier low-ROM probe loop at `00003352`, the `00003964/A2=00000002` shifted-stack failure, the `init exited with 212` path, and the panic-monitor `bad exception stack format` failure have all been cleared or bypassed. Default RAM mode now hands the seam to the interpreter and boots; `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` preserves the unfixed native path, which stalls with repeated low-user/RAM-boundary faults around `000000de` and `050abffe`.
+   - current active frontier: native JIT resume after an RTE/page-fault seam. The earlier low-ROM probe loop at `00003352`, the `00003964/A2=00000002` shifted-stack failure, the `init exited with 212` path, and the panic-monitor `bad exception stack format` failure have all been cleared or bypassed. Default RAM mode now hands the seam to the interpreter and boots; `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` preserves the unfixed native path, which stalls with a later repeated RAM-boundary/code-fetch fault around `050abffe` after the confirmed low-user JSR call-push seams.
 
 2. **Exception / restart semantics**
    - page faults, bus faults, restartable FPU/MMU instructions

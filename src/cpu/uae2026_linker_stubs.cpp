@@ -226,8 +226,8 @@ extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr)
          * Use live addrbank reads rather than a raw NEXTRam memcpy because the
          * NeXT memory map can expose freshly generated low-code contents through
          * the active addrbank path before the raw shadow mirror is coherent. */
-        const uae_u32 page_base = addr & ~0xffu;
-        Uae2026JitSyncCodeRangeToShadow(page_base, 0x100u);
+        const uae_u32 page_base = addr & ~0x1fffu;
+        Uae2026JitSyncCodeRangeToShadow(page_base, 0x2000u);
     }
     return (uintptr_t)(jit_MEMBaseDiff + addr);
 }

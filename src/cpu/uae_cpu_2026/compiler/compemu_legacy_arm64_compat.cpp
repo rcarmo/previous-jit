@@ -12,6 +12,7 @@ extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
 extern "C" uae_u32 Uae2026JitMmuFetchOpcode(uae_u32 pc);
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 pc);
 extern "C" void Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(uae_u32 pc, uae_u32 target_pc);
+extern "C" void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uae_u32 pc, uae_u32 opcode);
 extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7(uae_u32 pc, uae_u32 opcode, uae_u32 pop_bytes);
 extern "C" void Uae2026JitMmuTxnCommit(void);
 extern uintptr jit_MEMBaseDiff;
@@ -181,6 +182,23 @@ static inline bool legacy_bsr_l_target(uae_u32 pc, uae_u16 opcode, uae_u32 expec
 	if (retpc)
 		*retpc = pc + 6u;
 	return true;
+}
+
+static inline bool legacy_call_push_txn_opcode(uae_u32 pc, uae_u16 opcode)
+{
+	if ((opcode & 0xff00u) == 0x6100u)
+		return true;
+	/* Confirmed post-RTE low-user seams where JSR pushes a return address
+	   before target code fetch can fault. Keep JSR transaction coverage narrow
+	   until all addressing modes have producer-side target metadata. */
+	return (pc == 0x0000003eu || pc == 0x00003c26u || pc == 0x0000c52cu) &&
+		(opcode & 0xffc0u) == 0x4e80u;
+}
+
+static inline void legacy_maybe_begin_call_push_txn(uae_u32 pc, uae_u16 opcode)
+{
+	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && legacy_call_push_txn_opcode(pc, opcode))
+		Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(pc, opcode);
 }
 
 static inline uae_u32 legacy_return_pop_bytes(uae_u16 opcode)
@@ -1062,11 +1080,8 @@ void exec_nostats(void)
 				continue;
 			}
 		}
-		uae_u32 call_push_target_pc = 0;
-		const bool call_push_txn = jit_allow_ram_dispatch_env() && regs.mmu_enabled &&
-			legacy_bsr_target(before_pc, (uae_u16)opcode, &call_push_target_pc);
-		if (call_push_txn)
-			Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(before_pc, call_push_target_pc);
+		if (legacy_call_push_txn_opcode(before_pc, (uae_u16)opcode))
+			legacy_maybe_begin_call_push_txn(before_pc, (uae_u16)opcode);
 		else
 			legacy_maybe_begin_return_pop_txn(before_pc, (uae_u16)opcode);
 		bool trace_this = trace_count < jit_tracewin_limit() && jit_tracewin_match(before_pc);
@@ -1356,11 +1371,8 @@ void execute_normal(void)
 				jit_op_rom_rtc_write_byte_callsite(pc_before_op, delay_retpc)) ||
 				(legacy_rom_rtc_read_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
 				jit_op_rom_rtc_read_byte_callsite(pc_before_op, delay_retpc));
-			uae_u32 call_push_target_pc = 0;
-			const bool call_push_txn = !helper_callsite && jit_allow_ram_dispatch_env() && regs.mmu_enabled &&
-				legacy_bsr_target(pc_before_op, (uae_u16)opcode, &call_push_target_pc);
-			if (call_push_txn)
-				Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(pc_before_op, call_push_target_pc);
+			if (!helper_callsite && legacy_call_push_txn_opcode(pc_before_op, (uae_u16)opcode))
+				legacy_maybe_begin_call_push_txn(pc_before_op, (uae_u16)opcode);
 			else if (!helper_callsite)
 				legacy_maybe_begin_return_pop_txn(pc_before_op, (uae_u16)opcode);
 			if (!helper_callsite)

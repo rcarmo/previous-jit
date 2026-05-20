@@ -34,10 +34,10 @@ Right now the project is at the stage where:
 
 - interpreter-backed validation works
 - JIT bootstrap/plumbing works
-- the opcode-equivalence harness is clean (`pass=62 fail=0 score=100`; latest audit run `/workspace/tmp/previous-opcode-harness-20260519-163752`)
-- default/ROM JIT reaches the NEXTSTEP desktop and remained stable for 60s in the latest smoke check (`/workspace/tmp/previous-jit-rte-handoff-default-retry-20260519-164317`)
-- RAM-requested mode (`PREVIOUS_UAE2026_JIT_RAM=1`) now reaches true RAM dispatch and boots to a stable NEXTSTEP desktop by default via a conservative RTE/page-fault handoff to the exact interpreter (`/workspace/tmp/previous-jit-rte-disable-knob-ram-pass-20260519-173759`, `desktop_reached=1`, `stable_reached=1`, `jit_ram_dispatch_seen=1`).
-- The remaining native-resume bug is preserved behind `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`: with the handoff disabled, RAM mode gets past the earlier `00003352`, `00003964/A2=2`, `init exited with 212`, and panic-monitor frontiers, but stalls during the fsck/root transition with repeated low-user/RAM-boundary faults around `000000de` and `050abffe` (`/workspace/tmp/previous-jit-rte-disable-baseline-ram-20260519-165201`).
+- the opcode-equivalence harness is clean (`pass=62 fail=0 score=100`; latest audit run `/workspace/tmp/previous-opcode-harness-20260520-180203`)
+- default/ROM JIT reaches the NEXTSTEP desktop and remained stable for 60s in the latest smoke check (`/workspace/tmp/previous-jit-doc-update-default-20260520-185848`)
+- RAM-requested mode (`PREVIOUS_UAE2026_JIT_RAM=1`) now reaches true RAM dispatch and boots to a stable NEXTSTEP desktop by default via a conservative RTE/page-fault handoff to the exact interpreter (`/workspace/tmp/previous-jit-doc-update-ram-handoff-20260520-190438`, `desktop_reached=1`, `stable_reached=1`, `jit_ram_dispatch_seen=1`).
+- The remaining native-resume bug is preserved behind `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`: narrow call-push transaction producers for the confirmed low-user JSR seams (`0000003e`, `00003c26`, `0000c52c`) removed the repeated `000000de` loop in the latest completed discriminator, leaving a later repeated RAM-boundary/code-fetch loop around `050abffe` (`/workspace/tmp/previous-jit-3c26-jsr-txn-disable-ram-20260520-172348`). The current source also widens code-shadow sync for translated RAM code pages; handoff-disabled RAM still needs a full desktop validation after that follow-up.
 
 ## Project layout
 

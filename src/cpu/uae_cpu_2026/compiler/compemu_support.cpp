@@ -104,6 +104,7 @@ extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode);
 extern "C" uae_u32 Uae2026JitPrefetchGuard(uae_u32 pc, uae_u32 opcode);
 extern "C" void Uae2026JitMmuTxnBeginCallPushPreTarget(uae_u32 pc, uae_u32 opcode, uae_u32 pre_a7, uae_u32 target_pc);
 extern "C" void Uae2026JitMmuTxnBeginCallPushTarget(uae_u32 pc, uae_u32 target_pc);
+extern "C" void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uae_u32 pc, uae_u32 opcode);
 extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7(uae_u32 pc, uae_u32 opcode, uae_u32 pop_bytes);
 extern "C" void Uae2026JitMmuTxnCommit(void);
 extern "C" void Uae2026JitSyncRamToShadow(void);
@@ -142,11 +143,21 @@ static inline bool jit_decode_bsr_target(uae_u32 op_pc, uae_u16 opcode, uae_u32 
 	return true;
 }
 
+static inline bool jit_call_push_txn_opcode(uae_u32 op_pc, uae_u16 opcode)
+{
+	if (jit_bsr_opcode(opcode))
+		return true;
+	/* Confirmed post-RTE low-user seams where JSR pushes a return address
+	   before target code fetch can fault. Keep JSR transaction coverage narrow
+	   until all addressing modes have producer-side target metadata. */
+	return (op_pc == 0x0000003eu || op_pc == 0x00003c26u || op_pc == 0x0000c52cu) &&
+		((opcode & 0xffc0u) == 0x4e80u);
+}
+
 static inline void jit_maybe_prepare_fallback_call_push_txn(uae_u32 op_pc, uae_u16 opcode)
 {
-	uae_u32 target_pc = 0;
-	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && jit_decode_bsr_target(op_pc, opcode, &target_pc))
-		Uae2026JitMmuTxnBeginCallPushPreTarget(op_pc, opcode, m68k_areg(regs, 7), target_pc);
+	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && jit_call_push_txn_opcode(op_pc, opcode))
+		Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(op_pc, opcode);
 }
 
 static inline void jit_maybe_begin_fallback_call_push_txn(uae_u32 op_pc, uae_u16 opcode)

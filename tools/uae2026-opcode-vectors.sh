@@ -14,7 +14,7 @@ declare -a TEST_ORDER=(
   aslw_mem_hardfail lsrw_mem_hardfail rolw_mem_hardfail asrw_mem_edge roxlw_mem_edge roxrw_mem_edge
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
   chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
-  jsr_an_call_return bsr_word_call_return seam_movea_a0_chain
+  jsr_an_call_return bsr_word_call_return seam_movea_a0_chain seam_a0_a1_chain
   pack_dn_edge unpk_dn_edge moves_write_read movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip
 )
 
@@ -92,6 +92,9 @@ TESTS[bsr_word_call_return]="6100 0008 7201 6000 0006 702B 4E75 7402"
 TESTS[seam_movea_a0_chain]="2050 2008"
 INIT_REGS[seam_movea_a0_chain]="04018258 00000009 04018258 00000014 00036074 00000002 00000000 00000000 04018258 050941AD 0000E06C 0000E068 0401AE94 0401B908 03FFFF80 03FFFF58 0010"
 MEM_LONGS[seam_movea_a0_chain]="04018258 04018758"
+TESTS[seam_a0_a1_chain]="2050 2268 0020 2009"
+INIT_REGS[seam_a0_a1_chain]="04018258 00000009 04018258 00000014 00036074 00000002 00000000 00000000 04018258 050941AD 0000E06C 0000E068 0401AE94 0401B908 03FFFF80 03FFFF58 0010"
+MEM_LONGS[seam_a0_a1_chain]="04018258 04018758 04018778 050A1BE0"
 
 TESTS[pack_dn_edge]="203C 0000 1234 8140 0000"
 TESTS[unpk_dn_edge]="203C 0000 0012 8180 0000"

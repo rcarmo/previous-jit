@@ -42,7 +42,7 @@ known to exercise the brittle parts of the old generated `compemu` pipeline:
 - packed BCD-ish helpers: `PACK/UNPK`
 - privileged helpers: `MOVES`, `MOVEC`
 - MMU-sensitive control/stack paths: `MOVEM.L ...,-(An)`, `JSR (An)`, `BSR.W`
-- seeded user-mode pointer-chain state for the `050069c8` seam (`MOVEA.L (A0),A0`)
+- seeded user-mode pointer-chain state for the `050069c8` seam (`MOVEA.L (A0),A0` and `MOVEA.L (32,A0),A1` slices)
 
 Absolute scratch addresses were remapped from BasiliskII-style low RAM to Previous RAM at `0x0400xxxx`.
 
@@ -57,35 +57,35 @@ Commands:
 
 Observed fast MMU smoke metrics:
 
-- `total=23`
-- `interp_ok=23`
-- `jit_ok=23`
-- `pass=23`
+- `total=24`
+- `interp_ok=24`
+- `jit_ok=24`
+- `pass=24`
 - `fail=0`
 - `infra_fail=0`
 - `score=100`
 
 Observed full opcode metrics:
 
-- `total=66`
-- `interp_ok=66`
-- `jit_ok=66`
-- `pass=66`
+- `total=67`
+- `interp_ok=67`
+- `jit_ok=67`
+- `pass=67`
 - `fail=0`
 - `infra_fail=0`
 - `score=100`
 
 Recent artifact examples:
 
-- `/workspace/tmp/previous-mmu-fast-smoke-20260521-233341`
-- `/workspace/tmp/previous-opcode-harness-20260521-233518`
+- `/workspace/tmp/previous-mmu-fast-smoke-20260521-235006`
+- `/workspace/tmp/previous-opcode-harness-20260521-235147`
 
 Interpretation:
 
 - the opcode harness remains a passing regression gate for the current curated vector set
 - `uae2026-mmu-fast-smoke.sh` is the required first gate for RAM/MMU changes before heavier boot smokes
 - RAM-mode boot failures are therefore being debugged as MMU/exception/restart state bugs rather than broad opcode-harness regressions
-- new RAM/MMU fixes should keep the fast MMU smoke at `pass=23 fail=0 score=100` and the full opcode harness at `pass=66 fail=0 score=100` before heavier boot smokes are trusted
+- new RAM/MMU fixes should keep the fast MMU smoke at `pass=24 fail=0 score=100` and the full opcode harness at `pass=67 fail=0 score=100` before heavier boot smokes are trusted
 
 ## Why this matters
 

@@ -13,7 +13,8 @@ declare -a TEST_ORDER=(
   mull_u64 mull_s32_neg divl_u32_rem divl_s32_neg divl_u32_max divl_s32_neg_divisor mull_s64_neg divl_same_dq_dr divl_u64 divl_s64
   aslw_mem_hardfail lsrw_mem_hardfail rolw_mem_hardfail asrw_mem_edge roxlw_mem_edge roxrw_mem_edge
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
-  chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip
+  chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
+  jsr_an_call_return bsr_word_call_return
   pack_dn_edge unpk_dn_edge moves_write_read movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip
 )
 
@@ -81,6 +82,9 @@ TESTS[chk2_long_in_range]="41F9 0400 A000 20FC 0000 0005 20FC 0000 000A 41F9 040
 TESTS[cas_long_match_update]="41F9 0400 A000 20FC 1111 2222 41F9 0400 A000 203C 1111 2222 223C 3333 4444 0ED0 0040 2010"
 TESTS[cas2_word_match_update]="41F9 0400 A000 30FC 1111 41F9 0400 A010 30FC 2222 203C 3333 0000 223C 4444 0000 743C 363C 1111 383C 2222 0CFC 8002 9044 3010 3229 0010"
 TESTS[movep_roundtrip]="41F9 0400 A000 203C A1B2 C3D4 01C8 0000 4280 0148 0000"
+TESTS[movem_long_predec_roundtrip]="41F9 0400 A020 203C 1111 2222 223C 3333 4444 48E0 C000 4CD8 000C"
+TESTS[jsr_an_call_return]="41FA 000A 4E90 7201 6000 0006 702A 4E75 7402"
+TESTS[bsr_word_call_return]="6100 0008 7201 6000 0006 702B 4E75 7402"
 
 TESTS[pack_dn_edge]="203C 0000 1234 8140 0000"
 TESTS[unpk_dn_edge]="203C 0000 0012 8180 0000"

@@ -13,6 +13,16 @@ KEEP_TMP_HOME="${PREVIOUS_OPCODE_KEEP_HOME:-0}"
 mkdir -p "$OUTDIR"
 source "$ROOT/tools/uae2026-opcode-vectors.sh"
 
+if [[ -n "${PREVIOUS_OPCODE_FILTER:-}" ]]; then
+  filtered_order=()
+  for name in "${TEST_ORDER[@]}"; do
+    if [[ "$name" =~ $PREVIOUS_OPCODE_FILTER ]]; then
+      filtered_order+=("$name")
+    fi
+  done
+  TEST_ORDER=("${filtered_order[@]}")
+fi
+
 pick_display() {
   local n
   for n in $(seq 138 180); do

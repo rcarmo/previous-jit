@@ -9,7 +9,7 @@ mkdir -p "$OUTDIR"
 # Fast pre-boot coverage for RAM/MMU-sensitive JIT paths. This intentionally
 # avoids the full NeXT desktop harness; use it as the required gate before long
 # boot/stability validation.
-MMU_FILTER="${PREVIOUS_MMU_FAST_FILTER:-sr_|scc_|dbvc|dbvs|chk2_|cas|movep_|movem_|moves_|movec_|jsr_|bsr_}"
+MMU_FILTER="${PREVIOUS_MMU_FAST_FILTER:-sr_|scc_|dbvc|dbvs|chk2_|cas|movep_|movem_|moves_|movec_|jsr_|bsr_|seam_}"
 
 cmake -S "$ROOT" -B "$BUILD_DIR" -DENABLE_VNC=ON -DENABLE_EXPERIMENTAL_UAE2026_JIT=ON >"$OUTDIR/cmake-configure.log" 2>&1
 cmake --build "$BUILD_DIR" -j"$(nproc)" >"$OUTDIR/cmake-build.log" 2>&1

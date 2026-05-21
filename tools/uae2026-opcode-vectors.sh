@@ -14,11 +14,15 @@ declare -a TEST_ORDER=(
   aslw_mem_hardfail lsrw_mem_hardfail rolw_mem_hardfail asrw_mem_edge roxlw_mem_edge roxrw_mem_edge
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
   chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
-  jsr_an_call_return bsr_word_call_return
+  jsr_an_call_return bsr_word_call_return seam_movea_a0_chain
   pack_dn_edge unpk_dn_edge moves_write_read movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip
 )
 
 declare -A TESTS
+# Optional per-vector register seeds: D0-D7 A0-A7 [SR].
+declare -A INIT_REGS
+# Optional per-vector long memory seeds: address/value pairs.
+declare -A MEM_LONGS
 
 TESTS[ori_sr_hardfail]="007C 0700"
 TESTS[andi_sr_hardfail]="027C 27FF"
@@ -85,6 +89,9 @@ TESTS[movep_roundtrip]="41F9 0400 A000 203C A1B2 C3D4 01C8 0000 4280 0148 0000"
 TESTS[movem_long_predec_roundtrip]="41F9 0400 A020 203C 1111 2222 223C 3333 4444 48E0 C000 4CD8 000C"
 TESTS[jsr_an_call_return]="41FA 000A 4E90 7201 6000 0006 702A 4E75 7402"
 TESTS[bsr_word_call_return]="6100 0008 7201 6000 0006 702B 4E75 7402"
+TESTS[seam_movea_a0_chain]="2050 2008"
+INIT_REGS[seam_movea_a0_chain]="04018258 00000009 04018258 00000014 00036074 00000002 00000000 00000000 04018258 050941AD 0000E06C 0000E068 0401AE94 0401B908 03FFFF80 03FFFF58 2700"
+MEM_LONGS[seam_movea_a0_chain]="04018258 04018758"
 
 TESTS[pack_dn_edge]="203C 0000 1234 8140 0000"
 TESTS[unpk_dn_edge]="203C 0000 0012 8180 0000"

@@ -20,6 +20,7 @@ Environment variables reused from the BasiliskII harness:
 - `B2_TEST_HEX` — space-separated 16-bit words to execute
 - `B2_TEST_DUMP=1` — print a final `REGDUMP:` line
 - `B2_TEST_INIT` — optional initial `D0-D7 A0-A7 [SR]`
+- `B2_TEST_MEM_LONGS` — optional address/value long pairs to seed test memory
 - `PREVIOUS_UAE2026_JIT=0|1` — interpreter vs bridge/JIT mode
 - `B2_JIT_FORCE_TRANSLATE=1` — force first-block translation in JIT mode
 
@@ -41,6 +42,7 @@ known to exercise the brittle parts of the old generated `compemu` pipeline:
 - packed BCD-ish helpers: `PACK/UNPK`
 - privileged helpers: `MOVES`, `MOVEC`
 - MMU-sensitive control/stack paths: `MOVEM.L ...,-(An)`, `JSR (An)`, `BSR.W`
+- seeded pointer-chain state for the `050069c8` seam (`MOVEA.L (A0),A0`)
 
 Absolute scratch addresses were remapped from BasiliskII-style low RAM to Previous RAM at `0x0400xxxx`.
 
@@ -55,35 +57,35 @@ Commands:
 
 Observed fast MMU smoke metrics:
 
-- `total=22`
-- `interp_ok=22`
-- `jit_ok=22`
-- `pass=22`
+- `total=23`
+- `interp_ok=23`
+- `jit_ok=23`
+- `pass=23`
 - `fail=0`
 - `infra_fail=0`
 - `score=100`
 
 Observed full opcode metrics:
 
-- `total=65`
-- `interp_ok=65`
-- `jit_ok=65`
-- `pass=65`
+- `total=66`
+- `interp_ok=66`
+- `jit_ok=66`
+- `pass=66`
 - `fail=0`
 - `infra_fail=0`
 - `score=100`
 
 Recent artifact examples:
 
-- `/workspace/tmp/previous-mmu-fast-smoke-20260521-225425`
-- `/workspace/tmp/previous-opcode-harness-20260521-225620`
+- `/workspace/tmp/previous-mmu-fast-smoke-20260521-231226`
+- `/workspace/tmp/previous-opcode-harness-20260521-231426`
 
 Interpretation:
 
 - the opcode harness remains a passing regression gate for the current curated vector set
 - `uae2026-mmu-fast-smoke.sh` is the required first gate for RAM/MMU changes before heavier boot smokes
 - RAM-mode boot failures are therefore being debugged as MMU/exception/restart state bugs rather than broad opcode-harness regressions
-- new RAM/MMU fixes should keep the fast MMU smoke at `pass=22 fail=0 score=100` and the full opcode harness at `pass=65 fail=0 score=100` before heavier boot smokes are trusted
+- new RAM/MMU fixes should keep the fast MMU smoke at `pass=23 fail=0 score=100` and the full opcode harness at `pass=66 fail=0 score=100` before heavier boot smokes are trusted
 
 ## Why this matters
 

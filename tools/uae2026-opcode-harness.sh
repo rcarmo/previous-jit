@@ -143,6 +143,8 @@ run_case() {
   local log="$OUTDIR/${name}.${use_jit}.log"
   local reason_file="$OUTDIR/${name}.${use_jit}.reason"
   local full_hex
+  local init_regs="${INIT_REGS[$name]:-}"
+  local mem_longs="${MEM_LONGS[$name]:-}"
   local wait_sec="$INTERP_WAIT_SEC"
   local rc=0
   local dump_count
@@ -166,6 +168,13 @@ run_case() {
     PREVIOUS_UAE2026_JIT_LAZY_FLUSH="${PREVIOUS_UAE2026_JIT_LAZY_FLUSH:-1}"
     PREVIOUS_UAE2026_JIT_CONST_JUMP="${PREVIOUS_UAE2026_JIT_CONST_JUMP:-1}"
   )
+  if [[ -n "$init_regs" ]]; then
+    env_vars+=(B2_TEST_INIT="$init_regs")
+  fi
+  if [[ -n "$mem_longs" ]]; then
+    env_vars+=(B2_TEST_MEM_LONGS="$mem_longs")
+  fi
+
   if [[ "$use_jit" == "jit" ]]; then
     wait_sec="$JIT_WAIT_SEC"
     env_vars+=(PREVIOUS_UAE2026_JIT=1 B2_JIT_FORCE_TRANSLATE=1)

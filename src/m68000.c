@@ -214,13 +214,16 @@ bool Uae2026OpcodeTestModeSetup(void)
 {
 	const char *hex = getenv("B2_TEST_HEX");
 	const char *init = getenv("B2_TEST_INIT");
+	const char *mem_longs = getenv("B2_TEST_MEM_LONGS");
 	const uaecptr test_addr = 0x01001000;
 	const uaecptr stack_addr = 0x04010000;
 	const Uint32 rom_offset = 0x1000;
 	Uint16 words[1024];
 	Uint32 init_words[17];
+	Uint32 mem_words[512];
 	size_t n_words = 0;
 	size_t init_count = 0;
+	size_t mem_count = 0;
 	int i;
 
 	opcode_test_mode_active = false;
@@ -268,6 +271,16 @@ bool Uae2026OpcodeTestModeSetup(void)
 		regs.isp = m68k_areg(regs, 7);
 		regs.msp = m68k_areg(regs, 7);
 		MakeFromSR();
+	}
+
+	if (mem_longs && *mem_longs) {
+		if (!opcode_test_parse_longs(mem_longs, mem_words, sizeof(mem_words) / sizeof(mem_words[0]), &mem_count) ||
+			(mem_count & 1)) {
+			fprintf(stderr, "B2_TEST_MEM_LONGS parse failed (need address/value pairs)\n");
+			return false;
+		}
+		for (i = 0; i < (int)mem_count; i += 2)
+			NEXTMemory_WriteLong(mem_words[i], mem_words[i + 1]);
 	}
 
 	regs.stopped = 0;

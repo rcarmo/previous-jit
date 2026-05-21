@@ -15,6 +15,8 @@ extern "C" void Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(uae_u32 pc, uae_
 extern "C" void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uae_u32 pc, uae_u32 opcode);
 extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7(uae_u32 pc, uae_u32 opcode, uae_u32 pop_bytes);
 extern "C" void Uae2026JitMmuTxnCommit(void);
+extern "C" bool Uae2026OpcodeTestModeActive(void);
+extern "C" bool Uae2026OpcodeTestModeHandleStopTrailer(void);
 extern uintptr jit_MEMBaseDiff;
 extern "C" {
 uae_u32 Uae2026JitLastInstructionPc = 0;
@@ -1058,6 +1060,11 @@ void exec_nostats(void)
 		uae_u32 opcode = jit_fetch_opcode_for_current_pc(before_pc);
 		Uae2026JitMmuTxnCommit();
 		Uae2026JitPublishFallbackState(before_pc, opcode);
+		if (Uae2026OpcodeTestModeActive() && (uae_u16)opcode == 0x4e72u) {
+			m68k_setpc(before_pc);
+			Uae2026OpcodeTestModeHandleStopTrailer();
+			return;
+		}
 		if (legacy_ram_direct_movem_long_predec(before_pc, (uae_u16)opcode)) {
 			cpu_check_ticks();
 			if (SPCFLAGS_TEST(SPCFLAG_ALL))
@@ -1357,6 +1364,11 @@ void execute_normal(void)
 			uae_u32 opcode = jit_fetch_opcode_for_current_pc(pc_before_op);
 			Uae2026JitMmuTxnCommit();
 			Uae2026JitPublishFallbackState(pc_before_op, opcode);
+			if (Uae2026OpcodeTestModeActive() && (uae_u16)opcode == 0x4e72u) {
+				m68k_setpc(pc_before_op);
+				Uae2026OpcodeTestModeHandleStopTrailer();
+				return;
+			}
 			if (legacy_ram_direct_movem_long_predec(pc_before_op, (uae_u16)opcode)) {
 				cpu_check_ticks();
 				total_cycles += 4 * CYCLE_UNIT;

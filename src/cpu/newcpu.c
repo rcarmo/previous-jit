@@ -1526,6 +1526,8 @@ static void m68k_run_mmu040 (void)
 	for (;;) {
 	TRY (prb) {
 		for (;;) {
+			if (Uae2026OpcodeTestModeHandleStopTrailer())
+				return;
 			f.cznv = regflags.cznv;
 			f.x = regflags.x;
 			mmu_restart = true;

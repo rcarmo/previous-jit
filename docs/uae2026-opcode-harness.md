@@ -42,7 +42,7 @@ known to exercise the brittle parts of the old generated `compemu` pipeline:
 - packed BCD-ish helpers: `PACK/UNPK`
 - privileged helpers: `MOVES`, `MOVEC`
 - MMU-sensitive control/stack paths: `MOVEM.L ...,-(An)`, `JSR (An)`, `BSR.W`
-- seeded pointer-chain state for the `050069c8` seam (`MOVEA.L (A0),A0`)
+- seeded user-mode pointer-chain state for the `050069c8` seam (`MOVEA.L (A0),A0`)
 
 Absolute scratch addresses were remapped from BasiliskII-style low RAM to Previous RAM at `0x0400xxxx`.
 
@@ -77,8 +77,8 @@ Observed full opcode metrics:
 
 Recent artifact examples:
 
-- `/workspace/tmp/previous-mmu-fast-smoke-20260521-231226`
-- `/workspace/tmp/previous-opcode-harness-20260521-231426`
+- `/workspace/tmp/previous-mmu-fast-smoke-20260521-233341`
+- `/workspace/tmp/previous-opcode-harness-20260521-233518`
 
 Interpretation:
 

@@ -9,6 +9,7 @@ extern "C" {
 
 bool Uae2026OpcodeTestModeSetup(void);
 bool Uae2026OpcodeTestModeActive(void);
+bool Uae2026OpcodeTestModeHandleStopTrailer(void);
 void Uae2026OpcodeTestModeFinish(void);
 
 #ifdef __cplusplus

@@ -295,6 +295,18 @@ bool Uae2026OpcodeTestModeActive(void)
 	return opcode_test_mode_active;
 }
 
+bool Uae2026OpcodeTestModeHandleStopTrailer(void)
+{
+	if (!opcode_test_mode_active || get_word(m68k_getpc()) != 0x4e72)
+		return false;
+	regs.sr = get_word(m68k_getpc() + 2);
+	MakeFromSR();
+	regs.stopped = 1;
+	set_special(SPCFLAG_STOP);
+	m68k_setpc(m68k_getpc() + 4);
+	return true;
+}
+
 void Uae2026JitCpuCheckTicks(int cycles)
 {
 	static unsigned long trace_count = 0;
@@ -349,17 +361,13 @@ void Uae2026OpcodeTestModeFinish(void)
 		uaecptr pc = m68k_getpc();
 		m68k_areg(regs, 6) = get_long(pc + 2);
 		m68k_setpc(pc + 6);
-		if (get_word(m68k_getpc()) == 0x4e72) {
-			regs.sr = get_word(m68k_getpc() + 2);
-			MakeFromSR();
-			regs.stopped = 1;
-			set_special(SPCFLAG_STOP);
-			m68k_setpc(m68k_getpc() + 4);
-		}
+		Uae2026OpcodeTestModeHandleStopTrailer();
 	}
 
 	opcode_test_mode_active = false;
 	if (opcode_test_dump_enabled()) {
+		if (regs.stopped)
+			MakeFromSR();
 		MakeSR();
 		fprintf(stderr,
 			"REGDUMP: D0=%08x D1=%08x D2=%08x D3=%08x D4=%08x D5=%08x D6=%08x D7=%08x "

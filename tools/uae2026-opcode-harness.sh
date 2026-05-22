@@ -145,6 +145,7 @@ run_case() {
   local full_hex
   local init_regs="${INIT_REGS[$name]:-}"
   local mem_longs="${MEM_LONGS[$name]:-}"
+  local dump_mem_longs="${DUMP_MEM_LONGS[$name]:-}"
   local wait_sec="$INTERP_WAIT_SEC"
   local rc=0
   local dump_count
@@ -175,6 +176,9 @@ run_case() {
   fi
   if [[ -n "$mem_longs" ]]; then
     env_vars+=(B2_TEST_MEM_LONGS="$mem_longs")
+  fi
+  if [[ -n "$dump_mem_longs" ]]; then
+    env_vars+=(B2_TEST_DUMP_MEM_LONGS="$dump_mem_longs")
   fi
 
   if [[ "$use_jit" == "jit" ]]; then
@@ -220,7 +224,7 @@ run_case() {
     return 1
   fi
 
-  grep '^REGDUMP:' "$log" > "$outfile"
+  grep -E '^(REGDUMP|MEMDUMP):' "$log" > "$outfile"
   if ! grep -qi "A6=$sentinel" "$outfile"; then
     echo sentinel_mismatch > "$reason_file"
     return 1

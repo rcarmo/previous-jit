@@ -21,6 +21,7 @@ Environment variables reused from the BasiliskII harness:
 - `B2_TEST_DUMP=1` — print a final `REGDUMP:` line
 - `B2_TEST_INIT` — optional initial `D0-D7 A0-A7 [SR]`
 - `B2_TEST_MEM_LONGS` — optional address/value long pairs to seed test memory
+- `B2_TEST_DUMP_MEM_LONGS` — optional long addresses to append as `MEMDUMP:` comparison lines
 - `PREVIOUS_UAE2026_JIT=0|1` — interpreter vs bridge/JIT mode
 - `B2_JIT_FORCE_TRANSLATE=1` — force first-block translation in JIT mode
 
@@ -77,9 +78,8 @@ Observed full opcode metrics:
 
 Recent artifact examples:
 
-- `/workspace/tmp/previous-mmu-fast-smoke-20260522-001254`
-- `/workspace/tmp/previous-opcode-harness-20260522-001548`
-
+- `/workspace/tmp/previous-mmu-fast-smoke-20260522-002727`
+- `/workspace/tmp/previous-opcode-harness-20260522-002921`
 Interpretation:
 
 - the opcode harness remains a passing regression gate for the current curated vector set

@@ -366,6 +366,9 @@ void Uae2026OpcodeTestModeFinish(void)
 
 	opcode_test_mode_active = false;
 	if (opcode_test_dump_enabled()) {
+		const char *dump_mem = getenv("B2_TEST_DUMP_MEM_LONGS");
+		Uint32 dump_words[256];
+		size_t dump_count = 0;
 		if (regs.stopped)
 			MakeFromSR();
 		MakeSR();
@@ -381,6 +384,10 @@ void Uae2026OpcodeTestModeFinish(void)
 			(unsigned)m68k_areg(regs, 4), (unsigned)m68k_areg(regs, 5),
 			(unsigned)m68k_areg(regs, 6), (unsigned)m68k_areg(regs, 7),
 			(unsigned)regs.sr, (unsigned)m68k_getpc());
+		if (dump_mem && *dump_mem && opcode_test_parse_longs(dump_mem, dump_words, sizeof(dump_words) / sizeof(dump_words[0]), &dump_count)) {
+			for (size_t i = 0; i < dump_count; i++)
+				fprintf(stderr, "MEMDUMP: %08x=%08x\n", (unsigned)dump_words[i], (unsigned)NEXTMemory_ReadLong(dump_words[i]));
+		}
 	}
 }
 

@@ -900,9 +900,9 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                 }
                 handled_log_count++;
             }
-            const bool ram_rte_handoff = env_truthy("PREVIOUS_UAE2026_JIT_RAM", false) &&
+            const bool explicit_rte_handoff = env_truthy("B2_JIT_RTE_FAULT_HANDOFF", false) &&
                 !env_truthy("B2_JIT_RTE_FAULT_HANDOFF_DISABLE", false);
-            if (bridge_rte_fault && (env_truthy("B2_JIT_RTE_FAULT_HANDOFF", false) || ram_rte_handoff)) {
+            if (bridge_rte_fault && explicit_rte_handoff) {
                 fprintf(stderr, "UAE2026 bridge: RTE fault handoff to interpreter pc=%08x sr=%04x isp=%08x\n",
                         (unsigned)handled_pc, (unsigned)regs.sr, (unsigned)regs.isp);
                 UseJIT = false;

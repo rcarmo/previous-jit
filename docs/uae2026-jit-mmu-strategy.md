@@ -8,10 +8,11 @@ one-off fixes for each newly exposed low-PC seam.
 
 RAM/MMU JIT mode now gets past the historical low-virtual failures (`00003352` and
 `00003964`), the post-BSR `init exited with 212` divergence, and the later panic-monitor
-`bad exception stack format` failure. Default `PREVIOUS_UAE2026_JIT_RAM=1` now boots to
-a stable desktop by handing bridge-caught RTE/page-fault seams to the exact interpreter.
-The remaining native bug is JIT resume after that seam, preserved by
-`B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`. Narrow JSR call-push transaction producers for the confirmed low-user seams (`0000003e`, `00003c26`, `0000c52c`) move the handoff-disabled path past the repeated `000000de` loop; the latest completed discriminator stalls later around repeated RAM-boundary/code-fetch faults at `050abffe`.
+`bad exception stack format` failure. `PREVIOUS_UAE2026_JIT_RAM=1` now preserves the
+native JIT path instead of auto-dropping to the interpreter at the RTE/page-fault seam;
+set `B2_JIT_RTE_FAULT_HANDOFF=1` explicitly to use the conservative desktop-boot oracle.
+The remaining native bug is JIT resume after that seam: the current completed discriminator
+reaches user space and loops at `050069cc` faulting on `504f2472` with `A0=504f2452`.
 
 The fixes that moved the frontier all point to the same missing abstraction: translated
 code can perform irreversible architectural side effects before a faultable 68040
@@ -174,7 +175,7 @@ On MMU longjmp:
 5. Deliver `Exception(2)`.
 6. Canonicalize the post-exception PC with `m68k_setpc(handled_pc)`.
 7. Sync active supervisor/user stack pointers after `Exception()`.
-8. If the exception was an RTE fault, disable JIT and hand execution to the interpreter when either `B2_JIT_RTE_FAULT_HANDOFF=1` is set or RAM/MMU mode is active without `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`.
+8. If the exception was an RTE fault, disable JIT and hand execution to the interpreter only when `B2_JIT_RTE_FAULT_HANDOFF=1` is explicitly set and `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` is not set. RAM/MMU mode alone must not silently leave translated execution.
 
 ## Migration plan
 
@@ -210,6 +211,7 @@ On MMU longjmp:
 - Bridge gating keeps auto-EA rollback limited to restartable cases that need it and prevents the legacy BSR scan from treating stack-push/absolute-control extension words as BSR opcodes. This keeps the old `00003964/A2=00000002` regression away while matching the interpreter's non-restartable `MOVE.L D0,-(SP)` fault at `0000c53c`.
 - The generated/native `jit_op_rte()` helper routes through the exact interpreter RTE implementation, avoiding a duplicate hand-coded frame decoder.
 - Zero-PC vector recovery is disabled while the 040 MMU is enabled; in that mode, zero PC is treated as a symptom to diagnose rather than recovered by jumping to vector 2.
-- Default RAM/MMU mode now hands bridge-caught RTE/page-fault seams to the interpreter unless `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` is set. Validation: `/workspace/tmp/previous-jit-doc-update-ram-handoff-20260520-190438` reached and held the desktop with `jit_ram_dispatch_seen=1`.
-- With `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`, the native resume path remains unfixed but has moved: narrow JSR call-push transaction producers for `0000003e`, `00003c26`, and `0000c52c` remove the repeated `000000de` loop in `/workspace/tmp/previous-jit-3c26-jsr-txn-disable-ram-20260520-172348`; the remaining repeated fault is around `pc=050abffe` / `addr=050ac000`. The current source also widens RAM code-shadow sync from 256-byte windows to 8 KiB pages before exposing translated code host pointers; full handoff-disabled desktop validation after that follow-up is still pending.
+- RAM/MMU mode no longer hands bridge-caught RTE/page-fault seams to the interpreter by default. Validation: `/workspace/tmp/previous-jit-no-auto-handoff-ram-20260522-091833` kept JIT active with `jit_ram_dispatch_seen=1` and no `RTE fault handoff to interpreter` / `JIT_FALLBACK` log entries; it does not yet reach the desktop.
+- The explicit oracle path remains available with `B2_JIT_RTE_FAULT_HANDOFF=1`: `/workspace/tmp/previous-jit-explicit-handoff-ram-20260522-090029` reached and held the desktop with `desktop_reached=1`, `stable_reached=1`, and `jit_ram_dispatch_seen=1`.
+- The native resume path remains unfixed but has moved: after code-shadow and low-user call transaction fixes, the completed no-handoff frontier is the repeated user dispatch fault at `pc=050069cc`, `addr=504f2472`, `A0=504f2452`. The earlier `050abffe` / `050ac000` RAM-boundary/code-fetch loop is no longer the current completed-run frontier.
 - Exacting all low virtual code or kernel text, global optlev0, and flush-each-op did not move earlier frontiers. The next fix should come from the principled MMU transaction/restart model rather than another broad exact-exec discriminator.

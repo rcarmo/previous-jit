@@ -10,7 +10,7 @@ mkdir -p "$OUTDIR"
 # avoids the full NeXT desktop harness; use it as the required gate before long
 # boot/stability validation.
 MMU_FILTER="${PREVIOUS_MMU_FAST_FILTER:-sr_|scc_|dbvc|dbvs|chk2_|cas|movep_|movem_|moves_|movec_|jsr_|bsr_|seam_}"
-MMU_EXCLUDE="${PREVIOUS_MMU_FAST_EXCLUDE:-seam_jsr_user_stack|seam_hash_call_chain}"
+MMU_EXCLUDE="${PREVIOUS_MMU_FAST_EXCLUDE:-}"
 
 cmake -S "$ROOT" -B "$BUILD_DIR" -DENABLE_VNC=ON -DENABLE_EXPERIMENTAL_UAE2026_JIT=ON >"$OUTDIR/cmake-configure.log" 2>&1
 cmake --build "$BUILD_DIR" -j"$(nproc)" >"$OUTDIR/cmake-build.log" 2>&1

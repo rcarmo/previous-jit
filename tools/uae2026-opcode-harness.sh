@@ -142,6 +142,31 @@ szRomFileName = $ASSET_ROOT/roms/dimension_eeprom.bin
 EOF
 }
 
+expand_test_addr_tokens() {
+  local input="$1"
+  local test_addr="${PREVIOUS_OPCODE_TEST_ADDR:-0x01001000}"
+  local base=$((test_addr))
+  local token offset
+  for token in $input; do
+    case "$token" in
+      TEST)
+        printf '%08X ' "$base"
+        ;;
+      TEST+*)
+        offset="${token#TEST+}"
+        printf '%08X ' $((base + 16#$offset))
+        ;;
+      TEST-*)
+        offset="${token#TEST-}"
+        printf '%08X ' $((base - 16#$offset))
+        ;;
+      *)
+        printf '%s ' "$token"
+        ;;
+    esac
+  done
+}
+
 run_case() {
   local name="$1"
   local hex_code="$2"
@@ -182,13 +207,13 @@ run_case() {
     B2_JIT_RTE_FAULT_HANDOFF_DISABLE="${B2_JIT_RTE_FAULT_HANDOFF_DISABLE:-0}"
   )
   if [[ -n "$init_regs" ]]; then
-    env_vars+=(B2_TEST_INIT="$init_regs")
+    env_vars+=(B2_TEST_INIT="$(expand_test_addr_tokens "$init_regs")")
   fi
   if [[ -n "$mem_longs" ]]; then
-    env_vars+=(B2_TEST_MEM_LONGS="$mem_longs")
+    env_vars+=(B2_TEST_MEM_LONGS="$(expand_test_addr_tokens "$mem_longs")")
   fi
   if [[ -n "$dump_mem_longs" ]]; then
-    env_vars+=(B2_TEST_DUMP_MEM_LONGS="$dump_mem_longs")
+    env_vars+=(B2_TEST_DUMP_MEM_LONGS="$(expand_test_addr_tokens "$dump_mem_longs")")
   fi
 
   if [[ "$use_jit" == "jit" ]]; then

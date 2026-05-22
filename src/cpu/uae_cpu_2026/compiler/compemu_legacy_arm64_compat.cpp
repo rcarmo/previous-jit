@@ -60,9 +60,19 @@ static inline void jit_canonicalize_code_pc_if_ram_mmu(void)
 
 static inline uae_u32 jit_fetch_opcode_for_current_pc(uae_u32 pc)
 {
-	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && pc < 0x01000000u) {
-		jit_publish_code_fetch_state(pc);
-		return (uae_u16)Uae2026JitMmuFetchOpcode(pc);
+	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled) {
+		const uintptr_t host_pc = (uintptr_t)regs.pc_p;
+		const bool host_phys_known = jit_MEMBaseDiff && host_pc >= jit_MEMBaseDiff;
+		const uae_u32 host_phys = host_phys_known ? (uae_u32)(host_pc - jit_MEMBaseDiff) : 0xffffffffu;
+		/* Low-ROM probes and non-identity user mappings must fetch opcodes
+		 * through the 040 code path.  Direct GET_OPCODE reads the data-view
+		 * shadow at the virtual address and can see stale zeros while pc_p points
+		 * at the correctly translated physical RAM page.  Keep identity-mapped
+		 * kernel RAM on GET_OPCODE to avoid perturbing hot kernel polling loops. */
+		if (pc < 0x01000000u || (host_phys_known && host_phys != pc)) {
+			jit_publish_code_fetch_state(pc);
+			return (uae_u16)Uae2026JitMmuFetchOpcode(pc);
+		}
 	}
 	return GET_OPCODE;
 }

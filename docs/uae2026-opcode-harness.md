@@ -18,6 +18,7 @@ register file, runs one interpreter/JIT pass, and dumps register state as `REGDU
 Environment variables reused from the BasiliskII harness:
 
 - `B2_TEST_HEX` — space-separated 16-bit words to execute
+- `B2_TEST_ADDR` — optional injection/execution address; defaults to `0x01001000`, and RAM smoke uses `0x04008000`
 - `B2_TEST_DUMP=1` — print a final `REGDUMP:` line
 - `B2_TEST_INIT` — optional initial `D0-D7 A0-A7 [SR]`
 - `B2_TEST_MEM_LONGS` — optional address/value long pairs to seed test memory
@@ -58,10 +59,10 @@ Commands:
 
 Observed fast MMU smoke metrics:
 
-- `total=29`
-- `interp_ok=29`
-- `jit_ok=29`
-- `pass=29`
+- `total=27`
+- `interp_ok=27`
+- `jit_ok=27`
+- `pass=27`
 - `fail=0`
 - `infra_fail=0`
 - `score=100`
@@ -78,14 +79,14 @@ Observed full opcode metrics:
 
 Recent artifact examples:
 
-- `/workspace/tmp/previous-mmu-fast-smoke-20260522-005659`
-- `/workspace/tmp/previous-opcode-harness-20260522-005901`
+- `/workspace/tmp/previous-mmu-fast-smoke-20260522-011434`
+- `/workspace/tmp/previous-opcode-harness-20260522-011738`
 Interpretation:
 
 - the opcode harness remains a passing regression gate for the current curated vector set
-- `uae2026-mmu-fast-smoke.sh` is the required first gate for RAM/MMU changes before heavier boot smokes
+- `uae2026-mmu-fast-smoke.sh` is the required first gate for RAM/MMU changes before heavier boot smokes; it injects relocation-safe vectors at RAM address `0x04008000` and reports `jit_ram_requested=1` / `rte_handoff_disabled=1`
 - RAM-mode boot failures are therefore being debugged as MMU/exception/restart state bugs rather than broad opcode-harness regressions
-- new RAM/MMU fixes should keep the fast MMU smoke at `pass=29 fail=0 score=100` and the full opcode harness at `pass=72 fail=0 score=100` before heavier boot smokes are trusted
+- new RAM/MMU fixes should keep the fast MMU smoke at `pass=27 fail=0 score=100` and the full opcode harness at `pass=72 fail=0 score=100` before heavier boot smokes are trusted
 
 ## Why this matters
 

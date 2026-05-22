@@ -22,6 +22,15 @@ if [[ -n "${PREVIOUS_OPCODE_FILTER:-}" ]]; then
   done
   TEST_ORDER=("${filtered_order[@]}")
 fi
+if [[ -n "${PREVIOUS_OPCODE_EXCLUDE:-}" ]]; then
+  filtered_order=()
+  for name in "${TEST_ORDER[@]}"; do
+    if [[ ! "$name" =~ $PREVIOUS_OPCODE_EXCLUDE ]]; then
+      filtered_order+=("$name")
+    fi
+  done
+  TEST_ORDER=("${filtered_order[@]}")
+fi
 
 pick_display() {
   local n
@@ -163,6 +172,7 @@ run_case() {
     DISPLAY="$DISPLAY_NAME"
     B2_TEST_HEX="$full_hex"
     B2_TEST_DUMP=1
+    B2_TEST_ADDR="${PREVIOUS_OPCODE_TEST_ADDR:-0x01001000}"
     PREVIOUS_UAE2026_JIT_BOOTSTRAP=0
     PREVIOUS_UAE2026_JIT_CACHE_KB="${PREVIOUS_UAE2026_JIT_CACHE_KB:-8192}"
     PREVIOUS_UAE2026_JIT_FPU="${PREVIOUS_UAE2026_JIT_FPU:-0}"
@@ -308,6 +318,7 @@ infra_fail=$infra_fail
 score=$score
 jit_ram_requested=${PREVIOUS_UAE2026_JIT_RAM:-0}
 rte_handoff_disabled=${B2_JIT_RTE_FAULT_HANDOFF_DISABLE:-0}
+test_addr=${PREVIOUS_OPCODE_TEST_ADDR:-0x01001000}
 EOF
 
 cat "$OUTDIR/result.env"
@@ -320,6 +331,7 @@ echo "METRIC infra_fail=$infra_fail"
 echo "METRIC score=$score"
 echo "METRIC jit_ram_requested=${PREVIOUS_UAE2026_JIT_RAM:-0}"
 echo "METRIC rte_handoff_disabled=${B2_JIT_RTE_FAULT_HANDOFF_DISABLE:-0}"
+echo "METRIC test_addr=${PREVIOUS_OPCODE_TEST_ADDR:-0x01001000}"
 echo "OUTDIR=$OUTDIR"
 
 if [[ -s "$OUTDIR/infra.txt" ]]; then

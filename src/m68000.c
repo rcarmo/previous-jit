@@ -27,6 +27,10 @@ const char M68000_fileid[] = "Hatari m68000.c : " __DATE__ " " __TIME__;
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+extern void Uae2026JitSyncRamRangeToShadow(uae_u32 addr, uae_u32 bytes);
+#endif
+
 Uint32 BusErrorAddress;         /* Stores the offending address for bus-/address errors */
 Uint32 BusErrorPC;              /* Value of the PC when bus error occurs */
 bool bBusErrorReadWrite;        /* 0 for write error, 1 for read error */
@@ -215,9 +219,10 @@ bool Uae2026OpcodeTestModeSetup(void)
 	const char *hex = getenv("B2_TEST_HEX");
 	const char *init = getenv("B2_TEST_INIT");
 	const char *mem_longs = getenv("B2_TEST_MEM_LONGS");
-	const uaecptr test_addr = 0x01001000;
+	const char *test_addr_env = getenv("B2_TEST_ADDR");
+	const uaecptr test_addr = (test_addr_env && *test_addr_env) ? (uaecptr)strtoul(test_addr_env, NULL, 0) : 0x01001000;
 	const uaecptr stack_addr = 0x04010000;
-	const Uint32 rom_offset = 0x1000;
+	const Uint32 rom_offset = test_addr & 0x0001ffff;
 	Uint16 words[1024];
 	Uint32 init_words[17];
 	Uint32 mem_words[512];
@@ -234,15 +239,29 @@ bool Uae2026OpcodeTestModeSetup(void)
 		return false;
 	}
 
-	for (i = 0; i < (int)n_words; i++) {
-		NEXTRom[rom_offset + (Uint32)(i * 2)] = (Uint8)(words[i] >> 8);
-		NEXTRom[rom_offset + (Uint32)(i * 2) + 1] = (Uint8)(words[i] & 0xff);
+	if (test_addr >= 0x04000000 && test_addr < 0x08000000) {
+		for (i = 0; i < (int)n_words; i++) {
+			NEXTMemory_WriteByte(test_addr + (Uint32)(i * 2), (Uint8)(words[i] >> 8));
+			NEXTMemory_WriteByte(test_addr + (Uint32)(i * 2) + 1, (Uint8)(words[i] & 0xff));
+		}
+		NEXTMemory_WriteByte(test_addr + (Uint32)(n_words * 2), 0x4e);
+		NEXTMemory_WriteByte(test_addr + (Uint32)(n_words * 2) + 1, 0x72);
+		NEXTMemory_WriteByte(test_addr + (Uint32)(n_words * 2) + 2, 0x27);
+		NEXTMemory_WriteByte(test_addr + (Uint32)(n_words * 2) + 3, 0x00);
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+		Uae2026JitSyncRamRangeToShadow(test_addr, (Uint32)(n_words * 2) + 4);
+#endif
+	} else {
+		for (i = 0; i < (int)n_words; i++) {
+			NEXTRom[rom_offset + (Uint32)(i * 2)] = (Uint8)(words[i] >> 8);
+			NEXTRom[rom_offset + (Uint32)(i * 2) + 1] = (Uint8)(words[i] & 0xff);
+		}
+		NEXTRom[rom_offset + (Uint32)(n_words * 2)] = 0x4e;
+		NEXTRom[rom_offset + (Uint32)(n_words * 2) + 1] = 0x72;
+		NEXTRom[rom_offset + (Uint32)(n_words * 2) + 2] = 0x27;
+		NEXTRom[rom_offset + (Uint32)(n_words * 2) + 3] = 0x00;
+		Uae2026JitBridgeSyncOpcodeTestShadow();
 	}
-	NEXTRom[rom_offset + (Uint32)(n_words * 2)] = 0x4e;
-	NEXTRom[rom_offset + (Uint32)(n_words * 2) + 1] = 0x72;
-	NEXTRom[rom_offset + (Uint32)(n_words * 2) + 2] = 0x27;
-	NEXTRom[rom_offset + (Uint32)(n_words * 2) + 3] = 0x00;
-	Uae2026JitBridgeSyncOpcodeTestShadow();
 
 	for (i = 0; i < 8; i++) {
 		m68k_dreg(regs, i) = 0;

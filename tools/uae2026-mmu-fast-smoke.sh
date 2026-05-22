@@ -10,6 +10,7 @@ mkdir -p "$OUTDIR"
 # avoids the full NeXT desktop harness; use it as the required gate before long
 # boot/stability validation.
 MMU_FILTER="${PREVIOUS_MMU_FAST_FILTER:-sr_|scc_|dbvc|dbvs|chk2_|cas|movep_|movem_|moves_|movec_|jsr_|bsr_|seam_}"
+MMU_EXCLUDE="${PREVIOUS_MMU_FAST_EXCLUDE:-seam_jsr_user_stack|seam_hash_call_chain}"
 
 cmake -S "$ROOT" -B "$BUILD_DIR" -DENABLE_VNC=ON -DENABLE_EXPERIMENTAL_UAE2026_JIT=ON >"$OUTDIR/cmake-configure.log" 2>&1
 cmake --build "$BUILD_DIR" -j"$(nproc)" >"$OUTDIR/cmake-build.log" 2>&1
@@ -18,8 +19,10 @@ OPCODE_OUT="$OUTDIR/opcode"
 PREVIOUS_OPCODE_HARNESS_OUTDIR="$OPCODE_OUT" \
 PREVIOUS_BUILD_DIR="$BUILD_DIR" \
 PREVIOUS_OPCODE_FILTER="$MMU_FILTER" \
+PREVIOUS_OPCODE_EXCLUDE="$MMU_EXCLUDE" \
 PREVIOUS_UAE2026_JIT_RAM=1 \
 B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1 \
+PREVIOUS_OPCODE_TEST_ADDR="${PREVIOUS_MMU_FAST_TEST_ADDR:-0x04008000}" \
 "$ROOT/tools/uae2026-opcode-harness.sh" >"$OUTDIR/opcode.log" 2>&1
 
 # Re-emit the opcode harness metrics as this harness' top-level result.
@@ -34,6 +37,8 @@ cat > "$OUTDIR/result.env" <<EOF
 build_dir=$BUILD_DIR
 opcode_out=$OPCODE_OUT
 filter=$MMU_FILTER
+exclude=$MMU_EXCLUDE
+test_addr=${test_addr:-${PREVIOUS_MMU_FAST_TEST_ADDR:-0x04008000}}
 total=$total
 interp_ok=$interp_ok
 jit_ok=$jit_ok

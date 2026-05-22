@@ -167,6 +167,8 @@ run_case() {
     PREVIOUS_UAE2026_JIT_FPU="${PREVIOUS_UAE2026_JIT_FPU:-0}"
     PREVIOUS_UAE2026_JIT_LAZY_FLUSH="${PREVIOUS_UAE2026_JIT_LAZY_FLUSH:-1}"
     PREVIOUS_UAE2026_JIT_CONST_JUMP="${PREVIOUS_UAE2026_JIT_CONST_JUMP:-1}"
+    PREVIOUS_UAE2026_JIT_RAM="${PREVIOUS_UAE2026_JIT_RAM:-0}"
+    B2_JIT_RTE_FAULT_HANDOFF_DISABLE="${B2_JIT_RTE_FAULT_HANDOFF_DISABLE:-0}"
   )
   if [[ -n "$init_regs" ]]; then
     env_vars+=(B2_TEST_INIT="$init_regs")
@@ -300,6 +302,8 @@ pass=$pass
 fail=$fail
 infra_fail=$infra_fail
 score=$score
+jit_ram_requested=${PREVIOUS_UAE2026_JIT_RAM:-0}
+rte_handoff_disabled=${B2_JIT_RTE_FAULT_HANDOFF_DISABLE:-0}
 EOF
 
 cat "$OUTDIR/result.env"
@@ -310,6 +314,8 @@ echo "METRIC pass=$pass"
 echo "METRIC fail=$fail"
 echo "METRIC infra_fail=$infra_fail"
 echo "METRIC score=$score"
+echo "METRIC jit_ram_requested=${PREVIOUS_UAE2026_JIT_RAM:-0}"
+echo "METRIC rte_handoff_disabled=${B2_JIT_RTE_FAULT_HANDOFF_DISABLE:-0}"
 echo "OUTDIR=$OUTDIR"
 
 if [[ -s "$OUTDIR/infra.txt" ]]; then

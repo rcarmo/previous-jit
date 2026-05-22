@@ -43,7 +43,7 @@ known to exercise the brittle parts of the old generated `compemu` pipeline:
 - packed BCD-ish helpers: `PACK/UNPK`
 - privileged helpers: `MOVES`, `MOVEC`
 - MMU-sensitive control/stack paths: `MOVEM.L ...,-(An)`, `JSR (An)`, `BSR.W`
-- seeded user-mode pointer/stack/call state for the `050069c8` seam (`MOVEA.L (A0),A0`, `MOVEA.L (32,A0),A1`, user stack push, stack/hash lookup, and `JSR (A0)` slices)
+- seeded user-mode pointer/stack/call state for the `050069c8` seam (`MOVEA.L (A0),A0`, `MOVEA.L (32,A0),A1`, user stack push, stack/hash lookup, `JSR (A0)`, and a deterministic combined pointer→hash→call chain)
 
 Absolute scratch addresses were remapped from BasiliskII-style low RAM to Previous RAM at `0x0400xxxx`.
 
@@ -58,34 +58,34 @@ Commands:
 
 Observed fast MMU smoke metrics:
 
-- `total=27`
-- `interp_ok=27`
-- `jit_ok=27`
-- `pass=27`
+- `total=28`
+- `interp_ok=28`
+- `jit_ok=28`
+- `pass=28`
 - `fail=0`
 - `infra_fail=0`
 - `score=100`
 
 Observed full opcode metrics:
 
-- `total=70`
-- `interp_ok=70`
-- `jit_ok=70`
-- `pass=70`
+- `total=71`
+- `interp_ok=71`
+- `jit_ok=71`
+- `pass=71`
 - `fail=0`
 - `infra_fail=0`
 - `score=100`
 
 Recent artifact examples:
 
-- `/workspace/tmp/previous-mmu-fast-smoke-20260522-002727`
-- `/workspace/tmp/previous-opcode-harness-20260522-002921`
+- `/workspace/tmp/previous-mmu-fast-smoke-20260522-004420`
+- `/workspace/tmp/previous-opcode-harness-20260522-004617`
 Interpretation:
 
 - the opcode harness remains a passing regression gate for the current curated vector set
 - `uae2026-mmu-fast-smoke.sh` is the required first gate for RAM/MMU changes before heavier boot smokes
 - RAM-mode boot failures are therefore being debugged as MMU/exception/restart state bugs rather than broad opcode-harness regressions
-- new RAM/MMU fixes should keep the fast MMU smoke at `pass=27 fail=0 score=100` and the full opcode harness at `pass=70 fail=0 score=100` before heavier boot smokes are trusted
+- new RAM/MMU fixes should keep the fast MMU smoke at `pass=28 fail=0 score=100` and the full opcode harness at `pass=71 fail=0 score=100` before heavier boot smokes are trusted
 
 ## Why this matters
 

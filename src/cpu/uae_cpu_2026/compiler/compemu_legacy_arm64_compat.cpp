@@ -81,7 +81,10 @@ static inline uae_u32 jit_fetch_opcode_for_current_pc(uae_u32 pc)
 		 * every low virtual fetch through the code host perturbs early ROM SCSI boot. */
 		if (host_phys_known && host_phys != pc &&
 			((pc >= 0x05000000u && pc < 0x08000000u) ||
-			 (regs.vbr == 0x040ae61cu && pc >= 0x00003300u && pc <= 0x00003400u)))
+			 (regs.vbr == 0x040ae61cu && pc >= 0x00003300u && pc <= 0x00003400u) ||
+			 (getenv("B2_JIT_LOW12B_CODEHOST") && regs.vbr == 0x040ae61cu && pc >= 0x00012b00u && pc <= 0x00012c00u) ||
+			 (getenv("B2_JIT_LOW83_CODEHOST") && regs.vbr == 0x040ae61cu && pc >= 0x00008300u && pc <= 0x00008340u) ||
+			 (getenv("B2_JIT_LOW7F_CODEHOST") && regs.vbr == 0x040ae61cu && pc >= 0x00007f70u && pc <= 0x00008000u)))
 			return jit_fetch_opcode_via_code_host(pc);
 		if (pc < 0x01000000u) {
 			jit_publish_code_fetch_state(pc);

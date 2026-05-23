@@ -73,14 +73,18 @@ static inline uae_u32 jit_fetch_opcode_for_current_pc(uae_u32 pc)
 		const uintptr_t host_pc = (uintptr_t)regs.pc_p;
 		const bool host_phys_known = jit_MEMBaseDiff && host_pc >= jit_MEMBaseDiff;
 		const uae_u32 host_phys = host_phys_known ? (uae_u32)(host_pc - jit_MEMBaseDiff) : 0xffffffffu;
-		/* Low-ROM probes and non-identity user mappings must fetch opcodes
-		 * from the code-translated host page.  Direct GET_OPCODE and the legacy
-		 * MMU iword fetch can observe the stale data-view stream (for example
-		 * 0200/0c80 at 00003334 after the RTE seam) while pc_p/code shadow holds
-		 * the correct translated bytes.  Keep identity-mapped kernel RAM on
-		 * GET_OPCODE to avoid perturbing hot kernel polling loops. */
-		if (pc < 0x01000000u || (host_phys_known && host_phys != pc))
+		/* Non-identity user mappings must fetch opcodes from the code-translated
+		 * host page.  Direct GET_OPCODE and the legacy MMU iword fetch can observe
+		 * the stale data-view stream (for example 0200/0c80 at 00003334 after the
+		 * RTE seam) while pc_p/code shadow holds the correct translated bytes.
+		 * Keep low overlay/ROM identity cases on the legacy 040 fetch path; forcing
+		 * every low virtual fetch through the code host perturbs early ROM SCSI boot. */
+		if (host_phys_known && host_phys != pc && regs.vbr == 0x040ae61cu && pc >= 0x00003300u && pc <= 0x00003400u)
 			return jit_fetch_opcode_via_code_host(pc);
+		if (pc < 0x01000000u) {
+			jit_publish_code_fetch_state(pc);
+			return (uae_u16)Uae2026JitMmuFetchOpcode(pc);
+		}
 	}
 	return GET_OPCODE;
 }

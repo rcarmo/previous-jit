@@ -132,7 +132,7 @@ Initial transaction kinds:
 
 ### Dispatch and opcode fetch
 
-- Low virtual RAM/MMU dispatch must fetch opcodes via the code-space MMU/code-host helper, not the legacy data-view iword path.
+- Low virtual RAM/MMU dispatch must fetch opcodes via the code-space MMU/code-host helper when the active code mapping is non-identity. Keep early ROM/low-overlay identity cases on the legacy 040 path unless a trace proves the code-host path is required.
 - Before opcode fetch: `mmu_opcode = -1` and full restart state is published.
 - After successful opcode fetch: republish with the fetched opcode.
 - If opcode fetch faults, no instruction side effects should have happened yet.

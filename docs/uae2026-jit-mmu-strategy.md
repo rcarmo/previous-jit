@@ -30,7 +30,9 @@ Concrete examples:
   user stack, later causing `00003964` to execute with `A2=00000002`.
 - low virtual opcode fetch: stale data-view opcode reads (`PCTOPS`) disagreed with code-space
   translation/live shadow (`PCTSHADOW`/`PCTLIVE`) until code fetch was separated from data
-  access and synced through `Uae2026JitMmuXlateCodeHost()`.
+  access and synced through `Uae2026JitMmuXlateCodeHost()`. The post-RTE low-PC seam at
+  `00003334` exposed the same issue again: legacy MMU iword fetch saw `0200/0c80` while
+  the code-translated host page held the correct `204f/9efc` stream.
 - RTE/page-fault seams: `RTE` can partially switch SR/A7 and then fault on a code fetch;
   exception delivery needs pre-op supervisor state but must not destroy post-pop ISP state.
 - non-restartable byte-store seams: the 040 interpreter can report certain user data-write
@@ -130,7 +132,7 @@ Initial transaction kinds:
 
 ### Dispatch and opcode fetch
 
-- Low virtual RAM/MMU dispatch must fetch opcodes via the code-space MMU helper.
+- Low virtual RAM/MMU dispatch must fetch opcodes via the code-space MMU/code-host helper, not the legacy data-view iword path.
 - Before opcode fetch: `mmu_opcode = -1` and full restart state is published.
 - After successful opcode fetch: republish with the fetched opcode.
 - If opcode fetch faults, no instruction side effects should have happened yet.

@@ -14,7 +14,7 @@ declare -a TEST_ORDER=(
   aslw_mem_hardfail lsrw_mem_hardfail rolw_mem_hardfail asrw_mem_edge roxlw_mem_edge roxrw_mem_edge
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
   chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
-  jsr_an_call_return bsr_word_call_return seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain
+  jsr_an_call_return bsr_word_call_return seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
   pack_dn_edge unpk_dn_edge moves_write_read movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip
 )
 
@@ -113,6 +113,14 @@ TESTS[seam_hash_call_chain]="2050 2F09 2268 0020 222F 000C C291 2031 1C08 2040 6
 INIT_REGS[seam_hash_call_chain]="04018258 00000009 04018258 00000014 00036074 00000002 00000000 00000000 04018258 050941AD 0000E06C 0000E068 0401AE94 0401B908 03FFFF80 04010000 0010"
 MEM_LONGS[seam_hash_call_chain]="04018258 04018758 04018778 050A1BE0 04010008 00000009 050A1BE0 FFFFFFFF 050A1C0C 04019000 04019018 TEST+002A"
 DUMP_MEM_LONGS[seam_hash_call_chain]="0400FFFC 0400FFF8"
+TESTS[seam_byte_store_d2_fault_shape]="1082 2010"
+INIT_REGS[seam_byte_store_d2_fault_shape]="00000000 00000000 00000029 00000000 00000000 00000000 00000000 00000000 0400A000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"
+MEM_LONGS[seam_byte_store_d2_fault_shape]="0400A000 11223344"
+DUMP_MEM_LONGS[seam_byte_store_d2_fault_shape]="0400A000"
+TESTS[seam_byte_copy_postinc_fault_shape]="109A 2010"
+INIT_REGS[seam_byte_copy_postinc_fault_shape]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A000 00000000 0400A010 00000000 00000000 00000000 00000000 04010000 0010"
+MEM_LONGS[seam_byte_copy_postinc_fault_shape]="0400A000 11223344 0400A010 5A667788"
+DUMP_MEM_LONGS[seam_byte_copy_postinc_fault_shape]="0400A000 0400A010"
 
 TESTS[pack_dn_edge]="203C 0000 1234 8140 0000"
 TESTS[unpk_dn_edge]="203C 0000 0012 8180 0000"

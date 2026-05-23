@@ -45,10 +45,11 @@ known to exercise the brittle parts of the old generated `compemu` pipeline:
 - privileged helpers: `MOVES`, `MOVEC`
 - MMU-sensitive control/stack paths: `MOVEM.L ...,-(An)`, `JSR (An)`, `BSR.W`
 - seeded user-mode pointer/stack/call state for the `050069c8` seam (`MOVEA.L (A0),A0`, `MOVEA.L (32,A0),A1`, user stack push, MOVEM frame restore, stack/hash lookup, `JSR (A0)`, and a deterministic combined pointer→hash→call chain)
+- byte-store seam shapes from the native RAM/MMU fault path: `MOVE.B D2,(A0)` (`1082`) and `MOVE.B (A2)+,(A0)` (`109a`), including destination memory dumps and postincrement side effects
 
 Absolute scratch addresses were remapped from BasiliskII-style low RAM to Previous RAM at `0x0400xxxx`.
 
-## Latest run (2026-05-21)
+## Latest run (2026-05-23)
 
 Commands:
 
@@ -59,34 +60,34 @@ Commands:
 
 Observed fast MMU smoke metrics:
 
-- `total=29`
-- `interp_ok=29`
-- `jit_ok=29`
-- `pass=29`
+- `total=31`
+- `interp_ok=31`
+- `jit_ok=31`
+- `pass=31`
 - `fail=0`
 - `infra_fail=0`
 - `score=100`
 
 Observed full opcode metrics:
 
-- `total=72`
-- `interp_ok=72`
-- `jit_ok=72`
-- `pass=72`
+- `total=74`
+- `interp_ok=74`
+- `jit_ok=74`
+- `pass=74`
 - `fail=0`
 - `infra_fail=0`
 - `score=100`
 
 Recent artifact examples:
 
-- `/workspace/tmp/previous-mmu-fast-smoke-20260522-013000`
-- `/workspace/tmp/previous-opcode-harness-20260522-013307`
+- `/workspace/tmp/previous-mmu-fast-smoke-20260523-020849`
+- `/workspace/tmp/previous-opcode-harness-20260523-020343`
 Interpretation:
 
 - the opcode harness remains a passing regression gate for the current curated vector set
 - `uae2026-mmu-fast-smoke.sh` is the required first gate for RAM/MMU changes before heavier boot smokes; it injects the MMU-sensitive vectors, including relocated seam call-chain vectors, at RAM address `0x04008000` and reports `jit_ram_requested=1` / `rte_handoff_disabled=1`
 - RAM-mode boot failures are therefore being debugged as MMU/exception/restart state bugs rather than broad opcode-harness regressions
-- new RAM/MMU fixes should keep the fast MMU smoke at `pass=29 fail=0 score=100` and the full opcode harness at `pass=72 fail=0 score=100` before heavier boot smokes are trusted
+- new RAM/MMU fixes should keep the fast MMU smoke at `pass=31 fail=0 score=100` and the full opcode harness at `pass=74 fail=0 score=100` before heavier boot smokes are trusted
 
 ## Why this matters
 

@@ -147,10 +147,12 @@ static inline bool jit_call_push_txn_opcode(uae_u32 op_pc, uae_u16 opcode)
 {
 	if (jit_bsr_opcode(opcode))
 		return true;
-	/* Confirmed post-RTE low-user seams where JSR pushes a return address
-	   before target code fetch can fault. Keep JSR transaction coverage narrow
-	   until all addressing modes have producer-side target metadata. */
-	return (op_pc == 0x0000003eu || op_pc == 0x00003c26u || op_pc == 0x0000c52cu) &&
+	/* Confirmed post-RTE/user seams where JSR pushes a return address before
+	   target code fetch can fault. Keep JSR transaction coverage narrow until
+	   all addressing modes have producer-side target metadata; a broad JSR(An)
+	   rule rolls back unrelated early boot probes and stalls before user space. */
+	return (op_pc == 0x0000003eu || op_pc == 0x00003c26u || op_pc == 0x0000c52cu ||
+		op_pc == 0x05027706u) &&
 		((opcode & 0xffc0u) == 0x4e80u);
 }
 

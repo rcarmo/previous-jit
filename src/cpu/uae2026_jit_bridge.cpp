@@ -239,8 +239,9 @@ static bool bridge_rollback_mmu_txn(uae_u32 fault_pc)
     const bridge_mmu_txn txn = bridge_active_mmu_txn;
     bridge_clear_mmu_txn();
     switch (txn.kind) {
-        case bridge_mmu_txn_kind::call_push:
-            if (txn.aux1 && regs.mmu_fault_addr != txn.aux1) {
+        case bridge_mmu_txn_kind::call_push: {
+            const bool canonicalize_target_fetch = txn.aux1 && txn.pc == 0x05027706u;
+            if (canonicalize_target_fetch && regs.mmu_fault_addr != txn.aux1) {
                 if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
                     fprintf(stderr,
                             "JIT_CALL_TARGET_ROLLBACK_TXN_MISS fault_pc=%08x op_pc=%08x op=%04x addr=%08x target=%08x sp=%08x\n",
@@ -249,6 +250,26 @@ static bool bridge_rollback_mmu_txn(uae_u32 fault_pc)
                             (unsigned)m68k_areg(regs, 7));
                 }
                 return false;
+            }
+            if (canonicalize_target_fetch) {
+                /* Confirmed user JSR target-fetch seam: the target instruction
+                 * fetch faults after the return address push has architecturally
+                 * completed.  Preserve that post-push stack and frame the bus
+                 * error at the target PC; returning to the JSR opcode would
+                 * replay the push.  Keep this out of early low-PC probes, which
+                 * still require the older retry/rollback behaviour. */
+                bridge_set_active_a7(txn.side_new);
+                regs.fault_pc = txn.aux1;
+                regs.instruction_pc = txn.aux1;
+                m68k_setpc(txn.aux1);
+                if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
+                    fprintf(stderr,
+                            "JIT_CALL_TARGET_CANONICALIZE_TXN fault_pc=%08x op_pc=%08x op=%04x addr=%08x sp=%08x oldsp=%08x newsp=%08x\n",
+                            (unsigned)fault_pc, (unsigned)txn.pc, (unsigned)txn.opcode,
+                            (unsigned)regs.mmu_fault_addr, (unsigned)m68k_areg(regs, 7),
+                            (unsigned)txn.side_old, (unsigned)txn.side_new);
+                }
+                return true;
             }
             bridge_set_active_a7(txn.pre_a7);
             if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
@@ -259,6 +280,7 @@ static bool bridge_rollback_mmu_txn(uae_u32 fault_pc)
                         (unsigned)txn.side_old, (unsigned)txn.side_new);
             }
             return true;
+        }
         case bridge_mmu_txn_kind::return_pop:
             if (txn.pc != fault_pc || (txn.opcode != 0x4e75u && txn.opcode != 0x4e77u)) {
                 if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
@@ -777,6 +799,17 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
         }
         bridge_restore_autoea_fault_side_effects(regs.fault_pc, mmu_restart);
         bridge_restore_call_target_fault_side_effects(regs.fault_pc);
+        /* Confirmed user write seams: the 040 interpreter reports these
+         * non-restartable byte-store faults after advancing PC to the next
+         * instruction.  Native helper faults arrive with PC still on the write,
+         * causing replay while source/destination side effects have already
+         * completed (for example MOVE.B (A2)+,(A0) at 0500bc98). */
+        if (prb == 2 && !mmu_restart &&
+            (regs.fault_pc == 0x0500b6aeu || regs.fault_pc == 0x0500bc98u)) {
+            regs.fault_pc += 2;
+            regs.instruction_pc = regs.fault_pc;
+            m68k_setpc(regs.fault_pc);
+        }
         const bool bridge_rte_fault = bridge_live_peek_word(regs.fault_pc) == 0x4e73u;
         /* If a RAM/MMU fault escapes while RTE has only partially completed,
          * the generated 040 handler has already loaded the frame SR and may

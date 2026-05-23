@@ -11,8 +11,12 @@ RAM/MMU JIT mode now gets past the historical low-virtual failures (`00003352` a
 `bad exception stack format` failure. `PREVIOUS_UAE2026_JIT_RAM=1` now preserves the
 native JIT path instead of auto-dropping to the interpreter at the RTE/page-fault seam;
 set `B2_JIT_RTE_FAULT_HANDOFF=1` explicitly to use the conservative desktop-boot oracle.
-The remaining native bug is JIT resume after that seam: the current completed discriminator
-reaches user space and loops at `050069cc` faulting on `504f2472` with `A0=504f2452`.
+The remaining native bug is JIT resume after that seam. Recent bounded discriminators moved
+past the original `050069cc`/`504f2472` loop and exposed narrower user fault seams such as
+`05027706` target-fetch canonicalization and non-restartable byte stores at `0500b6ae` /
+`0500bc98`; short no-handoff watchdogs can still stop earlier in the normal `0409f5xx`
+kernel idle/SCSI polling region before reaching those later user seams, so native RAM desktop
+boot remains unresolved.
 
 The fixes that moved the frontier all point to the same missing abstraction: translated
 code can perform irreversible architectural side effects before a faultable 68040
@@ -29,6 +33,9 @@ Concrete examples:
   access and synced through `Uae2026JitMmuXlateCodeHost()`.
 - RTE/page-fault seams: `RTE` can partially switch SR/A7 and then fault on a code fetch;
   exception delivery needs pre-op supervisor state but must not destroy post-pop ISP state.
+- non-restartable byte-store seams: the 040 interpreter can report certain user data-write
+  faults after PC has advanced and source/destination side effects have already occurred
+  (for example `MOVE.B D2,(A0)` at `0500b6ae` and `MOVE.B (A2)+,(A0)` at `0500bc98`).
 
 The strategy below is to make every MMU-faultable translated operation explicit about:
 

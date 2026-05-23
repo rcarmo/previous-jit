@@ -28,11 +28,12 @@ Concrete examples:
 - `00003372/00003374 -> 00012b04`: native `BSR.L` pushed a return address before the target
   instruction fetch faulted. Retrying without rollback pushed twice and shifted the low
   user stack, later causing `00003964` to execute with `A2=00000002`.
-- low virtual opcode fetch: stale data-view opcode reads (`PCTOPS`) disagreed with code-space
-  translation/live shadow (`PCTSHADOW`/`PCTLIVE`) until code fetch was separated from data
-  access and synced through `Uae2026JitMmuXlateCodeHost()`. The post-RTE low-PC seam at
-  `00003334` exposed the same issue again: legacy MMU iword fetch saw `0200/0c80` while
-  the code-translated host page held the correct `204f/9efc` stream.
+- low virtual/high-user opcode fetch: stale data-view opcode reads (`PCTOPS`) disagreed with
+  code-space translation/live shadow (`PCTSHADOW`/`PCTLIVE`) until code fetch was separated
+  from data access and synced through `Uae2026JitMmuXlateCodeHost()`. The post-RTE low-PC
+  seam at `00003334` exposed the same issue again (`0200/0c80` vs `204f/9efc`), and the
+  later high-user zero-walk at `05054b0e..050abffe` showed `PCTOPS=0000` while the
+  code-translated host page held real user instructions.
 - RTE/page-fault seams: `RTE` can partially switch SR/A7 and then fault on a code fetch;
   exception delivery needs pre-op supervisor state but must not destroy post-pop ISP state.
 - non-restartable byte-store seams: the 040 interpreter can report certain user data-write
@@ -132,7 +133,7 @@ Initial transaction kinds:
 
 ### Dispatch and opcode fetch
 
-- Low virtual RAM/MMU dispatch must fetch opcodes via the code-space MMU/code-host helper when the active code mapping is non-identity. Keep early ROM/low-overlay identity cases on the legacy 040 path unless a trace proves the code-host path is required.
+- Low virtual/high-user RAM/MMU dispatch must fetch opcodes via the code-space MMU/code-host helper when the active code mapping is non-identity. Keep early ROM/low-overlay identity cases on the legacy 040 path unless a trace proves the code-host path is required.
 - Before opcode fetch: `mmu_opcode = -1` and full restart state is published.
 - After successful opcode fetch: republish with the fetched opcode.
 - If opcode fetch faults, no instruction side effects should have happened yet.

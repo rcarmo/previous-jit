@@ -79,7 +79,9 @@ static inline uae_u32 jit_fetch_opcode_for_current_pc(uae_u32 pc)
 		 * RTE seam) while pc_p/code shadow holds the correct translated bytes.
 		 * Keep low overlay/ROM identity cases on the legacy 040 fetch path; forcing
 		 * every low virtual fetch through the code host perturbs early ROM SCSI boot. */
-		if (host_phys_known && host_phys != pc && regs.vbr == 0x040ae61cu && pc >= 0x00003300u && pc <= 0x00003400u)
+		if (host_phys_known && host_phys != pc &&
+			((pc >= 0x05000000u && pc < 0x08000000u) ||
+			 (regs.vbr == 0x040ae61cu && pc >= 0x00003300u && pc <= 0x00003400u)))
 			return jit_fetch_opcode_via_code_host(pc);
 		if (pc < 0x01000000u) {
 			jit_publish_code_fetch_state(pc);

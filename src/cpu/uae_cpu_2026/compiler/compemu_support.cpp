@@ -113,6 +113,7 @@ extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr);
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
+extern uintptr jit_MEMBaseDiff;
 extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitLivePutLong(uae_u32 addr, uae_u32 value);
@@ -167,6 +168,28 @@ static inline void jit_maybe_begin_fallback_call_push_txn(uae_u32 op_pc, uae_u16
 	uae_u32 target_pc = 0;
 	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && jit_decode_bsr_target(op_pc, opcode, &target_pc))
 		Uae2026JitMmuTxnBeginCallPushTarget(op_pc, target_pc);
+}
+
+static inline bool jit_dispatch_code_host_opcode_window(uae_u32 pc)
+{
+	if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled || !jit_MEMBaseDiff || !regs.pc_p)
+		return false;
+	const uintptr_t host_pc = (uintptr_t)regs.pc_p;
+	if (host_pc < jit_MEMBaseDiff)
+		return false;
+	const uae_u32 host_phys = (uae_u32)(host_pc - jit_MEMBaseDiff);
+	return host_phys != pc &&
+		((pc >= 0x05000000u && pc < 0x08000000u) ||
+		 (regs.vbr == 0x040ae61cu && pc >= 0x00003300u && pc <= 0x00003400u));
+}
+
+static inline uae_u32 jit_fetch_dispatch_opcode(uae_u32 pc)
+{
+	if (jit_dispatch_code_host_opcode_window(pc)) {
+		uae_u8 *host = regs.pc_p;
+		return ((uae_u16)host[0] << 8) | host[1];
+	}
+	return GET_OPCODE;
 }
 
 static inline uae_u32 jit_return_pop_bytes(uae_u16 opcode)
@@ -6672,7 +6695,7 @@ void exec_nostats(void)
 	int _run_count = 0;
 	for (;;)  { 
 		uae_u32 op_pc = m68k_getpc();
-		uae_u32 opcode = GET_OPCODE;
+		uae_u32 opcode = jit_fetch_dispatch_opcode(op_pc);
 		Uae2026JitMmuTxnCommit();
 #if FLIGHT_RECORDER
 		m68k_record_step(m68k_getpc(), cft_map(opcode));
@@ -6722,7 +6745,7 @@ void execute_normal(void)
 		for (;;)  { /* Take note: This is the do-it-normal loop */
 			pc_hist[blocklen++].location = (uae_u16 *)regs.pc_p;
 			uae_u32 op_pc = m68k_getpc();
-			uae_u32 opcode = GET_OPCODE;
+			uae_u32 opcode = jit_fetch_dispatch_opcode(op_pc);
 			Uae2026JitMmuTxnCommit();
 #if FLIGHT_RECORDER
 			m68k_record_step(m68k_getpc(), cft_map(opcode));

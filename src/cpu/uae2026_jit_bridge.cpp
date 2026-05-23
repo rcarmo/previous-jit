@@ -116,6 +116,23 @@ static uae_u32 bridge_live_peek_long(uae_u32 addr)
     return bridge_live_readable(addr, 4) ? bridge_live_peek_word(addr) << 16 | bridge_live_peek_word(addr + 2) : 0;
 }
 
+static bool bridge_shadow_host_readable(const uae_u8 *host, size_t bytes)
+{
+    if (!jit_shadow_base || !host || bytes == 0)
+        return false;
+    const uintptr_t start = (uintptr_t)host;
+    const uintptr_t base = (uintptr_t)jit_shadow_base;
+    if (start < base)
+        return false;
+    const uintptr_t off = start - base;
+    return off <= jit_shadow_size && bytes <= jit_shadow_size - off;
+}
+
+static uae_u32 bridge_shadow_host_peek_word(const uae_u8 *host)
+{
+    return bridge_shadow_host_readable(host, 2) ? ((uae_u32)host[0] << 8) | host[1] : 0xffffu;
+}
+
 static void sync_shadow_video(void)
 {
     if (!jit_shadow_base || jit_shadow_size < 0x10040000UL)
@@ -884,6 +901,23 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                         bridge_live_peek_long(sp + 12), (unsigned)regs.spcflags);
             }
             exc_log_count++;
+            if (env_truthy("B2_JIT_TRACE_LOW33_PCP", false) && prb == 2 &&
+                regs.fault_pc >= 0x00003300u && regs.fault_pc <= 0x00003400u) {
+                const uae_u8 *pcp = regs.pc_p;
+                fprintf(stderr,
+                        "JIT_LOW33_PCP pc=%08x fault_pc=%08x addr=%08x pc_p=%p oldp=%p pcpw0=%04x pcpw1=%04x pcpw2=%04x pcpw3=%04x dataw0=%04x dataw1=%04x dataw2=%04x dataw3=%04x\n",
+                        (unsigned)m68k_getpc(), (unsigned)regs.fault_pc,
+                        (unsigned)regs.mmu_fault_addr, (const void *)regs.pc_p,
+                        (const void *)regs.pc_oldp,
+                        (unsigned)bridge_shadow_host_peek_word(pcp),
+                        (unsigned)bridge_shadow_host_peek_word(pcp + 2),
+                        (unsigned)bridge_shadow_host_peek_word(pcp + 4),
+                        (unsigned)bridge_shadow_host_peek_word(pcp + 6),
+                        (unsigned)bridge_live_peek_word(regs.fault_pc),
+                        (unsigned)bridge_live_peek_word(regs.fault_pc + 2),
+                        (unsigned)bridge_live_peek_word(regs.fault_pc + 4),
+                        (unsigned)bridge_live_peek_word(regs.fault_pc + 6));
+            }
         }
         int prb2 = setjmp(__exbuf);
         if (prb2 == 0) {

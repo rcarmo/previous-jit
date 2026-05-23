@@ -901,11 +901,13 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                         bridge_live_peek_long(sp + 12), (unsigned)regs.spcflags);
             }
             exc_log_count++;
-            if (env_truthy("B2_JIT_TRACE_LOW33_PCP", false) && prb == 2 &&
-                regs.fault_pc >= 0x00003300u && regs.fault_pc <= 0x00003400u) {
+            if ((env_truthy("B2_JIT_TRACE_LOW33_PCP", false) || env_truthy("B2_JIT_TRACE_LOWPC_PCP", false)) &&
+                prb == 2 && regs.fault_pc < 0x00020000u &&
+                (env_truthy("B2_JIT_TRACE_LOWPC_PCP", false) ||
+                 (regs.fault_pc >= 0x00003300u && regs.fault_pc <= 0x00003400u))) {
                 const uae_u8 *pcp = regs.pc_p;
                 fprintf(stderr,
-                        "JIT_LOW33_PCP pc=%08x fault_pc=%08x addr=%08x pc_p=%p oldp=%p pcpw0=%04x pcpw1=%04x pcpw2=%04x pcpw3=%04x dataw0=%04x dataw1=%04x dataw2=%04x dataw3=%04x\n",
+                        "JIT_LOWPC_PCP pc=%08x fault_pc=%08x addr=%08x pc_p=%p oldp=%p pcpw0=%04x pcpw1=%04x pcpw2=%04x pcpw3=%04x dataw0=%04x dataw1=%04x dataw2=%04x dataw3=%04x\n",
                         (unsigned)m68k_getpc(), (unsigned)regs.fault_pc,
                         (unsigned)regs.mmu_fault_addr, (const void *)regs.pc_p,
                         (const void *)regs.pc_oldp,

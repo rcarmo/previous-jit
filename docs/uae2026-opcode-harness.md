@@ -80,8 +80,8 @@ Observed full opcode metrics:
 
 Recent artifact examples:
 
-- `/workspace/tmp/previous-mmu-fast-smoke-20260523-020849`
-- `/workspace/tmp/previous-opcode-harness-20260523-020343`
+- `/workspace/tmp/previous-mmu-fast-smoke-20260524-081030`
+- `/workspace/tmp/previous-opcode-harness-20260524-081241`
 Interpretation:
 
 - the opcode harness remains a passing regression gate for the current curated vector set

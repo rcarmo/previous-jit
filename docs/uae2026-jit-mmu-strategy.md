@@ -7,16 +7,17 @@ one-off fixes for each newly exposed low-PC seam.
 ## Problem statement
 
 RAM/MMU JIT mode now gets past the historical low-virtual failures (`00003352` and
-`00003964`), the post-BSR `init exited with 212` divergence, and the later panic-monitor
-`bad exception stack format` failure. `PREVIOUS_UAE2026_JIT_RAM=1` now preserves the
-native JIT path instead of auto-dropping to the interpreter at the RTE/page-fault seam;
-set `B2_JIT_RTE_FAULT_HANDOFF=1` explicitly to use the conservative desktop-boot oracle.
-The remaining native bug is JIT resume after that seam. Recent bounded discriminators moved
-past the original `050069cc`/`504f2472` loop and exposed narrower user fault seams such as
-`05027706` target-fetch canonicalization and non-restartable byte stores at `0500b6ae` /
-`0500bc98`; short no-handoff watchdogs can still stop earlier in the normal `0409f5xx`
-kernel idle/SCSI polling region before reaching those later user seams, so native RAM desktop
-boot remains unresolved.
+`00003964`), the post-BSR `init exited with 212` divergence, the later panic-monitor
+`bad exception stack format` failure, the repeated `000000de` loop, and the high-user
+`050abffe`/`050069cc` frontiers. `PREVIOUS_UAE2026_JIT_RAM=1` preserves the native JIT
+path instead of auto-dropping to the interpreter at the RTE/page-fault seam; set
+`B2_JIT_RTE_FAULT_HANDOFF=1` explicitly to use the conservative desktop-boot oracle.
+The remaining native bug is JIT resume after that seam. The current bounded comparison uses
+that oracle plus default-off low-PC code-host discriminators: `B2_JIT_LOW83_CODEHOST=1`
+moves native past the stale `00008334/op=2010` stream to the oracle `00007f72` target,
+`B2_JIT_LOW7F_CODEHOST=1` keeps the next target window comparable, and native then matches
+oracle low catches through `00008b24` before diverging with an extra native-only catch at
+`0000ee58` (`addr=0001402a`). Native RAM desktop boot remains unresolved.
 
 The fixes that moved the frontier all point to the same missing abstraction: translated
 code can perform irreversible architectural side effects before a faultable 68040
@@ -31,9 +32,10 @@ Concrete examples:
 - low virtual/high-user opcode fetch: stale data-view opcode reads (`PCTOPS`) disagreed with
   code-space translation/live shadow (`PCTSHADOW`/`PCTLIVE`) until code fetch was separated
   from data access and synced through `Uae2026JitMmuXlateCodeHost()`. The post-RTE low-PC
-  seam at `00003334` exposed the same issue again (`0200/0c80` vs `204f/9efc`), and the
-  later high-user zero-walk at `05054b0e..050abffe` showed `PCTOPS=0000` while the
-  code-translated host page held real user instructions.
+  seam at `00003334` exposed the same issue again (`0200/0c80` vs `204f/9efc`), the later
+  high-user zero-walk at `05054b0e..050abffe` showed `PCTOPS=0000` while the code-translated
+  host page held real user instructions, and the later `00008334` divergence was narrowed to
+  stale data-view `op=2010` where the oracle executes `4e91` (`JSR (A1)`) to `00007f72`.
 - RTE/page-fault seams: `RTE` can partially switch SR/A7 and then fault on a code fetch;
   exception delivery needs pre-op supervisor state but must not destroy post-pop ISP state.
 - non-restartable byte-store seams: the 040 interpreter can report certain user data-write
@@ -223,5 +225,5 @@ On MMU longjmp:
 - Zero-PC vector recovery is disabled while the 040 MMU is enabled; in that mode, zero PC is treated as a symptom to diagnose rather than recovered by jumping to vector 2.
 - RAM/MMU mode no longer hands bridge-caught RTE/page-fault seams to the interpreter by default. Validation: `/workspace/tmp/previous-jit-no-auto-handoff-ram-20260522-091833` kept JIT active with `jit_ram_dispatch_seen=1` and no `RTE fault handoff to interpreter` / `JIT_FALLBACK` log entries; it does not yet reach the desktop.
 - The explicit oracle path remains available with `B2_JIT_RTE_FAULT_HANDOFF=1`: `/workspace/tmp/previous-jit-explicit-handoff-ram-20260522-090029` reached and held the desktop with `desktop_reached=1`, `stable_reached=1`, and `jit_ram_dispatch_seen=1`.
-- The native resume path remains unfixed but has moved: after code-shadow and low-user call transaction fixes, the completed no-handoff frontier is the repeated user dispatch fault at `pc=050069cc`, `addr=504f2472`, `A0=504f2452`. The earlier `050abffe` / `050ac000` RAM-boundary/code-fetch loop is no longer the current completed-run frontier.
+- The native resume path remains unfixed but has moved: after code-shadow, low-user call transaction fixes, and default-off low-PC code-host discriminators, the best grounded comparison now matches the explicit-handoff oracle through nine low-PC catches and diverges immediately after the matched `00008b24` data fault with an extra native-only `0000ee58` catch (`addr=0001402a`). The earlier `050abffe` / `050ac000` RAM-boundary/code-fetch loop and the `050069cc` / `504f2472` dispatch fault are no longer the current completed-run frontier.
 - Exacting all low virtual code or kernel text, global optlev0, and flush-each-op did not move earlier frontiers. The next fix should come from the principled MMU transaction/restart model rather than another broad exact-exec discriminator.

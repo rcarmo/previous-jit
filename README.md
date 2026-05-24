@@ -34,10 +34,11 @@ Right now the project is at the stage where:
 
 - interpreter-backed validation works
 - JIT bootstrap/plumbing works
-- the opcode-equivalence harness is clean (`pass=62 fail=0 score=100`; latest audit run `/workspace/tmp/previous-opcode-harness-20260520-180203`)
-- default/ROM JIT reaches the NEXTSTEP desktop and remained stable for 60s in the latest smoke check (`/workspace/tmp/previous-jit-doc-update-default-20260520-185848`)
-- RAM-requested mode (`PREVIOUS_UAE2026_JIT_RAM=1`) now reaches true RAM dispatch and boots to a stable NEXTSTEP desktop by default via a conservative RTE/page-fault handoff to the exact interpreter (`/workspace/tmp/previous-jit-doc-update-ram-handoff-20260520-190438`, `desktop_reached=1`, `stable_reached=1`, `jit_ram_dispatch_seen=1`).
-- The remaining native-resume bug is preserved behind `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`: narrow call-push transaction producers for the confirmed low-user JSR seams (`0000003e`, `00003c26`, `0000c52c`) removed the repeated `000000de` loop in the latest completed discriminator, leaving a later repeated RAM-boundary/code-fetch loop around `050abffe` (`/workspace/tmp/previous-jit-3c26-jsr-txn-disable-ram-20260520-172348`). The current source also widens code-shadow sync for translated RAM code pages; handoff-disabled RAM still needs a full desktop validation after that follow-up.
+- the opcode-equivalence harness is clean (`pass=74 fail=0 score=100`; latest full audit run `/workspace/tmp/previous-opcode-harness-20260524-081241`)
+- the RAM-code MMU fast smoke runs the relocation-safe seam vectors from RAM and is clean (`pass=31 fail=0 score=100`; latest `/workspace/tmp/previous-mmu-fast-smoke-20260524-081030`)
+- default/ROM JIT reaches the NEXTSTEP desktop in the latest no-DC smoke check (`/workspace/tmp/previous-jit-lowpcdiag-default-20260523-202501`)
+- RAM-requested mode (`PREVIOUS_UAE2026_JIT_RAM=1`) no longer auto-drops to the interpreter at the RTE/page-fault seam. The conservative desktop-boot oracle is explicit via `B2_JIT_RTE_FAULT_HANDOFF=1` (`/workspace/tmp/previous-jit-explicit-handoff-ram-20260522-090029`, `desktop_reached=1`, `stable_reached=1`, `jit_ram_dispatch_seen=1`).
+- The remaining native-resume bug is preserved by leaving that handoff unset (or forcing `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`). The latest low-PC oracle comparison shows native execution can be moved past the earlier stale `00008334/op=2010` divergence with default-off `B2_JIT_LOW83_CODEHOST=1 B2_JIT_LOW7F_CODEHOST=1`, then matches the interpreter catch sequence through `00008b24` before diverging with an extra native-only catch at `0000ee58` (`addr=0001402a`).
 
 ## Project layout
 
@@ -91,8 +92,8 @@ Notes:
 - automated boot harnesses use a **fresh copied disk image per run**
 - Linux startup disables host ASLR by default for deterministic JIT mappings
 - `PREVIOUS_UAE2026_JIT=0` gives an interpreter baseline for harness comparison
-- `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch path; default RAM mode now hands off RTE/page-fault seams to the interpreter so it can boot while native resume is still being fixed
-- `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1` disables that default RAM handoff and is the main discriminator for the remaining native resume bug
+- `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch path; native RAM mode now stays in translated execution unless the explicit oracle handoff is requested
+- `B2_JIT_RTE_FAULT_HANDOFF=1` requests the conservative RTE/page-fault interpreter handoff oracle; leaving it unset (or setting `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`) preserves the remaining native-resume bug for diagnosis
 - `B2_JIT_LOW_VIRTUAL_SINGLESTEP=1`, `B2_JIT_LOW_VIRTUAL_PREFETCH_GUARD=1`, `B2_JIT_EXACT_EXEC_PCS`, `B2_JIT_PCTRACE_WORDS`, and opt-in `B2_JIT_PCTRACE_LIVE=1` are diagnostics for low-user-virtual MMU/code-fetch and state-divergence analysis; they are not default-on fixes
 - RAM/MMU code paths must keep data-space and code-space translations separate: the private bank `xlateaddr` is for data effective addresses, while branch/return/dispatch PC materialization uses the dedicated code-space host translator
 - the vendored compiler unity build keeps its Basilisk/UAE prefs symbols renamed away from Previous's native `currprefs`/`changed_prefs`; do not reintroduce same-name globals with incompatible struct layouts

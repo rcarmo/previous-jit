@@ -45,6 +45,7 @@ extern "C" {
     void prev_m68k_reset(int hard) __asm__("m68k_reset");
 }
 extern bool mmu_restart;
+extern uae_u16 mmu_opcode;
 
 /* UseJIT flag (defined in uae2026_linker_stubs.cpp) */
 extern bool UseJIT;
@@ -198,6 +199,61 @@ static int env_int(const char *name, int fallback)
     if (!value || !*value)
         return fallback;
     return atoi(value);
+}
+
+static unsigned long env_ulong(const char *name, unsigned long fallback)
+{
+    const char *value = getenv(name);
+    if (!value || !*value)
+        return fallback;
+    return strtoul(value, nullptr, 0);
+}
+
+static void bridge_trace_lowpc_resume(const char *phase, int prb)
+{
+    if (!env_truthy("B2_JIT_TRACE_LOWPC_RESUME", false) || prb != 2 || regs.fault_pc >= 0x00020000u)
+        return;
+
+    static unsigned long count = 0;
+    const unsigned long limit = env_ulong("B2_JIT_TRACE_LOWPC_RESUME_LIMIT", 128);
+    if (count >= limit)
+        return;
+    const unsigned long n = count++;
+    const uae_u32 pc = m68k_getpc();
+    const uae_u32 sp = m68k_areg(regs, 7);
+    fprintf(stderr,
+            "JIT_LOWPC_RESUME %s n=%lu prb=%d pc=%08x fault_pc=%08x addr=%08x op=%04x ext=%04x mmu_opcode=%04x mmu_restart=%d "
+            "sr=%04x s=%d m=%d vbr=%08x a7=%08x usp=%08x isp=%08x msp=%08x spc=%08x "
+            "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
+            "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x "
+            "lastpc=%08x lastsr=%08x lasta7=%08x lastexcsp=%08x lastflags=%08x/%08x jitflags=%08x/%08x "
+            "spm4=%08x sp0=%08x sp4=%08x sp8=%08x fr_sr=%04x fr_pc=%08x fr_vec=%04x fr8=%08x fr12=%08x\n",
+            phase, n, prb, (unsigned)pc, (unsigned)regs.fault_pc,
+            (unsigned)regs.mmu_fault_addr,
+            (unsigned)bridge_live_peek_word(regs.fault_pc),
+            (unsigned)bridge_live_peek_word(regs.fault_pc + 2),
+            (unsigned)(uae_u16)mmu_opcode, (int)mmu_restart,
+            (unsigned)regs.sr, (int)regs.s, (int)regs.m, (unsigned)regs.vbr,
+            (unsigned)sp, (unsigned)regs.usp, (unsigned)regs.isp,
+            (unsigned)regs.msp, (unsigned)regs.spcflags,
+            (unsigned)regs.regs[0], (unsigned)regs.regs[1],
+            (unsigned)regs.regs[2], (unsigned)regs.regs[3],
+            (unsigned)regs.regs[4], (unsigned)regs.regs[5],
+            (unsigned)regs.regs[6], (unsigned)regs.regs[7],
+            (unsigned)regs.regs[8], (unsigned)regs.regs[9],
+            (unsigned)regs.regs[10], (unsigned)regs.regs[11],
+            (unsigned)regs.regs[12], (unsigned)regs.regs[13],
+            (unsigned)regs.regs[14],
+            (unsigned)Uae2026JitLastInstructionPc,
+            (unsigned)Uae2026JitLastSr, (unsigned)Uae2026JitLastA7,
+            (unsigned)Uae2026JitLastExceptionSp,
+            (unsigned)Uae2026JitLastFlags.cznv, (unsigned)Uae2026JitLastFlags.x,
+            (unsigned)jit_regflags.nzcv, (unsigned)jit_regflags.x,
+            bridge_live_peek_long(sp >= 4 ? sp - 4 : sp),
+            bridge_live_peek_long(sp), bridge_live_peek_long(sp + 4),
+            bridge_live_peek_long(sp + 8), bridge_live_peek_word(sp),
+            bridge_live_peek_long(sp + 2), bridge_live_peek_word(sp + 6),
+            bridge_live_peek_long(sp + 8), bridge_live_peek_long(sp + 12));
 }
 
 static int bridge_move_size_increment(uae_u16 opcode, int areg)
@@ -921,6 +977,7 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                         (unsigned)bridge_live_peek_word(regs.fault_pc + 6));
             }
         }
+        bridge_trace_lowpc_resume("PRE", prb);
         int prb2 = setjmp(__exbuf);
         if (prb2 == 0) {
             __exvalue = 0;
@@ -950,6 +1007,7 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
              * bridge deliberately clears pc_p at the next JIT entry, so make the
              * vector PC canonical now or the next dispatch can see PC=0. */
             m68k_setpc(handled_pc);
+            bridge_trace_lowpc_resume("POST", prb);
             if (prb == 2) {
                 static unsigned long handled_log_count = 0;
                 if (handled_log_count < 64 || (handled_log_count % 1024) == 0 ||

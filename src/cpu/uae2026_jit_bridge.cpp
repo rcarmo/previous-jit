@@ -58,6 +58,10 @@ extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLastInstructionPc;
 extern "C" uae_u32 Uae2026JitLastSr;
 extern "C" uae_u32 Uae2026JitLastA7;
+extern "C" uae_u32 Uae2026JitLowpcFaultSeq;
+extern "C" uae_u32 Uae2026JitLastLowpcFaultPc;
+extern "C" uae_u32 Uae2026JitLastLowpcFaultAddr;
+extern "C" uae_u32 Uae2026JitLastLowpcFaultOpcode;
 extern "C" uae_u32 Uae2026JitLastExceptionSp;
 extern "C" struct flag_struct Uae2026JitLastFlags;
 
@@ -963,6 +967,12 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                         bridge_live_peek_long(sp + 12), (unsigned)regs.spcflags);
             }
             exc_log_count++;
+            if (prb == 2 && regs.fault_pc < 0x00020000u) {
+                Uae2026JitLowpcFaultSeq++;
+                Uae2026JitLastLowpcFaultPc = regs.fault_pc;
+                Uae2026JitLastLowpcFaultAddr = regs.mmu_fault_addr;
+                Uae2026JitLastLowpcFaultOpcode = mmu_opcode;
+            }
             if ((env_truthy("B2_JIT_TRACE_LOW33_PCP", false) || env_truthy("B2_JIT_TRACE_LOWPC_PCP", false)) &&
                 prb == 2 && regs.fault_pc < 0x00020000u &&
                 (env_truthy("B2_JIT_TRACE_LOWPC_PCP", false) ||

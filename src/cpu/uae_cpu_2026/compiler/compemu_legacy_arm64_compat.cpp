@@ -22,6 +22,10 @@ extern "C" {
 uae_u32 Uae2026JitLastInstructionPc = 0;
 uae_u32 Uae2026JitLastSr = 0;
 uae_u32 Uae2026JitLastA7 = 0;
+uae_u32 Uae2026JitLowpcFaultSeq = 0;
+uae_u32 Uae2026JitLastLowpcFaultPc = 0;
+uae_u32 Uae2026JitLastLowpcFaultAddr = 0;
+uae_u32 Uae2026JitLastLowpcFaultOpcode = 0;
 struct flag_struct Uae2026JitLastFlags = { 0, 0 };
 }
 
@@ -1267,6 +1271,7 @@ void execute_normal(void)
 		start_pc_p = regs.pc_oldp;
 		start_pc = regs.pc;
 #if defined(CPU_AARCH64)
+		jit_lowpc_compile_trace_begin();
 		{
 			uae_u32 trace_a1 = regs.regs[9];
 			if (trace_a1 >= 0x1e00 && trace_a1 < 0x1e40)
@@ -1390,9 +1395,14 @@ void execute_normal(void)
 			jit_block_verify_entry_capture(verify_block_pc);
 #endif
 		for (;;) {
-			pc_hist[blocklen++].location = (uae_u16 *)regs.pc_p;
+			uae_u16 *pre_fetch_pcp = (uae_u16 *)regs.pc_p;
+			pc_hist[blocklen++].location = pre_fetch_pcp;
+			int trace_index = blocklen - 1;
 			uae_u32 pc_before_op = m68k_getpc();
 			uae_u32 opcode = jit_fetch_opcode_for_current_pc(pc_before_op);
+#if defined(CPU_AARCH64)
+			jit_lowpc_compile_trace_record(trace_index, pc_before_op, opcode, (uintptr)pre_fetch_pcp, (uintptr)regs.pc_p);
+#endif
 			Uae2026JitMmuTxnCommit();
 			Uae2026JitPublishFallbackState(pc_before_op, opcode);
 			if (Uae2026OpcodeTestModeActive() && (uae_u16)opcode == 0x4e72u) {

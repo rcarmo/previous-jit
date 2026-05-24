@@ -1227,6 +1227,123 @@ static inline uae_u32 jit_hostpc_to_macpc(uintptr hostpc)
     return get_virtual_address((uae_u8*)hostpc);
 }
 
+extern "C" uae_u32 Uae2026JitLowpcFaultSeq;
+extern "C" uae_u32 Uae2026JitLastLowpcFaultPc;
+extern "C" uae_u32 Uae2026JitLastLowpcFaultAddr;
+extern "C" uae_u32 Uae2026JitLastLowpcFaultOpcode;
+
+struct jit_lowpc_compile_trace_entry {
+    uae_u32 guest_pc;
+    uae_u32 opcode;
+    uintptr pre_host;
+    uintptr post_host;
+};
+
+static jit_lowpc_compile_trace_entry jit_lowpc_compile_trace[MAXRUN];
+static uae_u32 jit_lowpc_compile_trace_seq;
+static int jit_lowpc_compile_trace_count;
+
+static inline bool jit_trace_lowpc_compile_env(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("B2_JIT_TRACE_LOWPC_COMPILE");
+        cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+static inline unsigned long jit_trace_lowpc_compile_limit(void)
+{
+    static bool init = false;
+    static unsigned long value = 64;
+    if (!init) {
+        const char *env = getenv("B2_JIT_TRACE_LOWPC_COMPILE_LIMIT");
+        value = (env && *env) ? strtoul(env, NULL, 0) : 64;
+        init = true;
+    }
+    return value;
+}
+
+static void jit_lowpc_compile_trace_begin(void)
+{
+    jit_lowpc_compile_trace_count = 0;
+    jit_lowpc_compile_trace_seq = 0;
+    if (!jit_trace_lowpc_compile_env() || !Uae2026JitLowpcFaultSeq)
+        return;
+    jit_lowpc_compile_trace_seq = Uae2026JitLowpcFaultSeq;
+}
+
+static void jit_lowpc_compile_trace_record(int index, uae_u32 guest_pc, uae_u32 opcode, uintptr pre_host, uintptr post_host)
+{
+    if (!jit_trace_lowpc_compile_env() || !jit_lowpc_compile_trace_seq || index < 0 || index >= MAXRUN)
+        return;
+    jit_lowpc_compile_trace[index].guest_pc = guest_pc;
+    jit_lowpc_compile_trace[index].opcode = opcode;
+    jit_lowpc_compile_trace[index].pre_host = pre_host;
+    jit_lowpc_compile_trace[index].post_host = post_host;
+    if (index + 1 > jit_lowpc_compile_trace_count)
+        jit_lowpc_compile_trace_count = index + 1;
+}
+
+static inline uae_u16 jit_lowpc_compile_host_word(uintptr host, unsigned word_index)
+{
+    if (!host || host < 0x1000u)
+        return 0xffffu;
+    return do_get_mem_word((uae_u16 *)(host + word_index * 2u));
+}
+
+static inline uae_u32 jit_lowpc_compile_host_phys(uintptr host)
+{
+    if (!MEMBaseDiff || host < MEMBaseDiff)
+        return 0xffffffffu;
+    return (uae_u32)(host - MEMBaseDiff);
+}
+
+static void jit_lowpc_compile_trace_log(cpu_history *pc_hist, int blocklen, uae_u32 block_m68k_pc, int optlev)
+{
+    if (!jit_trace_lowpc_compile_env() || !jit_lowpc_compile_trace_seq || !Uae2026JitLowpcFaultSeq)
+        return;
+    static unsigned long log_count = 0;
+    const unsigned long limit = jit_trace_lowpc_compile_limit();
+    if (log_count >= limit)
+        return;
+    const unsigned long n = ++log_count;
+    const int max_ops = blocklen < 8 ? blocklen : 8;
+    fprintf(stderr,
+        "JIT_LOWPC_COMPILE n=%lu seq=%u fault_pc=%08x fault_addr=%08x fault_op=%04x block_pc=%08x blocklen=%d optlev=%d start_pc=%08x start_pc_p=%p pc0=%p pc0phys=%08x trace_count=%d\n",
+        n, (unsigned)jit_lowpc_compile_trace_seq,
+        (unsigned)Uae2026JitLastLowpcFaultPc,
+        (unsigned)Uae2026JitLastLowpcFaultAddr,
+        (unsigned)(Uae2026JitLastLowpcFaultOpcode & 0xffffu),
+        (unsigned)block_m68k_pc, blocklen, optlev,
+        (unsigned)start_pc, (void *)start_pc_p,
+        blocklen > 0 ? (void *)pc_hist[0].location : NULL,
+        blocklen > 0 ? (unsigned)jit_lowpc_compile_host_phys((uintptr)pc_hist[0].location) : 0xffffffffu,
+        jit_lowpc_compile_trace_count);
+    for (int i = 0; i < max_ops; i++) {
+        const uintptr hist = (uintptr)pc_hist[i].location;
+        const jit_lowpc_compile_trace_entry *e = (i < jit_lowpc_compile_trace_count) ? &jit_lowpc_compile_trace[i] : NULL;
+        fprintf(stderr,
+            "JIT_LOWPC_COMPILE_OP n=%lu i=%d hist=%p histphys=%08x histw=%04x,%04x,%04x,%04x trace_pc=%08x trace_op=%04x pre=%p prephys=%08x post=%p postphys=%08x postw=%04x,%04x,%04x,%04x\n",
+            n, i, (void *)hist, (unsigned)jit_lowpc_compile_host_phys(hist),
+            (unsigned)jit_lowpc_compile_host_word(hist, 0),
+            (unsigned)jit_lowpc_compile_host_word(hist, 1),
+            (unsigned)jit_lowpc_compile_host_word(hist, 2),
+            (unsigned)jit_lowpc_compile_host_word(hist, 3),
+            e ? (unsigned)e->guest_pc : 0xffffffffu,
+            e ? (unsigned)(e->opcode & 0xffffu) : 0xffffu,
+            e ? (void *)e->pre_host : NULL,
+            e ? (unsigned)jit_lowpc_compile_host_phys(e->pre_host) : 0xffffffffu,
+            e ? (void *)e->post_host : NULL,
+            e ? (unsigned)jit_lowpc_compile_host_phys(e->post_host) : 0xffffffffu,
+            e ? (unsigned)jit_lowpc_compile_host_word(e->post_host, 0) : 0xffffu,
+            e ? (unsigned)jit_lowpc_compile_host_word(e->post_host, 1) : 0xffffu,
+            e ? (unsigned)jit_lowpc_compile_host_word(e->post_host, 2) : 0xffffu,
+            e ? (unsigned)jit_lowpc_compile_host_word(e->post_host, 3) : 0xffffu);
+    }
+}
+
 static inline uintptr jit_canonicalize_target_pc(uintptr pc)
 {
     uintptr base = (uintptr)RAMBaseHost;
@@ -5936,6 +6053,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             block_m68k_pc = jit_hostpc_to_macpc((uintptr)pc_hist[0].location);
         }
 #if defined(CPU_AARCH64)
+        jit_lowpc_compile_trace_log(pc_hist, blocklen, block_m68k_pc, optlev);
         if (jit_force_optlev0() || jit_force_optlev0_block_exact(block_m68k_pc) || jit_force_optlev0_block_env(block_m68k_pc)) {
             optlev = 0;
         } else if (optlev > 0) {

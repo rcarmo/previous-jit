@@ -910,11 +910,17 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
          * must be built from the faulting instruction PC.  Keep this narrow to
          * kernel RAM text; low-virtual call faults can publish extension-word
          * PCs and are handled by explicit call/return transactions above. */
+        if (prb == 2 && !bridge_rte_fault && regs.fault_pc < 0x00020000u &&
+            regs.mmu_fault_addr != regs.fault_pc) {
+            const uae_u16 fc = regs.mmu_ssw & 0x0007u; /* 68040 SSW TM/function-code bits */
+            if (fc != 2 && fc != 6)
+                regs.mmu_effective_addr = regs.mmu_fault_addr;
+        }
         if (prb == 2 && !bridge_rte_fault && regs.fault_pc >= 0x04000000u && regs.fault_pc < 0x08000000u) {
             /* Previous's legacy format-7 frame builder stores mmu_effective_addr
              * as the EA word.  JIT-delivered helper faults may leave that field
              * stale from an earlier low-virtual fault; make it match the actual
-             * bus fault address for bridge-delivered RAM/MMU cycles. */
+             * bus fault address for bridge-delivered RAM/MMU data cycles. */
             regs.mmu_effective_addr = regs.mmu_fault_addr;
             if (m68k_getpc() != regs.fault_pc)
                 m68k_setpc(regs.fault_pc);

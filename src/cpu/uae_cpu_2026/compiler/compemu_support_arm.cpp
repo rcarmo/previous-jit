@@ -1274,18 +1274,6 @@ static void jit_lowpc_compile_trace_begin(void)
     jit_lowpc_compile_trace_seq = Uae2026JitLowpcFaultSeq;
 }
 
-static void jit_lowpc_compile_trace_record(int index, uae_u32 guest_pc, uae_u32 opcode, uintptr pre_host, uintptr post_host)
-{
-    if (!jit_trace_lowpc_compile_env() || !jit_lowpc_compile_trace_seq || index < 0 || index >= MAXRUN)
-        return;
-    jit_lowpc_compile_trace[index].guest_pc = guest_pc;
-    jit_lowpc_compile_trace[index].opcode = opcode;
-    jit_lowpc_compile_trace[index].pre_host = pre_host;
-    jit_lowpc_compile_trace[index].post_host = post_host;
-    if (index + 1 > jit_lowpc_compile_trace_count)
-        jit_lowpc_compile_trace_count = index + 1;
-}
-
 static inline uae_u16 jit_lowpc_compile_host_word(uintptr host, unsigned word_index)
 {
     if (!host || host < 0x1000u)
@@ -1298,6 +1286,40 @@ static inline uae_u32 jit_lowpc_compile_host_phys(uintptr host)
     if (!MEMBaseDiff || host < MEMBaseDiff)
         return 0xffffffffu;
     return (uae_u32)(host - MEMBaseDiff);
+}
+
+static void jit_lowpc_compile_trace_record(int index, uae_u32 guest_pc, uae_u32 opcode, uintptr pre_host, uintptr post_host)
+{
+    if (!jit_trace_lowpc_compile_env() || !jit_lowpc_compile_trace_seq || index < 0 || index >= MAXRUN)
+        return;
+    jit_lowpc_compile_trace[index].guest_pc = guest_pc;
+    jit_lowpc_compile_trace[index].opcode = opcode;
+    jit_lowpc_compile_trace[index].pre_host = pre_host;
+    jit_lowpc_compile_trace[index].post_host = post_host;
+    if (index + 1 > jit_lowpc_compile_trace_count)
+        jit_lowpc_compile_trace_count = index + 1;
+
+    static unsigned long trace_log_count = 0;
+    const unsigned long limit = jit_trace_lowpc_compile_limit();
+    if (trace_log_count >= limit)
+        return;
+    const unsigned long n = ++trace_log_count;
+    fprintf(stderr,
+        "JIT_LOWPC_TRACE_OP n=%lu seq=%u i=%d fault_pc=%08x fault_addr=%08x trace_pc=%08x trace_op=%04x pre=%p prephys=%08x prew=%04x,%04x,%04x,%04x post=%p postphys=%08x postw=%04x,%04x,%04x,%04x\n",
+        n, (unsigned)jit_lowpc_compile_trace_seq, index,
+        (unsigned)Uae2026JitLastLowpcFaultPc,
+        (unsigned)Uae2026JitLastLowpcFaultAddr,
+        (unsigned)guest_pc, (unsigned)(opcode & 0xffffu),
+        (void *)pre_host, (unsigned)jit_lowpc_compile_host_phys(pre_host),
+        (unsigned)jit_lowpc_compile_host_word(pre_host, 0),
+        (unsigned)jit_lowpc_compile_host_word(pre_host, 1),
+        (unsigned)jit_lowpc_compile_host_word(pre_host, 2),
+        (unsigned)jit_lowpc_compile_host_word(pre_host, 3),
+        (void *)post_host, (unsigned)jit_lowpc_compile_host_phys(post_host),
+        (unsigned)jit_lowpc_compile_host_word(post_host, 0),
+        (unsigned)jit_lowpc_compile_host_word(post_host, 1),
+        (unsigned)jit_lowpc_compile_host_word(post_host, 2),
+        (unsigned)jit_lowpc_compile_host_word(post_host, 3));
 }
 
 static void jit_lowpc_compile_trace_log(cpu_history *pc_hist, int blocklen, uae_u32 block_m68k_pc, int optlev)

@@ -1288,6 +1288,23 @@ static inline uae_u32 jit_lowpc_compile_host_phys(uintptr host)
     return (uae_u32)(host - MEMBaseDiff);
 }
 
+static inline bool jit_lowpc_compile_trace_pc_match(uae_u32 pc)
+{
+    static bool init = false;
+    static int enabled = 0;
+    static uae_u32 start = 0;
+    static uae_u32 end = 0xffffffffu;
+    if (!init) {
+        const char *start_env = getenv("B2_TRACE_PC_START");
+        const char *end_env = getenv("B2_TRACE_PC_END");
+        enabled = (start_env && *start_env) ? 1 : 0;
+        start = enabled ? (uae_u32)strtoul(start_env, NULL, 0) : 0;
+        end = (end_env && *end_env) ? (uae_u32)strtoul(end_env, NULL, 0) : 0xffffffffu;
+        init = true;
+    }
+    return !enabled || (pc >= start && pc <= end);
+}
+
 static void jit_lowpc_compile_trace_record(int index, uae_u32 guest_pc, uae_u32 opcode, uintptr pre_host, uintptr post_host)
 {
     if (!jit_trace_lowpc_compile_env() || !jit_lowpc_compile_trace_seq || index < 0 || index >= MAXRUN)
@@ -1299,6 +1316,8 @@ static void jit_lowpc_compile_trace_record(int index, uae_u32 guest_pc, uae_u32 
     if (index + 1 > jit_lowpc_compile_trace_count)
         jit_lowpc_compile_trace_count = index + 1;
 
+    if (!jit_lowpc_compile_trace_pc_match(guest_pc))
+        return;
     static unsigned long trace_log_count = 0;
     const unsigned long limit = jit_trace_lowpc_compile_limit();
     if (trace_log_count >= limit)

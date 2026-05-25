@@ -49,7 +49,7 @@ known to exercise the brittle parts of the old generated `compemu` pipeline:
 
 Absolute scratch addresses were remapped from BasiliskII-style low RAM to Previous RAM at `0x0400xxxx`.
 
-## Latest run (2026-05-23)
+## Latest run (2026-05-25)
 
 Commands:
 
@@ -60,34 +60,34 @@ Commands:
 
 Observed fast MMU smoke metrics:
 
-- `total=31`
-- `interp_ok=31`
-- `jit_ok=31`
-- `pass=31`
+- `total=32`
+- `interp_ok=32`
+- `jit_ok=32`
+- `pass=32`
 - `fail=0`
 - `infra_fail=0`
 - `score=100`
 
 Observed full opcode metrics:
 
-- `total=74`
-- `interp_ok=74`
-- `jit_ok=74`
-- `pass=74`
+- `total=75`
+- `interp_ok=75`
+- `jit_ok=75`
+- `pass=75`
 - `fail=0`
 - `infra_fail=0`
 - `score=100`
 
 Recent artifact examples:
 
-- `/workspace/tmp/previous-mmu-fast-smoke-20260524-081030`
-- `/workspace/tmp/previous-opcode-harness-20260524-081241`
+- `/workspace/tmp/previous-mmu-fast-smoke-20260525-153918`
+- `/workspace/tmp/previous-opcode-harness-20260525-154146`
 Interpretation:
 
 - the opcode harness remains a passing regression gate for the current curated vector set
 - `uae2026-mmu-fast-smoke.sh` is the required first gate for RAM/MMU changes before heavier boot smokes; it injects the MMU-sensitive vectors, including relocated seam call-chain vectors, at RAM address `0x04008000` and reports `jit_ram_requested=1` / `rte_handoff_disabled=1`
 - RAM-mode boot failures are therefore being debugged as MMU/exception/restart state bugs rather than broad opcode-harness regressions
-- new RAM/MMU fixes should keep the fast MMU smoke at `pass=31 fail=0 score=100` and the full opcode harness at `pass=74 fail=0 score=100` before heavier boot smokes are trusted
+- new RAM/MMU fixes should keep the fast MMU smoke at `pass=32 fail=0 score=100` and the full opcode harness at `pass=75 fail=0 score=100` before heavier boot smokes are trusted
 
 ## Why this matters
 

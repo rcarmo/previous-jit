@@ -14,7 +14,7 @@ declare -a TEST_ORDER=(
   aslw_mem_hardfail lsrw_mem_hardfail rolw_mem_hardfail asrw_mem_edge roxlw_mem_edge roxrw_mem_edge
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
   chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
-  jsr_an_call_return bsr_word_call_return seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
+  jsr_an_call_return bsr_word_call_return seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_movem_restore_full_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
   pack_dn_edge unpk_dn_edge moves_write_read movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip
 )
 
@@ -103,6 +103,9 @@ DUMP_MEM_LONGS[seam_user_stack_push]="0400FFFC"
 TESTS[seam_movem_restore_frame]="4CDF 4707 2E0F"
 INIT_REGS[seam_movem_restore_frame]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"
 MEM_LONGS[seam_movem_restore_frame]="04010000 04018258 04010004 00000009 04010008 04018258 0401000C 04018258 04010010 050941AD 04010014 0000E06C 04010018 03FFFF80"
+TESTS[seam_movem_restore_full_frame]="4CDF 7FFF 2E0F"
+INIT_REGS[seam_movem_restore_full_frame]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"
+MEM_LONGS[seam_movem_restore_full_frame]="04010000 11111111 04010004 22222222 04010008 33333333 0401000C 44444444 04010010 55555555 04010014 66666666 04010018 77777777 0401001C 88888888 04010020 03FFFF6C 04010024 03FFBEA5 04010028 0001AA0C 0401002C 0001AA00 04010030 0001693E 04010034 00000000 04010038 03FFFF90"
 TESTS[seam_hash_lookup_chain]="2050 2F09 2268 0020 222F 000C C291 2031 1C08 2040 2008"
 INIT_REGS[seam_hash_lookup_chain]="04018258 00000009 04018258 00000014 00036074 00000002 00000000 00000000 04018258 050941AD 0000E06C 0000E068 0401AE94 0401B908 03FFFF80 04010000 0010"
 MEM_LONGS[seam_hash_lookup_chain]="04018258 04018758 04018778 050A1BE0 04010008 00000009 050A1BE0 FFFFFFFF 050A1C0C 04019000"

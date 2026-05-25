@@ -211,8 +211,8 @@ and compares the resulting `REGDUMP:` state instead of waiting for a full NeXT b
 See `docs/uae2026-opcode-harness.md` for the current vector set and latest results.
 
 Latest translated-execution debug checkpoint (2026-05-24):
-- full opcode harness passes: `total=74`, `jit_ok=74`, `pass=74`, `fail=0`, `infra_fail=0`, `score=100` (`/workspace/tmp/previous-opcode-harness-20260524-081241`)
-- RAM-code MMU fast smoke passes from `B2_TEST_ADDR=0x04008000`: `total=31`, `pass=31`, `fail=0`, `score=100` (`/workspace/tmp/previous-mmu-fast-smoke-20260524-081030`)
+- full opcode harness passes: `total=75`, `jit_ok=75`, `pass=75`, `fail=0`, `infra_fail=0`, `score=100` (`/workspace/tmp/previous-opcode-harness-20260525-154146`)
+- RAM-code MMU fast smoke passes from `B2_TEST_ADDR=0x04008000`: `total=32`, `pass=32`, `fail=0`, `score=100` (`/workspace/tmp/previous-mmu-fast-smoke-20260525-153918`)
 - default/ROM JIT smoke reaches the desktop in the latest no-DC check (`/workspace/tmp/previous-jit-lowpcdiag-default-20260523-202501`)
 - RAM translation remains gated by `PREVIOUS_UAE2026_JIT_RAM=1`; true RAM dispatch is counted only for `0x04000000..0x07ffffff` dispatch PCs so bogus zero-PC recovery does not look like RAM progress
 - explicit handoff RAM-requested mode reaches true RAM dispatch and boots to a stable desktop when `B2_JIT_RTE_FAULT_HANDOFF=1` is set (`/workspace/tmp/previous-jit-explicit-handoff-ram-20260522-090029`: `desktop_reached=1`, `stable_reached=1`, `jit_ram_dispatch_seen=1`, `jit_dispatch_lines=6755`, `jit_last_pc=0409f5cc`)

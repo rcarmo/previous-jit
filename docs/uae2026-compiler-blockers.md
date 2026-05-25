@@ -34,8 +34,8 @@ prelude, without linking it into `Previous` yet.
 - object compile probe: **passing**
 - emulator/runtime integration of vendored compiler entry points: **wired under `ENABLE_EXPERIMENTAL_UAE2026_JIT`**
 - default/ROM translated execution reaches the NEXTSTEP desktop in the latest no-DC smoke check (`/workspace/tmp/previous-jit-lowpcdiag-default-20260523-202501`)
-- opcode harness remains clean after the latest RAM/MMU changes (`/workspace/tmp/previous-opcode-harness-20260524-081241`, `pass=74 fail=0 score=100`)
-- RAM-code MMU fast smoke remains clean from RAM execution at `0x04008000` (`/workspace/tmp/previous-mmu-fast-smoke-20260524-081030`, `pass=31 fail=0 score=100`)
+- opcode harness remains clean after the latest RAM/MMU changes (`/workspace/tmp/previous-opcode-harness-20260525-154146`, `pass=75 fail=0 score=100`)
+- RAM-code MMU fast smoke remains clean from RAM execution at `0x04008000` (`/workspace/tmp/previous-mmu-fast-smoke-20260525-153918`, `pass=32 fail=0 score=100`)
 - RAM/MMU dispatch mode is still experimental. The explicit conservative oracle `B2_JIT_RTE_FAULT_HANDOFF=1` reaches true RAM dispatch and boots to a stable desktop (`/workspace/tmp/previous-jit-explicit-handoff-ram-20260522-090029`, `desktop_reached=1`, `stable_reached=1`, `jit_ram_dispatch_seen=1`). Native no-handoff remains unfixed; with default-off `B2_JIT_LOW83_CODEHOST=1 B2_JIT_LOW7F_CODEHOST=1`, native matches the oracle catch sequence through `00008b24` and then diverges with an extra native-only `0000ee58` catch (`addr=0001402a`).
 - latest diagnostic audit keeps default `B2_JIT_PCTRACE_WORDS` non-invasive by logging only `PCTOPS` plus executable-shadow `PCTSHADOW`; live addrbank reads are opt-in via `B2_JIT_PCTRACE_LIVE=1` because they can have side effects or fault.
 

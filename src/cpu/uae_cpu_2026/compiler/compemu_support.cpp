@@ -159,8 +159,14 @@ static inline bool jit_call_push_txn_opcode(uae_u32 op_pc, uae_u16 opcode)
 
 static inline void jit_maybe_prepare_fallback_call_push_txn(uae_u32 op_pc, uae_u16 opcode)
 {
-	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && jit_call_push_txn_opcode(op_pc, opcode))
-		Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(op_pc, opcode);
+	if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled || !jit_call_push_txn_opcode(op_pc, opcode))
+		return;
+	uae_u32 target_pc = 0;
+	if (jit_decode_bsr_target(op_pc, opcode, &target_pc)) {
+		Uae2026JitMmuTxnBeginCallPushPreTarget(op_pc, opcode, m68k_areg(regs, 7), target_pc);
+		return;
+	}
+	Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(op_pc, opcode);
 }
 
 static inline void jit_maybe_begin_fallback_call_push_txn(uae_u32 op_pc, uae_u16 opcode)

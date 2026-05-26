@@ -11,6 +11,7 @@ extern "C" previous_mmufixup_entry mmufixup[2];
 extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
 extern "C" uae_u32 Uae2026JitMmuFetchOpcode(uae_u32 pc);
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 pc);
+extern "C" void Uae2026JitMmuTxnBeginCallPushPreTarget(uae_u32 pc, uae_u32 opcode, uae_u32 pre_a7, uae_u32 target_pc);
 extern "C" void Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(uae_u32 pc, uae_u32 target_pc);
 extern "C" void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uae_u32 pc, uae_u32 opcode);
 extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7(uae_u32 pc, uae_u32 opcode, uae_u32 pop_bytes);
@@ -219,6 +220,22 @@ static inline bool legacy_bsr_l_target(uae_u32 pc, uae_u16 opcode, uae_u32 expec
 	return true;
 }
 
+static inline bool legacy_bsr_target_live(uae_u32 pc, uae_u16 opcode, uae_u32 *target_pc)
+{
+	if ((opcode & 0xff00u) != 0x6100u || !target_pc)
+		return false;
+	uae_s32 disp = 0;
+	if ((opcode & 0x00ffu) == 0x0000u)
+		disp = (uae_s32)(uae_s16)Uae2026JitLiveGetWord(pc + 2);
+	else if ((opcode & 0x00ffu) == 0x00ffu)
+		disp = (uae_s32)(((uae_u32)Uae2026JitLiveGetWord(pc + 2) << 16) |
+			(uae_u32)Uae2026JitLiveGetWord(pc + 4));
+	else
+		disp = (uae_s32)(uae_s8)(opcode & 0x00ffu);
+	*target_pc = pc + 2u + (uae_u32)disp;
+	return true;
+}
+
 static inline bool legacy_call_push_txn_opcode(uae_u32 pc, uae_u16 opcode)
 {
 	if ((opcode & 0xff00u) == 0x6100u)
@@ -234,8 +251,14 @@ static inline bool legacy_call_push_txn_opcode(uae_u32 pc, uae_u16 opcode)
 
 static inline void legacy_maybe_begin_call_push_txn(uae_u32 pc, uae_u16 opcode)
 {
-	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && legacy_call_push_txn_opcode(pc, opcode))
-		Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(pc, opcode);
+	if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled || !legacy_call_push_txn_opcode(pc, opcode))
+		return;
+	uae_u32 target_pc = 0;
+	if (legacy_bsr_target_live(pc, opcode, &target_pc)) {
+		Uae2026JitMmuTxnBeginCallPushPreTarget(pc, opcode, m68k_areg(regs, 7), target_pc);
+		return;
+	}
+	Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(pc, opcode);
 }
 
 static inline uae_u32 legacy_return_pop_bytes(uae_u16 opcode)

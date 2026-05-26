@@ -34,11 +34,11 @@ Right now the project is at the stage where:
 
 - interpreter-backed validation works
 - JIT bootstrap/plumbing works
-- the opcode-equivalence harness is clean (`pass=75 fail=0 score=100`; latest full audit run `/workspace/tmp/previous-opcode-harness-20260525-154146`)
-- the RAM-code MMU fast smoke runs the relocation-safe seam vectors from RAM and is clean (`pass=32 fail=0 score=100`; latest `/workspace/tmp/previous-mmu-fast-smoke-20260525-153918`)
-- default/ROM JIT reaches the NEXTSTEP desktop in the latest no-DC smoke check (`/workspace/tmp/previous-jit-lowpcdiag-default-20260523-202501`)
-- RAM-requested mode (`PREVIOUS_UAE2026_JIT_RAM=1`) no longer auto-drops to the interpreter at the RTE/page-fault seam. The conservative desktop-boot oracle is explicit via `B2_JIT_RTE_FAULT_HANDOFF=1` (`/workspace/tmp/previous-jit-explicit-handoff-ram-20260522-090029`, `desktop_reached=1`, `stable_reached=1`, `jit_ram_dispatch_seen=1`).
-- The remaining native-resume bug is preserved by leaving that handoff unset (or forcing `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`). The latest low-PC oracle comparison shows native execution can be moved past the earlier stale `00008334/op=2010` divergence with default-off `B2_JIT_LOW83_CODEHOST=1 B2_JIT_LOW7F_CODEHOST=1`, then matches the interpreter catch sequence through `00008b24` before diverging with an extra native-only catch at `0000ee58` (`addr=0001402a`).
+- the opcode-equivalence harness is clean (`pass=75 fail=0 score=100`; latest full audit run `/workspace/tmp/previous-opcode-harness-20260526-132114`)
+- the RAM-code MMU fast smoke runs the relocation-safe seam vectors from RAM and is clean (`pass=32 fail=0 score=100`; latest `/workspace/tmp/previous-mmu-fast-smoke-20260526-132114`)
+- default/ROM JIT reaches the NEXTSTEP desktop in the latest smoke check (`/workspace/tmp/previous-jit-bsr-metadata-default-20260526-132634`, `desktop_reached=1`)
+- RAM-requested mode (`PREVIOUS_UAE2026_JIT_RAM=1`) no longer auto-drops to the interpreter at the RTE/page-fault seam. The conservative desktop-boot oracle is explicit via `B2_JIT_RTE_FAULT_HANDOFF=1` and remains stable in the latest long/no-DC oracle run (`/workspace/tmp/previous-jit-bsr-metadata-ram-handoff-long-20260526-133132`, `desktop_reached=1`, `stable_reached=1`).
+- The remaining native-resume bug is preserved by leaving that handoff unset (or forcing `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`). Commit `9441c84` aligns fallback BSR call-push transaction metadata by passing producer-side decoded targets into the bridge; this removes a stale `regs.pc_p` metadata hazard but does not fix native RAM boot. Long no-handoff still times out after RTE/low-PC churn (`/workspace/tmp/previous-jit-bsr-metadata-nohandoff-long-20260526-145233`), with known catches around `00012052`, `00005030`, `0000a7a8`, `00004492`, and `04001ae6`. The sampled high-kernel `0409f592/0409f5cc` polling loop did not move under exact execution and is treated as a symptom, not the root cause.
 
 ## Project layout
 

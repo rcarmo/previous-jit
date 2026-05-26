@@ -10,7 +10,7 @@
 - Vendored BasiliskII UAE 2026 subtree is now staged under `src/cpu/uae_cpu_2026/`
 - Headless fresh-image harness is now available at `tools/headless-nextstep-harness.sh`
 - Experimental bridge smoke harness is now available at `tools/headless-jit-bridge-smoke.sh`
-- Default/ROM translated execution reaches the NEXTSTEP desktop. RAM/MMU dispatch mode still uses the explicit conservative oracle `B2_JIT_RTE_FAULT_HANDOFF=1` to boot to a stable desktop; without that handoff the active remaining blocker is native JIT resume after the RTE/page-fault seam. The latest grounded discriminator uses default-off `B2_JIT_LOW83_CODEHOST=1 B2_JIT_LOW7F_CODEHOST=1` to match the interpreter through nine low-PC catches (`... 00007f72, 00008b14, 00008b24`) and then exposes an extra native-only `0000ee58` catch (`addr=0001402a`).
+- Default/ROM translated execution reaches the NEXTSTEP desktop. RAM/MMU dispatch mode still uses the explicit conservative oracle `B2_JIT_RTE_FAULT_HANDOFF=1` to boot to a stable desktop; without that handoff the active remaining blocker is native JIT resume after the RTE/page-fault seam. Commit `9441c84` aligns fallback BSR call-push transaction metadata, but native no-handoff still times out after RTE/low-PC churn (`00012052`, `00005030`, `0000a7a8`, `00004492`, `04001ae6` in the latest long run).
 - Early bootstrap probe harness is now available at `tools/headless-jit-bootstrap-probe.sh`
 - Compiler-facing prefs shim now lives in `src/cpu/uae2026_compiler_prefs_shim.cpp`
 - Direct vendored compiler blocker inventory now lives in `docs/uae2026-compiler-blockers.md`
@@ -138,7 +138,7 @@ Why:
 1. **MMU correctness**
    - NeXTSTEP/OpenStep depend on 68030/68040 MMU behavior
    - this is the biggest correctness risk for RAM-mode JIT dispatch
-   - current active frontier: native JIT resume after an RTE/page-fault seam. The earlier low-ROM probe loop at `00003352`, the `00003964/A2=00000002` shifted-stack failure, the `init exited with 212` path, the panic-monitor `bad exception stack format` failure, the `000000de` loop, and the high-user `050abffe`/`050069cc` frontiers have all been cleared, bypassed, or superseded. The explicit `B2_JIT_RTE_FAULT_HANDOFF=1` oracle boots; the unfixed native path currently compares against that oracle by enabling default-off low-PC code-host discriminators, matching through `00008b24`, then diverging with native-only `0000ee58` (`addr=0001402a`).
+   - current active frontier: native JIT resume after an RTE/page-fault seam. The earlier low-ROM probe loop at `00003352`, the `00003964/A2=00000002` shifted-stack failure, the `init exited with 212` path, the panic-monitor `bad exception stack format` failure, the `000000de` loop, and the high-user `050abffe`/`050069cc` frontiers have all been cleared, bypassed, or superseded. The explicit `B2_JIT_RTE_FAULT_HANDOFF=1` oracle boots; the unfixed native path now has aligned fallback BSR metadata (`9441c84`) but still times out after the same RTE/low-PC churn. The sampled high-kernel `0409f592/0409f5cc` polling loop did not move under exact execution and is not treated as a local codegen root cause.
 
 2. **Exception / restart semantics**
    - page faults, bus faults, restartable FPU/MMU instructions

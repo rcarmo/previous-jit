@@ -16,8 +16,9 @@ of auto-dropping to the interpreter at the RTE/page-fault seam; set
 The remaining native bug is still incomplete JIT resume after that seam. The current
 bounded comparison no longer stops at `000042f8`: preserving `MMU_SSW_CM` MOVEM
 continuation effective addresses lets no-handoff enter `000042e2` with the oracle
-`A3=0001aa00` and progress into later `040017b0/040017b2` plus RTE/low-PC churn before
-timeout. Native RAM desktop boot remains unresolved.
+`A3=0001aa00`; `9441c84` also aligns fallback BSR transaction target metadata so the
+bridge no longer re-decodes BSR extension words through transient `regs.pc_p`. Native
+no-handoff still progresses into RTE/low-PC churn and times out before desktop.
 
 The fixes that moved the frontier all point to the same missing abstraction: translated
 code can perform irreversible architectural side effects before a faultable 68040
@@ -202,7 +203,9 @@ On MMU longjmp:
 2. **Add the transaction record and helpers** with no behavior change except replacing the BSR
    scan when metadata is present.
    - Implemented: bridge-side `call_push` records, generated `BSR` producer hooks, generic
-     fallback-loop hooks, compiled-block fallback hooks, and AArch64 legacy-loop hooks.
+     fallback-loop hooks, compiled-block fallback hooks, AArch64 legacy-loop hooks, and
+     producer-side fallback BSR target metadata (`9441c84`) so fallback transactions no longer
+     decode BSR extension words through transient `regs.pc_p`.
    - Current limitation: the historical `00003372/00003374 -> 00012b04` seam still reaches
      the compatibility scan rather than `JIT_CALL_TARGET_ROLLBACK_TXN`; leave the scan in place
      until the remaining shifted-PC/native path is covered by explicit metadata.
@@ -223,11 +226,11 @@ On MMU longjmp:
 ## Current frontier after the low-user JSR transaction checkpoint
 
 - Committed fix: `e7d280b jit: rollback BSR target-fetch faults`. The proven historical seam still logs `JIT_CALL_TARGET_ROLLBACK fault_pc=00003372 op_pc=00003374 op=61ff addr=00012b04`, not `JIT_CALL_TARGET_ROLLBACK_TXN`, so the bridge scan remains the active compatibility shim for that exact case.
-- Follow-up transaction coverage adds explicit `call_push` metadata producers for generated BSR, generic fallback BSR, compiled-block fallback BSR, and AArch64 legacy-loop BSR paths. Return-family fallback paths now also publish return-pop transactions for `RTS`/`RTR` target-fetch faults.
+- Follow-up transaction coverage adds explicit `call_push` metadata producers for generated BSR, generic fallback BSR, compiled-block fallback BSR, and AArch64 legacy-loop BSR paths. As of `9441c84`, fallback BSR paths pass producer-side decoded targets into the bridge rather than asking the bridge to re-read extension words from `regs.pc_p`. Return-family fallback paths now also publish return-pop transactions for `RTS`/`RTR` target-fetch faults.
 - Bridge gating keeps auto-EA rollback limited to restartable cases that need it and prevents the legacy BSR scan from treating stack-push/absolute-control extension words as BSR opcodes. This keeps the old `00003964/A2=00000002` regression away while matching the interpreter's non-restartable `MOVE.L D0,-(SP)` fault at `0000c53c`.
 - The generated/native `jit_op_rte()` helper routes through the exact interpreter RTE implementation, avoiding a duplicate hand-coded frame decoder.
 - Zero-PC vector recovery is disabled while the 040 MMU is enabled; in that mode, zero PC is treated as a symptom to diagnose rather than recovered by jumping to vector 2.
 - RAM/MMU mode no longer hands bridge-caught RTE/page-fault seams to the interpreter by default. Validation: `/workspace/tmp/previous-jit-no-auto-handoff-ram-20260522-091833` kept JIT active with `jit_ram_dispatch_seen=1` and no `RTE fault handoff to interpreter` / `JIT_FALLBACK` log entries; it does not yet reach the desktop.
-- The explicit oracle path remains available with `B2_JIT_RTE_FAULT_HANDOFF=1`: `/workspace/tmp/previous-jit-explicit-handoff-ram-20260522-090029` reached and held the desktop with `desktop_reached=1`, `stable_reached=1`, and `jit_ram_dispatch_seen=1`.
-- The native resume path remains unfixed but has moved: after code-shadow, low-user call transaction fixes, and default-off low-PC code-host discriminators, the best grounded comparison now matches the explicit-handoff oracle through nine low-PC catches and diverges immediately after the matched `00008b24` data fault with an extra native-only `0000ee58` catch (`addr=0001402a`). The earlier `050abffe` / `050ac000` RAM-boundary/code-fetch loop and the `050069cc` / `504f2472` dispatch fault are no longer the current completed-run frontier. `B2_JIT_TRACE_LOWPC_RESUME=1` is the default-off bridge diagnostic for this seam; it logs pre/post-`Exception(2)` low-PC state without changing resume behavior. The bridge now also refreshes `mmu_effective_addr` from `mmu_fault_addr` for low-PC data faults before building the 68040 access-error frame, matching the frame's EA word to faults such as `00008b14` (`00018000`) and `00008b24` (`0003fffc`).
-- Exacting all low virtual code or kernel text, global optlev0, and flush-each-op did not move earlier frontiers. The next fix should come from the principled MMU transaction/restart model rather than another broad exact-exec discriminator.
+- The explicit oracle path remains available with `B2_JIT_RTE_FAULT_HANDOFF=1`: `/workspace/tmp/previous-jit-bsr-metadata-ram-handoff-long-20260526-133132` reached and held the desktop with `desktop_reached=1` and `stable_reached=1`.
+- The native resume path remains unfixed. After code-shadow, low-user call transaction fixes, MOVEM continuation-EA preservation, and fallback BSR metadata alignment, the latest long no-handoff run (`/workspace/tmp/previous-jit-bsr-metadata-nohandoff-long-20260526-145233`) still reaches the familiar RTE/low-PC catch cluster, including `00012052`, `00005030`, `0000a7a8`, `00004492`, and `04001ae6`, then times out before desktop. The earlier `050abffe` / `050ac000` RAM-boundary/code-fetch loop and the `050069cc` / `504f2472` dispatch fault are no longer the current completed-run frontier. `B2_JIT_TRACE_LOWPC_RESUME=1` remains the default-off bridge diagnostic for this seam; it logs pre/post-`Exception(2)` low-PC state without changing resume behavior.
+- Exacting all low virtual code or kernel text, global optlev0, flush-each-op, and the sampled high-kernel `0409f592..0409f5d0` polling window did not move earlier/current frontiers. The next fix should come from the principled MMU transaction/restart model rather than another broad exact-exec discriminator.

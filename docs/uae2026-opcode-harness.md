@@ -49,7 +49,7 @@ known to exercise the brittle parts of the old generated `compemu` pipeline:
 
 Absolute scratch addresses were remapped from BasiliskII-style low RAM to Previous RAM at `0x0400xxxx`.
 
-## Latest run (2026-05-25)
+## Latest run (2026-05-26)
 
 Commands:
 
@@ -80,8 +80,8 @@ Observed full opcode metrics:
 
 Recent artifact examples:
 
-- `/workspace/tmp/previous-mmu-fast-smoke-20260525-153918`
-- `/workspace/tmp/previous-opcode-harness-20260525-154146`
+- `/workspace/tmp/previous-mmu-fast-smoke-20260526-132114`
+- `/workspace/tmp/previous-opcode-harness-20260526-132114`
 Interpretation:
 
 - the opcode harness remains a passing regression gate for the current curated vector set

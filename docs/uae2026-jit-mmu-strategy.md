@@ -8,16 +8,16 @@ one-off fixes for each newly exposed low-PC seam.
 
 RAM/MMU JIT mode now gets past the historical low-virtual failures (`00003352` and
 `00003964`), the post-BSR `init exited with 212` divergence, the later panic-monitor
-`bad exception stack format` failure, the repeated `000000de` loop, and the high-user
-`050abffe`/`050069cc` frontiers. `PREVIOUS_UAE2026_JIT_RAM=1` preserves the native JIT
-path instead of auto-dropping to the interpreter at the RTE/page-fault seam; set
+`bad exception stack format` failure, the repeated `000000de` loop, the high-user
+`050abffe`/`050069cc` frontiers, and the later low42 `000042f8` / `addr=0000020c`
+A3-restore loop. `PREVIOUS_UAE2026_JIT_RAM=1` preserves the native JIT path instead
+of auto-dropping to the interpreter at the RTE/page-fault seam; set
 `B2_JIT_RTE_FAULT_HANDOFF=1` explicitly to use the conservative desktop-boot oracle.
-The remaining native bug is JIT resume after that seam. The current bounded comparison uses
-that oracle plus default-off low-PC code-host discriminators: `B2_JIT_LOW83_CODEHOST=1`
-moves native past the stale `00008334/op=2010` stream to the oracle `00007f72` target,
-`B2_JIT_LOW7F_CODEHOST=1` keeps the next target window comparable, and native then matches
-oracle low catches through `00008b24` before diverging with an extra native-only catch at
-`0000ee58` (`addr=0001402a`). Native RAM desktop boot remains unresolved.
+The remaining native bug is still incomplete JIT resume after that seam. The current
+bounded comparison no longer stops at `000042f8`: preserving `MMU_SSW_CM` MOVEM
+continuation effective addresses lets no-handoff enter `000042e2` with the oracle
+`A3=0001aa00` and progress into later `040017b0/040017b2` plus RTE/low-PC churn before
+timeout. Native RAM desktop boot remains unresolved.
 
 The fixes that moved the frontier all point to the same missing abstraction: translated
 code can perform irreversible architectural side effects before a faultable 68040
@@ -38,6 +38,10 @@ Concrete examples:
   stale data-view `op=2010` where the oracle executes `4e91` (`JSR (A1)`) to `00007f72`.
 - RTE/page-fault seams: `RTE` can partially switch SR/A7 and then fault on a code fetch;
   exception delivery needs pre-op supervisor state but must not destroy post-pop ISP state.
+- MOVEM continuation frames: when the 68040 sets `MMU_SSW_CM`, the frame effective address
+  is the MOVEM continuation EA (`mmu040_movem_ea`), not necessarily the bus fault address.
+  Overwriting it with `mmu_fault_addr` shifts saved-register frames; the cleared low42
+  failure saved `A3=0001aa00` at `0000aef4` but restored `A3=00000000` at `0000b226`.
 - non-restartable byte-store seams: the 040 interpreter can report certain user data-write
   faults after PC has advanced and source/destination side effects have already occurred
   (for example `MOVE.B D2,(A0)` at `0500b6ae` and `MOVE.B (A2)+,(A0)` at `0500bc98`).

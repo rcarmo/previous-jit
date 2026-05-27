@@ -54,6 +54,7 @@ extern bool UseJIT;
 extern uintptr_t jit_MEMBaseDiff;
 extern "C" uintptr_t Uae2026JitRamMmuBankTable(void);
 extern "C" void Uae2026JitSyncRamToShadow(void);
+extern "C" uae_u32 Uae2026JitMmuXlateData(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLastInstructionPc;
 extern "C" uae_u32 Uae2026JitLastSr;
@@ -238,15 +239,30 @@ static void bridge_trace_fault_words_words(const char *tag, unsigned long n, uae
     fprintf(stderr, "\n");
 }
 
+static bool bridge_fault_frame_user_stack_addr(uae_u32 addr)
+{
+    return addr >= 0x03000000u && addr < 0x04000000u;
+}
+
 static uae_u32 bridge_fault_frame_peek_long(uae_u32 addr)
 {
+    /* The current high-user frontier's A6/A7 frame lives in user virtual stack
+     * space.  The direct live/physical view is often zero there; use the 040
+     * data translation only when explicitly requested so the normal diagnostic
+     * stays non-faulting and conservative by default. */
+    if (env_truthy("B2_JIT_TRACE_FAULT_FRAME_MMU", false) && regs.mmu_enabled &&
+        bridge_fault_frame_user_stack_addr(addr)) {
+        const uae_u32 phys = Uae2026JitMmuXlateData(addr);
+        if (bridge_live_readable(phys, 4))
+            return bridge_live_peek_long(phys);
+    }
     if (bridge_live_readable(addr, 4))
         return bridge_live_peek_long(addr);
     /* User stacks in the failing NeXTSTEP paths live near 0x03ffxxxx and are
-     * backed by the top of the 64MiB RAM shadow.  Keep this canonicalization
-     * local to the opt-in frame diagnostic so normal bridge/live peeks retain
-     * their conservative behavior. */
-    if (addr >= 0x03000000u && addr < 0x04000000u) {
+     * usually backed by the top of the 64MiB RAM shadow, but some paths require
+     * real MMU translation above.  Keep this fallback local to the opt-in frame
+     * diagnostic so normal bridge/live peeks retain their conservative behavior. */
+    if (bridge_fault_frame_user_stack_addr(addr)) {
         const uae_u32 ram_addr = 0x04000000u | addr;
         if (bridge_live_readable(ram_addr, 4))
             return bridge_live_peek_long(ram_addr);
@@ -260,19 +276,25 @@ static void bridge_trace_codehost_frame(unsigned long n)
         return;
     const uae_u32 a6 = regs.regs[14];
     const uae_u32 a7 = regs.regs[15];
+    const uae_u32 caller_fp = bridge_fault_frame_peek_long(a6);
     const uae_u32 argp = bridge_fault_frame_peek_long(a6 + 12u);
     fprintf(stderr,
-            "JIT_FAULT_FRAME n=%lu pc=%08x fault_pc=%08x a6=%08x a7=%08x argp=%08x arg_last=%08x "
+            "JIT_FAULT_FRAME n=%lu pc=%08x fault_pc=%08x a6=%08x a7=%08x caller_fp=%08x argp=%08x arg_last=%08x "
             "a6_m16=%08x a6_m12=%08x a6_m8=%08x a6_m4=%08x a6_p0=%08x a6_p4=%08x a6_p8=%08x a6_p12=%08x a6_p16=%08x a6_p20=%08x "
+            "caller_p0=%08x caller_p4=%08x caller_p8=%08x caller_p12=%08x caller_p16=%08x caller_p20=%08x caller_p24=%08x "
             "a7_p0=%08x a7_p4=%08x a7_p8=%08x a7_p12=%08x arg_m16=%08x arg_m12=%08x arg_m8=%08x arg_m4=%08x arg_p0=%08x arg_p4=%08x arg_p8=%08x arg_p12=%08x\n",
             n, (unsigned)m68k_getpc(), (unsigned)regs.fault_pc,
-            (unsigned)a6, (unsigned)a7, (unsigned)argp,
+            (unsigned)a6, (unsigned)a7, (unsigned)caller_fp, (unsigned)argp,
             (unsigned)(argp >= 4 ? bridge_fault_frame_peek_long(argp - 4u) : 0),
             bridge_fault_frame_peek_long(a6 - 16u), bridge_fault_frame_peek_long(a6 - 12u),
             bridge_fault_frame_peek_long(a6 - 8u), bridge_fault_frame_peek_long(a6 - 4u),
             bridge_fault_frame_peek_long(a6), bridge_fault_frame_peek_long(a6 + 4u),
             bridge_fault_frame_peek_long(a6 + 8u), bridge_fault_frame_peek_long(a6 + 12u),
             bridge_fault_frame_peek_long(a6 + 16u), bridge_fault_frame_peek_long(a6 + 20u),
+            bridge_fault_frame_peek_long(caller_fp), bridge_fault_frame_peek_long(caller_fp + 4u),
+            bridge_fault_frame_peek_long(caller_fp + 8u), bridge_fault_frame_peek_long(caller_fp + 12u),
+            bridge_fault_frame_peek_long(caller_fp + 16u), bridge_fault_frame_peek_long(caller_fp + 20u),
+            bridge_fault_frame_peek_long(caller_fp + 24u),
             bridge_fault_frame_peek_long(a7), bridge_fault_frame_peek_long(a7 + 4u),
             bridge_fault_frame_peek_long(a7 + 8u), bridge_fault_frame_peek_long(a7 + 12u),
             bridge_fault_frame_peek_long(argp - 16u), bridge_fault_frame_peek_long(argp - 12u),

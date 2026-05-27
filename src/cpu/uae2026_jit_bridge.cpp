@@ -238,6 +238,49 @@ static void bridge_trace_fault_words_words(const char *tag, unsigned long n, uae
     fprintf(stderr, "\n");
 }
 
+static uae_u32 bridge_fault_frame_peek_long(uae_u32 addr)
+{
+    if (bridge_live_readable(addr, 4))
+        return bridge_live_peek_long(addr);
+    /* User stacks in the failing NeXTSTEP paths live near 0x03ffxxxx and are
+     * backed by the top of the 64MiB RAM shadow.  Keep this canonicalization
+     * local to the opt-in frame diagnostic so normal bridge/live peeks retain
+     * their conservative behavior. */
+    if (addr >= 0x03000000u && addr < 0x04000000u) {
+        const uae_u32 ram_addr = 0x04000000u | addr;
+        if (bridge_live_readable(ram_addr, 4))
+            return bridge_live_peek_long(ram_addr);
+    }
+    return 0;
+}
+
+static void bridge_trace_codehost_frame(unsigned long n)
+{
+    if (!env_truthy("B2_JIT_TRACE_FAULT_FRAME", false))
+        return;
+    const uae_u32 a6 = regs.regs[14];
+    const uae_u32 a7 = regs.regs[15];
+    const uae_u32 argp = bridge_fault_frame_peek_long(a6 + 12u);
+    fprintf(stderr,
+            "JIT_FAULT_FRAME n=%lu pc=%08x fault_pc=%08x a6=%08x a7=%08x argp=%08x arg_last=%08x "
+            "a6_m16=%08x a6_m12=%08x a6_m8=%08x a6_m4=%08x a6_p0=%08x a6_p4=%08x a6_p8=%08x a6_p12=%08x a6_p16=%08x a6_p20=%08x "
+            "a7_p0=%08x a7_p4=%08x a7_p8=%08x a7_p12=%08x arg_m16=%08x arg_m12=%08x arg_m8=%08x arg_m4=%08x arg_p0=%08x arg_p4=%08x arg_p8=%08x arg_p12=%08x\n",
+            n, (unsigned)m68k_getpc(), (unsigned)regs.fault_pc,
+            (unsigned)a6, (unsigned)a7, (unsigned)argp,
+            (unsigned)(argp >= 4 ? bridge_fault_frame_peek_long(argp - 4u) : 0),
+            bridge_fault_frame_peek_long(a6 - 16u), bridge_fault_frame_peek_long(a6 - 12u),
+            bridge_fault_frame_peek_long(a6 - 8u), bridge_fault_frame_peek_long(a6 - 4u),
+            bridge_fault_frame_peek_long(a6), bridge_fault_frame_peek_long(a6 + 4u),
+            bridge_fault_frame_peek_long(a6 + 8u), bridge_fault_frame_peek_long(a6 + 12u),
+            bridge_fault_frame_peek_long(a6 + 16u), bridge_fault_frame_peek_long(a6 + 20u),
+            bridge_fault_frame_peek_long(a7), bridge_fault_frame_peek_long(a7 + 4u),
+            bridge_fault_frame_peek_long(a7 + 8u), bridge_fault_frame_peek_long(a7 + 12u),
+            bridge_fault_frame_peek_long(argp - 16u), bridge_fault_frame_peek_long(argp - 12u),
+            bridge_fault_frame_peek_long(argp - 8u), bridge_fault_frame_peek_long(argp - 4u),
+            bridge_fault_frame_peek_long(argp), bridge_fault_frame_peek_long(argp + 4u),
+            bridge_fault_frame_peek_long(argp + 8u), bridge_fault_frame_peek_long(argp + 12u));
+}
+
 static void bridge_trace_codehost_ring(unsigned long n)
 {
     if (!env_truthy("B2_JIT_TRACE_CODEHOST_RING", false))
@@ -336,6 +379,7 @@ static void bridge_trace_fault_words(int prb)
         for (unsigned wi = 0; wi < 12; wi++)
             fprintf(stderr, " w%u=%04x", wi, (unsigned)Uae2026JitLastCodeHostWords[wi]);
         fprintf(stderr, "\n");
+        bridge_trace_codehost_frame(n);
         bridge_trace_codehost_ring(n);
     }
     if (regs.pc_p) {

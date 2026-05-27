@@ -24392,7 +24392,15 @@ void REGPARAM2 op_4e90_0_comp_ff(uae_u32 opcode) /* JSR */
 {	int srca = dodgy ? scratchie++ : srcreg + 8;
 	if (dodgy)
 		mov_l_rr(srca, srcreg + 8);
-{	uae_u32 retadd=start_pc+((char *)comp_pc_p-(char *)start_pc_p)+m68k_pc_offset;
+{	uae_u32 op_pc=start_pc+((char *)comp_pc_p-(char *)start_pc_p)+m68k_pc_offset_thisinst;
+	if (jit_allow_ram_dispatch_env() && op_pc == 0x00008334u) {
+		prepare_for_call_1();
+		prepare_for_call_2();
+		compemu_raw_mov_l_ri(REG_PAR1,op_pc);
+		compemu_raw_mov_l_ri(REG_PAR2,opcode & 0xffffu);
+		compemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode);
+	}
+	uae_u32 retadd=start_pc+((char *)comp_pc_p-(char *)start_pc_p)+m68k_pc_offset;
 	int ret=scratchie++;
 	mov_l_ri(ret,retadd);
 	sub_l_ri(SP_REG,4);
@@ -69526,7 +69534,15 @@ void REGPARAM2 op_4e90_0_comp_nf(uae_u32 opcode) /* JSR */
 {	int srca = dodgy ? scratchie++ : srcreg + 8;
 	if (dodgy)
 		mov_l_rr(srca, srcreg + 8);
-{	uae_u32 retadd=start_pc+((char *)comp_pc_p-(char *)start_pc_p)+m68k_pc_offset;
+{	uae_u32 op_pc=start_pc+((char *)comp_pc_p-(char *)start_pc_p)+m68k_pc_offset_thisinst;
+	if (jit_allow_ram_dispatch_env() && op_pc == 0x00008334u) {
+		prepare_for_call_1();
+		prepare_for_call_2();
+		compemu_raw_mov_l_ri(REG_PAR1,op_pc);
+		compemu_raw_mov_l_ri(REG_PAR2,opcode & 0xffffu);
+		compemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode);
+	}
+	uae_u32 retadd=start_pc+((char *)comp_pc_p-(char *)start_pc_p)+m68k_pc_offset;
 	int ret=scratchie++;
 	mov_l_ri(ret,retadd);
 	sub_l_ri(SP_REG,4);

@@ -2174,6 +2174,14 @@ gen_opcode (unsigned int opcode)
 	isjump;
 	genamode (curi->smode, "srcreg", curi->size, "src", GENA_GETV_NO_FETCH, GENA_MOVEM_DO_INC);
 	start_brace();
+	comprintf("\tuae_u32 op_pc=start_pc+((char *)comp_pc_p-(char *)start_pc_p)+m68k_pc_offset_thisinst;\n");
+	comprintf("\tif (jit_allow_ram_dispatch_env() && op_pc == 0x00008334u) {\n"
+		  "\t\tprepare_for_call_1();\n"
+		  "\t\tprepare_for_call_2();\n"
+		  "\t\tcompemu_raw_mov_l_ri(REG_PAR1,op_pc);\n"
+		  "\t\tcompemu_raw_mov_l_ri(REG_PAR2,opcode & 0xffffu);\n"
+		  "\t\tcompemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode);\n"
+		  "\t}\n");
 	comprintf("\tuae_u32 retadd=start_pc+((char *)comp_pc_p-(char *)start_pc_p)+m68k_pc_offset;\n");
 	comprintf("\tint ret=scratchie++;\n"
 		  "\tmov_l_ri(ret,retadd);\n"

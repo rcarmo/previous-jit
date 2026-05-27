@@ -244,8 +244,8 @@ static inline bool legacy_call_push_txn_opcode(uae_u32 pc, uae_u16 opcode)
 	   target code fetch can fault. Keep JSR transaction coverage narrow until
 	   all addressing modes have producer-side target metadata; a broad JSR(An)
 	   rule rolls back unrelated early boot probes and stalls before user space. */
-	return (pc == 0x0000003eu || pc == 0x00003c26u || pc == 0x0000c52cu ||
-		pc == 0x05027706u) &&
+	return (pc == 0x0000003eu || pc == 0x00003c26u || pc == 0x00008334u ||
+		pc == 0x0000c52cu || pc == 0x05027706u) &&
 		(opcode & 0xffc0u) == 0x4e80u;
 }
 

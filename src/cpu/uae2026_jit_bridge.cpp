@@ -213,6 +213,83 @@ static unsigned long env_ulong(const char *name, unsigned long fallback)
     return strtoul(value, nullptr, 0);
 }
 
+static bool bridge_trace_fault_words_in_range(uae_u32 value, uae_u32 start, uae_u32 end)
+{
+    return value >= start && value <= end;
+}
+
+static void bridge_trace_fault_words_words(const char *tag, unsigned long n, uae_u32 base)
+{
+    fprintf(stderr, "JIT_FAULT_%s n=%lu base=%08x", tag, n, (unsigned)base);
+    for (unsigned wi = 0; wi < 12; wi++) {
+        const uae_u32 addr = base + wi * 2u;
+        fprintf(stderr, " w%u=%04x", wi,
+                bridge_live_readable(addr, 2) ? (unsigned)Uae2026JitLiveGetWord(addr) : 0xffffu);
+    }
+    fprintf(stderr, "\n");
+}
+
+static void bridge_trace_fault_words(int prb)
+{
+    static int initialized = 0;
+    static bool enabled = false;
+    static bool range_enabled = false;
+    static uae_u32 start = 0;
+    static uae_u32 end = 0xffffffffu;
+    static unsigned long limit = 128;
+    static unsigned long count = 0;
+
+    if (!initialized) {
+        enabled = env_truthy("B2_JIT_TRACE_FAULT_WORDS", false);
+        const char *start_env = getenv("B2_JIT_TRACE_FAULT_WORDS_START");
+        const char *end_env = getenv("B2_JIT_TRACE_FAULT_WORDS_END");
+        if (start_env && *start_env) {
+            start = (uae_u32)strtoul(start_env, nullptr, 0);
+            end = (end_env && *end_env) ? (uae_u32)strtoul(end_env, nullptr, 0) : start;
+            range_enabled = true;
+            enabled = true;
+        }
+        limit = env_ulong("B2_JIT_TRACE_FAULT_WORDS_LIMIT", 128);
+        initialized = 1;
+    }
+    if (!enabled || count >= limit)
+        return;
+
+    const uae_u32 pc = m68k_getpc();
+    const uae_u32 fault_pc = regs.fault_pc;
+    const uae_u32 fault_addr = regs.mmu_fault_addr;
+    if (range_enabled &&
+        !bridge_trace_fault_words_in_range(pc, start, end) &&
+        !bridge_trace_fault_words_in_range(fault_pc, start, end) &&
+        !bridge_trace_fault_words_in_range(fault_addr, start, end))
+        return;
+
+    const unsigned long n = count++;
+    fprintf(stderr,
+            "JIT_FAULT_WORDS n=%lu prb=%d pc=%08x fault_pc=%08x addr=%08x sr=%04x sfc=%u dfc=%u mmu_opcode=%04x mmu_restart=%d pc_p=%p oldp=%p "
+            "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
+            "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
+            n, prb, (unsigned)pc, (unsigned)fault_pc, (unsigned)fault_addr,
+            (unsigned)regs.sr, (unsigned)regs.sfc, (unsigned)regs.dfc,
+            (unsigned)(uae_u16)mmu_opcode, (int)mmu_restart,
+            (void *)regs.pc_p, (void *)regs.pc_oldp,
+            (unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[2], (unsigned)regs.regs[3],
+            (unsigned)regs.regs[4], (unsigned)regs.regs[5], (unsigned)regs.regs[6], (unsigned)regs.regs[7],
+            (unsigned)regs.regs[8], (unsigned)regs.regs[9], (unsigned)regs.regs[10], (unsigned)regs.regs[11],
+            (unsigned)regs.regs[12], (unsigned)regs.regs[13], (unsigned)regs.regs[14], (unsigned)regs.regs[15]);
+    bridge_trace_fault_words_words("LIVE_PC", n, pc);
+    if (fault_pc != pc)
+        bridge_trace_fault_words_words("LIVE_FPC", n, fault_pc);
+    if (fault_addr != pc && fault_addr != fault_pc)
+        bridge_trace_fault_words_words("LIVE_ADDR", n, fault_addr);
+    if (regs.pc_p) {
+        fprintf(stderr, "JIT_FAULT_SHADOW_PCP n=%lu", n);
+        for (unsigned wi = 0; wi < 12; wi++)
+            fprintf(stderr, " w%u=%04x", wi, (unsigned)bridge_shadow_host_peek_word(regs.pc_p + wi * 2));
+        fprintf(stderr, "\n");
+    }
+}
+
 static void bridge_trace_lowpc_resume(const char *phase, int prb)
 {
     if (!env_truthy("B2_JIT_TRACE_LOWPC_RESUME", false) || prb != 2 || regs.fault_pc >= 0x00020000u)
@@ -967,6 +1044,7 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                         bridge_live_peek_word(sp + 6), bridge_live_peek_long(sp + 8),
                         bridge_live_peek_long(sp + 12), (unsigned)regs.spcflags);
             }
+            bridge_trace_fault_words(prb);
             exc_log_count++;
             if (prb == 2 && regs.fault_pc < 0x00020000u) {
                 Uae2026JitLowpcFaultSeq++;

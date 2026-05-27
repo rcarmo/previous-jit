@@ -30,6 +30,12 @@ uae_u32 Uae2026JitLastLowpcFaultOpcode = 0;
 uae_u32 Uae2026JitLastCodeHostPc = 0;
 uae_u32 Uae2026JitLastCodeHostPhys = 0xffffffffu;
 uae_u32 Uae2026JitLastCodeHostWords[12] = { 0 };
+uae_u32 Uae2026JitCodeHostRingSeq = 0;
+uae_u32 Uae2026JitCodeHostRingPc[64] = { 0 };
+uae_u32 Uae2026JitCodeHostRingPhys[64] = { 0 };
+uae_u32 Uae2026JitCodeHostRingWords[64][12] = { { 0 } };
+uae_u32 Uae2026JitCodeHostRingRegs[64][16] = { { 0 } };
+uae_u32 Uae2026JitCodeHostRingSr[64] = { 0 };
 struct flag_struct Uae2026JitLastFlags = { 0, 0 };
 }
 
@@ -78,6 +84,16 @@ static inline uae_u16 jit_fetch_opcode_via_code_host(uae_u32 pc)
 	for (unsigned wi = 0; wi < 12; wi++) {
 		uae_u8 *p = host + wi * 2;
 		Uae2026JitLastCodeHostWords[wi] = ((uae_u16)p[0] << 8) | p[1];
+	}
+	{
+		const unsigned slot = Uae2026JitCodeHostRingSeq++ & 63u;
+		Uae2026JitCodeHostRingPc[slot] = pc;
+		Uae2026JitCodeHostRingPhys[slot] = Uae2026JitLastCodeHostPhys;
+		Uae2026JitCodeHostRingSr[slot] = regs.sr;
+		for (unsigned wi = 0; wi < 12; wi++)
+			Uae2026JitCodeHostRingWords[slot][wi] = Uae2026JitLastCodeHostWords[wi];
+		for (unsigned ri = 0; ri < 16; ri++)
+			Uae2026JitCodeHostRingRegs[slot][ri] = regs.regs[ri];
 	}
 	return (uae_u16)Uae2026JitLastCodeHostWords[0];
 }

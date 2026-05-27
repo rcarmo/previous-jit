@@ -65,6 +65,12 @@ extern "C" uae_u32 Uae2026JitLastLowpcFaultOpcode;
 extern "C" uae_u32 Uae2026JitLastCodeHostPc;
 extern "C" uae_u32 Uae2026JitLastCodeHostPhys;
 extern "C" uae_u32 Uae2026JitLastCodeHostWords[12];
+extern "C" uae_u32 Uae2026JitCodeHostRingSeq;
+extern "C" uae_u32 Uae2026JitCodeHostRingPc[64];
+extern "C" uae_u32 Uae2026JitCodeHostRingPhys[64];
+extern "C" uae_u32 Uae2026JitCodeHostRingWords[64][12];
+extern "C" uae_u32 Uae2026JitCodeHostRingRegs[64][16];
+extern "C" uae_u32 Uae2026JitCodeHostRingSr[64];
 extern "C" uae_u32 Uae2026JitLastExceptionSp;
 extern "C" struct flag_struct Uae2026JitLastFlags;
 
@@ -232,6 +238,44 @@ static void bridge_trace_fault_words_words(const char *tag, unsigned long n, uae
     fprintf(stderr, "\n");
 }
 
+static void bridge_trace_codehost_ring(unsigned long n)
+{
+    if (!env_truthy("B2_JIT_TRACE_CODEHOST_RING", false))
+        return;
+    const uae_u32 seq = Uae2026JitCodeHostRingSeq;
+    const uae_u32 valid = seq < 64u ? seq : 64u;
+    for (uae_u32 oi = 0; oi < valid; oi++) {
+        const uae_u32 slot = (seq - valid + oi) & 63u;
+        fprintf(stderr,
+                "JIT_FAULT_CODEHOST_RING n=%lu i=%u slot=%u pc=%08x phys=%08x sr=%04x "
+                "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
+                "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x",
+                n, (unsigned)oi, (unsigned)slot,
+                (unsigned)Uae2026JitCodeHostRingPc[slot],
+                (unsigned)Uae2026JitCodeHostRingPhys[slot],
+                (unsigned)Uae2026JitCodeHostRingSr[slot],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][0],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][1],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][2],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][3],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][4],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][5],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][6],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][7],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][8],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][9],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][10],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][11],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][12],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][13],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][14],
+                (unsigned)Uae2026JitCodeHostRingRegs[slot][15]);
+        for (unsigned wi = 0; wi < 12; wi++)
+            fprintf(stderr, " w%u=%04x", wi, (unsigned)Uae2026JitCodeHostRingWords[slot][wi]);
+        fprintf(stderr, "\n");
+    }
+}
+
 static void bridge_trace_fault_words(int prb)
 {
     static int initialized = 0;
@@ -292,6 +336,7 @@ static void bridge_trace_fault_words(int prb)
         for (unsigned wi = 0; wi < 12; wi++)
             fprintf(stderr, " w%u=%04x", wi, (unsigned)Uae2026JitLastCodeHostWords[wi]);
         fprintf(stderr, "\n");
+        bridge_trace_codehost_ring(n);
     }
     if (regs.pc_p) {
         fprintf(stderr, "JIT_FAULT_SHADOW_PCP n=%lu", n);

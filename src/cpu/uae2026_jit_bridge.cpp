@@ -62,6 +62,9 @@ extern "C" uae_u32 Uae2026JitLowpcFaultSeq;
 extern "C" uae_u32 Uae2026JitLastLowpcFaultPc;
 extern "C" uae_u32 Uae2026JitLastLowpcFaultAddr;
 extern "C" uae_u32 Uae2026JitLastLowpcFaultOpcode;
+extern "C" uae_u32 Uae2026JitLastCodeHostPc;
+extern "C" uae_u32 Uae2026JitLastCodeHostPhys;
+extern "C" uae_u32 Uae2026JitLastCodeHostWords[12];
 extern "C" uae_u32 Uae2026JitLastExceptionSp;
 extern "C" struct flag_struct Uae2026JitLastFlags;
 
@@ -282,6 +285,14 @@ static void bridge_trace_fault_words(int prb)
         bridge_trace_fault_words_words("LIVE_FPC", n, fault_pc);
     if (fault_addr != pc && fault_addr != fault_pc)
         bridge_trace_fault_words_words("LIVE_ADDR", n, fault_addr);
+    if (Uae2026JitLastCodeHostPc) {
+        fprintf(stderr, "JIT_FAULT_CODEHOST_LAST n=%lu pc=%08x phys=%08x match=%d",
+                n, (unsigned)Uae2026JitLastCodeHostPc, (unsigned)Uae2026JitLastCodeHostPhys,
+                (int)(Uae2026JitLastCodeHostPc == pc || Uae2026JitLastCodeHostPc == fault_pc));
+        for (unsigned wi = 0; wi < 12; wi++)
+            fprintf(stderr, " w%u=%04x", wi, (unsigned)Uae2026JitLastCodeHostWords[wi]);
+        fprintf(stderr, "\n");
+    }
     if (regs.pc_p) {
         fprintf(stderr, "JIT_FAULT_SHADOW_PCP n=%lu", n);
         for (unsigned wi = 0; wi < 12; wi++)

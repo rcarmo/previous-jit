@@ -27,6 +27,9 @@ uae_u32 Uae2026JitLowpcFaultSeq = 0;
 uae_u32 Uae2026JitLastLowpcFaultPc = 0;
 uae_u32 Uae2026JitLastLowpcFaultAddr = 0;
 uae_u32 Uae2026JitLastLowpcFaultOpcode = 0;
+uae_u32 Uae2026JitLastCodeHostPc = 0;
+uae_u32 Uae2026JitLastCodeHostPhys = 0xffffffffu;
+uae_u32 Uae2026JitLastCodeHostWords[12] = { 0 };
 struct flag_struct Uae2026JitLastFlags = { 0, 0 };
 }
 
@@ -69,7 +72,14 @@ static inline uae_u16 jit_fetch_opcode_via_code_host(uae_u32 pc)
 	uae_u8 *host = (uae_u8 *)Uae2026JitMmuXlateCodeHost(pc);
 	regs.pc_p = host;
 	regs.pc_oldp = host;
-	return ((uae_u16)host[0] << 8) | host[1];
+	Uae2026JitLastCodeHostPc = pc;
+	Uae2026JitLastCodeHostPhys = (jit_MEMBaseDiff && (uintptr_t)host >= jit_MEMBaseDiff)
+		? (uae_u32)((uintptr_t)host - jit_MEMBaseDiff) : 0xffffffffu;
+	for (unsigned wi = 0; wi < 12; wi++) {
+		uae_u8 *p = host + wi * 2;
+		Uae2026JitLastCodeHostWords[wi] = ((uae_u16)p[0] << 8) | p[1];
+	}
+	return (uae_u16)Uae2026JitLastCodeHostWords[0];
 }
 
 static inline uae_u32 jit_fetch_opcode_for_current_pc(uae_u32 pc)

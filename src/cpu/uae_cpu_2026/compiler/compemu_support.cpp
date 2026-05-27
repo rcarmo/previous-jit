@@ -1158,10 +1158,13 @@ void m68k_do_compile_execute(void)
 								(unsigned)regs.intmask, (unsigned)regs.spcflags);
 							for (int _wi = 0; _wi < 12; _wi++)
 								fprintf(stderr, " w%d=%04x", _wi, (unsigned)Uae2026JitLiveGetWord(_pc + (uae_u32)(_wi * 2)));
-							fprintf(stderr, " d0=%08x d1=%08x d2=%08x a0=%08x a1=%08x a2=%08x a7=%08x\n",
-								(unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[2],
-								(unsigned)regs.regs[8], (unsigned)regs.regs[9], (unsigned)regs.regs[10],
-								(unsigned)regs.regs[15]);
+							fprintf(stderr,
+								" d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x"
+								" a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
+								(unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[2], (unsigned)regs.regs[3],
+								(unsigned)regs.regs[4], (unsigned)regs.regs[5], (unsigned)regs.regs[6], (unsigned)regs.regs[7],
+								(unsigned)regs.regs[8], (unsigned)regs.regs[9], (unsigned)regs.regs[10], (unsigned)regs.regs[11],
+								(unsigned)regs.regs[12], (unsigned)regs.regs[13], (unsigned)regs.regs[14], (unsigned)regs.regs[15]);
 						}
 					}
 					static int dump_once = 0;

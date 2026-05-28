@@ -115,6 +115,33 @@ extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr);
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
 extern uint32 InterruptFlags;
 extern uintptr jit_MEMBaseDiff;
+
+static inline void jit_poll_interrupt_pins_for_dispatch(void)
+{
+#if defined(CPU_AARCH64)
+	/* Previous's interpreter polls the interrupt pins after every instruction,
+	 * independently of SPCFLAG_INT already being set.  RAM/MMU JIT dispatch must
+	 * do the same at native block boundaries because device handlers update the
+	 * interrupt status/mask registers via set_interrupt(); they do not necessarily
+	 * set spcflags themselves. */
+	if (!jit_allow_ram_dispatch_env())
+		return;
+	static int lastintr = 0;
+	const int intr = intlev();
+	if (intr > regs.intmask || (intr == 7 && intr > lastintr)) {
+		static unsigned long trace_count = 0;
+		regs.spcflags |= 0x008u; /* Previous SPCFLAG_INT */
+		const char *env = getenv("B2_JIT_TRACE_DISPATCH_INT");
+		if (env && *env && strcmp(env, "0") != 0 && trace_count < 256) {
+			fprintf(stderr,
+				"JIT_DISPATCH_INT %lu pc=%08x intr=%d intmask=%u spc=%08x\n",
+				++trace_count, (unsigned)m68k_getpc(), intr,
+				(unsigned)regs.intmask, (unsigned)regs.spcflags);
+		}
+	}
+	lastintr = intr;
+#endif
+}
 extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitLivePutLong(uae_u32 addr, uae_u32 value);
@@ -1223,6 +1250,7 @@ void m68k_do_compile_execute(void)
 			}
 		}
 #endif
+		jit_poll_interrupt_pins_for_dispatch();
 		if (SPCFLAGS_TEST(SPCFLAG_ALL)) {
 			/* Sync M68K SR from JIT flags before handling interrupts.
 			   The compiled code may have changed intmask via MOVE to SR

@@ -1,8 +1,13 @@
 # UAE2026 JIT MMU Strategy
 
-This document is the implementation contract for making `PREVIOUS_UAE2026_JIT_RAM=1`
+This document is the implementation strategy for making `PREVIOUS_UAE2026_JIT_RAM=1`
 semantically match Previous's 68040 MMU interpreter. It replaces the current pattern of
 one-off fixes for each newly exposed low-PC seam.
+
+The top-down correctness contract is maintained separately in
+[`uae2026-jit-correctness-contract.md`](uae2026-jit-correctness-contract.md). Use that
+contract to judge whether a proposed JIT/MMU/timer fix is valid before treating a moved
+boot frontier as progress.
 
 ## Problem statement
 

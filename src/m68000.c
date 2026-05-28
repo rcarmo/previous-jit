@@ -343,9 +343,39 @@ void Uae2026JitCpuCheckTicks(int cycles)
 			trace_count, m68k_getpc(), cycles, PendingInterrupt.type,
 			(long long)PendingInterrupt.time, regs.spcflags, intlev(), regs.intmask);
 
+	static int trace_tick_handler = -1;
+	static unsigned long trace_tick_handler_count = 0;
+	static unsigned long trace_tick_handler_limit = 0;
+	if (trace_tick_handler < 0) {
+		const char *env = getenv("B2_JIT_TRACE_TICK_HANDLER");
+		trace_tick_handler = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+		const char *limit_env = getenv("B2_JIT_TRACE_TICK_HANDLER_LIMIT");
+		trace_tick_handler_limit = (limit_env && *limit_env) ? strtoul(limit_env, NULL, 0) : 128;
+	}
+	int tick_handler_calls = 0;
+	const int trace_this_tick_handler = trace_tick_handler &&
+		trace_tick_handler_count < trace_tick_handler_limit &&
+		PendingInterrupt.time <= 0 && PendingInterrupt.pFunction &&
+		((regs.spcflags & SPCFLAG_STOP) == 0);
+	if (trace_this_tick_handler) {
+		fprintf(stderr,
+			"JITTICK_HANDLER_PRE %lu pc=%08x cycles=%d pending_type=%d pending_time=%lld pending_fn=%p spc=%08x pending_autovec=%08x intmask=%d\n",
+			++trace_tick_handler_count, m68k_getpc(), cycles, PendingInterrupt.type,
+			(long long)PendingInterrupt.time, (void *)PendingInterrupt.pFunction,
+			regs.spcflags, pendingInterrupts, regs.intmask);
+	}
 	while (PendingInterrupt.time <= 0 && PendingInterrupt.pFunction &&
 		((regs.spcflags & SPCFLAG_STOP) == 0)) {
+		tick_handler_calls++;
 		CALL_VAR(PendingInterrupt.pFunction);
+	}
+	if (trace_this_tick_handler) {
+		fprintf(stderr,
+			"JITTICK_HANDLER_POST %lu pc=%08x calls=%d pending_type=%d pending_time=%lld pending_fn=%p spc=%08x pending_autovec=%08x intmask=%d\n",
+			trace_tick_handler_count, m68k_getpc(), tick_handler_calls,
+			PendingInterrupt.type, (long long)PendingInterrupt.time,
+			(void *)PendingInterrupt.pFunction, regs.spcflags, pendingInterrupts,
+			regs.intmask);
 	}
 
 	{

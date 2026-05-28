@@ -449,3 +449,63 @@ sets/handles the pending interrupt without relying on a local opcode patch.
 
 Full desktop/stability validation is intentionally not run here because it would
 exceed the 120s cap; ask for explicit approval before doing that validation.
+
+## Expanded missing-case audit matrix
+
+This matrix inventories the known RAM/MMU JIT correctness case families from the
+source, repository docs, notes, and recent fixes.  It is intentionally broader
+than the current interrupt frontier.  Each row maps a family to the contract
+clause it can violate, classifies current implementation status, and defines a
+bounded proof target.  A long desktop/stability run is not a discriminator for
+this audit.
+
+Status vocabulary:
+
+- **Proven exact** — source path directly uses the interpreter/MMU implementation
+  or already has a matching short discriminator.
+- **Guarded/exact fallback** — native lowering is avoided in RAM/MMU mode, usually
+  by an interpreter barrier or a `compstbl` fallback.
+- **Transaction-backed** — generated/fallback code publishes explicit side-effect
+  metadata that the bridge can resolve after an MMU longjmp.
+- **Heuristic compatibility shim** — the bridge infers state from opcode windows,
+  fault addresses, or known PCs; keep only until producer metadata replaces it.
+- **Unaudited gap** — no static proof or bounded discriminator currently covers
+  the whole family.
+
+| Case family | Contract clause(s) | Current status | Rationale / current source of truth | ≤120s discriminator or static proof target |
+| --- | --- | --- | --- | --- |
+| Restart snapshot before RAM/MMU helpers | 1, 4 | **Guarded/exact fallback**, partly proven | `Uae2026JitPublishFallbackState()` and code-fetch publication record `fault_pc`, `Uae2026JitLastInstructionPc`, `SR`, `A7`, flags, `mmu_restart`, and `mmu_opcode`; earlier fixes also full-flush live state and publish flags before helper faults. | Static proof: enumerate every call to `Uae2026JitMmuFetchOpcode`, `Uae2026JitMmuXlateCodeHost`, and RAM/MMU bank helpers and verify publication immediately before faultable calls.  Use `git grep`/source review only unless a gap is found. |
+| Code-space vs data-space translation | 2 | **Guarded/exact fallback**, with scoped code-host ranges | Data effective-address bank translation uses `Uae2026JitMmuXlateData()`.  Dispatch/branch/return materialization uses `Uae2026JitMmuXlateCodeHost()`.  Confirmed non-identity high-user and low33 post-RTE fetches use code-host bytes; broader low-virtual broadening was tested and reverted after regressions. | Static proof: list the current code-host gating predicates (`05000000..07ffffff`, low33 post-RTE, env-only low12b/low83/low7f) and confirm no normal data EA path calls the code-host helper. |
+| CPU-space accesses, `MOVES`, SFC/DFC | 2, 4 | **Guarded/exact fallback** | Vendored `MOVES` compiler entries are `NULL`/failure and therefore run through the interpreter path; the old RAM direct `MOVES.* reg,(An)+` shortcut was removed.  `mmu_bus_error()` has MOVES-specific function-code SSW handling. | Static proof: check `compstbl.cpp` `MOVES` entries remain `NULL`; run focused `PREVIOUS_OPCODE_FILTER='moves_|movec_sfc|movec_dfc' ./tools/uae2026-opcode-harness.sh` only if source changes touch this family. |
+| Auto-increment/predecrement memory EAs (`Aipi`/`Apdi`) | 1, 3, 4 | **Guarded/exact fallback**, plus **heuristic compatibility shim** | RAM/MMU mode forces any opcode with source/destination `Aipi`/`Apdi` through an interpreter barrier.  The bridge still contains conservative postincrement/predecrement restoration for helper/fallback escapes and known MOVES signatures, gated by restartability where needed. | Static proof: verify `jit_force_interpreter_barrier_opcode()` still catches all `table68k[op].smode/dmode == Aipi/Apdi`.  If changing this, add targeted opcode vectors for restartable postincrement read and non-restartable predecrement write. |
+| BSR return-address push before target instruction fetch | 3, 4 | **Transaction-backed**, but one **heuristic compatibility shim** remains | Generated/fallback BSR paths publish `call_push` metadata and fallback BSR target metadata.  The historical `00003372/00003374 -> 00012b04` seam still uses the legacy bridge scan (`JIT_CALL_TARGET_ROLLBACK`) rather than `JIT_CALL_TARGET_ROLLBACK_TXN`. | Static proof: preserve the legacy scan until a bounded trace shows `JIT_CALL_TARGET_ROLLBACK_TXN` for the historical seam.  Existing `bsr_word_call_return` vector proves normal call/return, not target-fetch-fault rollback. |
+| JSR return-address push before target instruction fetch | 3, 4 | **Transaction-backed for selected seams**, otherwise **unaudited gap** | JSR `call_push` metadata is currently narrow (`0000003e`, `00003c26`, `00008334`, `0000c52c`, `05027706`) because broad JSR rollback stalled earlier boot probes.  Only the confirmed `05027706` target-fetch seam uses canonicalized target-PC framing. | Static proof: keep the allowlist explicit.  Next proof target is a synthetic or boot-short discriminator that forces a `JSR (An)` target-fetch fault and verifies whether rollback vs target-PC canonicalization matches the interpreter. |
+| RTS/RTR return target fetch after stack pop | 3, 4 | **Guarded/exact fallback** and **transaction-backed** | Return-family opcodes are interpreter barriers in RAM/MMU dispatch.  Fallback paths publish `return_pop` metadata for `RTS`/`RTR` so target-fetch faults can restore A7 from producer metadata rather than opcode-window guessing. | Static proof: verify `op == 0x4e75/0x4e77` remains in the RAM/MMU barrier list and fallback loops still call `Uae2026JitMmuTxnBeginReturnPopCurrentA7()`.  Add a focused return-target fault vector before native lowering. |
+| RTE SR/stack switch before return-code fetch | 1, 3, 4 | **Proven exact opcode path**, but native post-fault resume remains an **unaudited gap** | `jit_op_rte()` routes through `cpufunctbl[0x4e73]` after publishing fallback state.  Bridge-caught RTE/page-fault seams no longer auto-handoff unless `B2_JIT_RTE_FAULT_HANDOFF=1`, preserving native no-handoff for diagnosis. | Static proof: keep `RTE` on the RAM/MMU interpreter-barrier list.  Bounded discriminator target: short trace that catches `04001ae6 -> low user PC` and compares pre/post `Exception(2)` `SR/A7/USP/ISP/MSP`, frame format, and `pc_p` without running to desktop. |
+| MOVEM continuation frames and `MMU_SSW_CM` | 3, 4 | **Guarded/exact fallback**, partly proven | Bridge now preserves `MMU_SSW_CM` continuation EA instead of replacing it with `mmu_fault_addr`.  RAM direct MOVEM predecrement shortcut is default-off because it bypasses interpreter MOVEM restart/fixup bookkeeping.  Fast vectors cover normal MOVEM frame restore. | Static proof: keep `B2_JIT_RAM_DIRECT_MOVEM_PREDEC` default-off and verify `regs.mmu_effective_addr` is not overwritten when `MMU_SSW_CM` is set.  Future vector: MOVEM predecrement MMU write fault with continuation EA assertion. |
+| Non-restartable write faults and post-advance PC | 4 | **Heuristic compatibility shim** for known byte stores; generalized behavior is an **unaudited gap** | Confirmed `0500b6ae` and `0500bc98` byte-store seams advance `fault_pc` only when `mmu_restart == false`.  The later `0500b6b0` candidate was reverted because it was already the visible post-advance PC. | Bounded discriminator: parse a ≤120s fault-window run for non-restartable writes and assert no repeated same-PC replay for the two known seams; do not add new PC shims without an interpreter oracle for the exact store. |
+| ATC/MMU maintenance (`PTEST`, `PFLUSH`, `PMOVE`, `PLPA`, vendored `i_MMUOP`) | 5 | **Proven exact** | RAM/MMU dispatch forces vendored `i_MMUOP` exact.  This removed the repeated native `0501288e` stale/invalid retry fault where the interpreter could scan `00038000` successfully. | Static proof: verify `table68k[op].mnemo == i_MMUOP` remains a RAM/MMU barrier.  Regression discriminator: grep a capped fault-window run for `0501288e=0` only after touching this family. |
+| MOVEC/SR control-state changes and stale allocator state | 1, 6, 7 | **Guarded/exact fallback / block-ending barrier** | MOVEC helpers may update VBR/SFC/DFC and set `spcflags` in RAM mode; `jit_force_interpreter_barrier_opcode()` ends the block for `4e7a/4e7b`.  SR-write exacting was tested as a broad fix and reverted because it did not move the frontier. | Static proof: keep `MOVEC` block-ending barrier and focused `movec_vbr/sfc/dfc_roundtrip` vectors green.  Do not add a broad SR barrier unless a specific clause violation is proven. |
+| Trap/exception-frame construction before nested faults | 3, 4 | **Guarded/exact fallback**, but nested MMU frame-fault behavior is an **unaudited gap** | TRAP-family native generation generally falls back.  The transaction model still lists `trap_frame` as future work because frame pushes can themselves fault and must not be reconstructed from stale opcode windows. | Static proof: confirm TRAP/TRAPV/TRAPcc remain exact/fallback in RAM/MMU mode.  Future discriminator: synthetic TRAP with stack mapped to force frame write fault, comparing interpreter frame state. |
+| FPU/FMOVEM/MMU fixup interactions | 3, 4 | **Guarded/exact fallback / not current native RAM focus**, still high-risk | FPU opcodes mostly fallback unless JIT FPU is enabled; `mmufixup[]` is shared with FPU/MOVEM paths and can restore address registers after MMU faults.  The RAM/MMU audit has not proven native FPU+MMU restart behavior. | Static proof: keep `PREVIOUS_UAE2026_JIT_FPU` off for RAM/MMU correctness work unless explicitly testing FPU.  Future vector: FMOVEM memory fault only after integer MMU cases are clean. |
+| Timer/interrupt surfacing while native JIT remains active | 6, 7 | **Transaction-independent correctness fix with capped proof** | Dispatch-boundary polling now mirrors the interpreter's `intlev()` check and surfaces `SPCFLAG_INT` when pins are deliverable.  Capped discriminator emitted `JIT_DISPATCH_INT` twice. | Existing proof: `/workspace/tmp/previous-jit-discriminator-dispatch-int-20260528-083837`.  Future proof target: after any tick/dispatch change, rerun the same ≤120s `B2_JIT_TRACE_DISPATCH_INT=1` discriminator; do not use a desktop run as the first signal. |
+| Zero-PC/vector recovery under 040 MMU | 1, 4 | **Guarded diagnostic behavior** | Zero-PC vector recovery is disabled while the 040 MMU is enabled so PC=0 remains a symptom instead of masking bad RTE/page-fault resume state. | Static proof: verify zero-PC recovery remains disabled when `regs.mmu_enabled`; use `JIT_ZERO_PC` grep only as a symptom count, not as a recovery success metric. |
+
+### Prioritized next narrow audit targets
+
+1. **Replace the remaining BSR legacy scan with producer metadata only after a
+   bounded trace proves the historical `00003372/00003374 -> 00012b04` seam emits
+   `JIT_CALL_TARGET_ROLLBACK_TXN`.**  Until then, the scan is a documented
+   compatibility shim, not a correctness model.
+2. **Prove or narrow JSR target-fetch semantics beyond the current allowlist.**
+   The broad rule was already shown to perturb early boot, so the next step is a
+   synthetic target-fetch-fault vector or a short boot discriminator, not another
+   allowlist expansion by symptom.
+3. **Audit RTE/page-fault resume state statically and with a short trace.**  RTE
+   opcode semantics are exact; the missing proof is the post-`Exception(2)`
+   transition back to native dispatch (`SR`, active A7, `USP/ISP/MSP`, `pc_p`, and
+   frame-effective-address fields).
+4. **Generalize non-restartable write handling only from interpreter oracles.**
+   The two known byte-store PC shims are allowed because they match observed
+   interpreter post-advance behavior; adding new PCs without a matching oracle is
+   explicitly out of scope.

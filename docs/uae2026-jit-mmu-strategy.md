@@ -7,7 +7,9 @@ one-off fixes for each newly exposed low-PC seam.
 The top-down correctness contract is maintained separately in
 [`uae2026-jit-correctness-contract.md`](uae2026-jit-correctness-contract.md). Use that
 contract to judge whether a proposed JIT/MMU/timer fix is valid before treating a moved
-boot frontier as progress.
+boot frontier as progress.  The contract now also contains the expanded missing-case
+audit matrix; every new RAM/MMU change should identify which row it advances and which
+≤120s discriminator or static proof applies.
 
 ## Problem statement
 
@@ -230,6 +232,20 @@ On MMU longjmp:
    - MOVEM predecrement MMU fault
 7. **Only then revisit optimization/native lowering** for the remaining handoff-disabled native
    RTE-resume divergence.
+
+## Current audit priority after the expanded missing-case review
+
+The expanded matrix in the correctness contract changes the near-term priority
+from per-PC frontier chasing to replacing or proving the remaining shims:
+
+1. Keep the historical BSR rollback scan only until producer metadata covers the
+   `00003372/00003374 -> 00012b04` target-fetch fault in a bounded trace.
+2. Prove JSR target-fetch behavior beyond the current allowlist with a synthetic
+   target-fetch-fault discriminator before broadening native transaction policy.
+3. Audit post-RTE/page-fault resume state (`SR`, active A7, `USP/ISP/MSP`, frame
+   fields, and `pc_p`) separately from exact RTE opcode execution.
+4. Treat non-restartable write PC advancement as interpreter-oracle data, not a
+   pattern to generalize from local symptoms.
 
 ## Current frontier after the low-user JSR transaction checkpoint
 

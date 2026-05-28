@@ -509,3 +509,42 @@ Status vocabulary:
    The two known byte-store PC shims are allowed because they match observed
    interpreter post-advance behavior; adding new PCs without a matching oracle is
    explicitly out of scope.
+
+### Bounded proof 1: historical BSR target-fetch seam
+
+- Contract clauses: 3 and 4, call-side side effects and 68040 exception-frame
+  restart equivalence.
+- Question: does the historical shifted-PC seam
+  `00003372/00003374 -> 00012b04` now use explicit `call_push` transaction
+  metadata (`JIT_CALL_TARGET_ROLLBACK_TXN`) instead of the legacy bridge scan?
+- Static source proof:
+  - `bridge_restore_call_target_fault_side_effects()` calls
+    `bridge_rollback_mmu_txn()` before the legacy BSR opcode-window scan.
+  - Therefore, if the historical seam has live producer metadata, the first
+    bridge signal must be `JIT_CALL_TARGET_ROLLBACK_TXN`; falling through to
+    `JIT_CALL_TARGET_ROLLBACK` means no usable transaction was active for that
+    bridge catch.
+  - Current generated/fallback BSR producer hooks exist, but this proof only
+    covers whether they reach the historical shifted-PC catch.
+- Log proof from existing bounded/diagnostic artifacts:
+  - Older traces that hit the historical catch still show the legacy scan, e.g.
+    `/workspace/tmp/previous-jit-pchit01003300-ram-20260517-231928` and
+    `/workspace/tmp/previous-jit-native-rte-catch64-20260523-024641` contain
+    `JIT_CALL_TARGET_ROLLBACK fault_pc=00003372 op_pc=00003374 op=61ff
+    addr=00012b04 sp=03ffffc8`.
+  - The newer long no-handoff trace
+    `/workspace/tmp/previous-jit-jsr8334-native-nohandoff-ram-20260527-014652`
+    proves the trace hook was enabled because other seams emit
+    `JIT_CALL_TARGET_ROLLBACK_TXN` (`00008334`, `0000c52c`, `0000003e`,
+    `00003c26`), but it does not emit a TXN for the historical BSR seam.  That
+    run catches `00012b04` directly with `A7=03ffffc4`, so it no longer proves
+    producer metadata coverage for the old shifted `00003372/00003374` catch.
+  - A fresh capped run
+    `/workspace/tmp/previous-bsr-proof-current-20260528-191959` was stopped at
+    the 120s limit and did not reach `00003372`, `00003374`, `00012b04`, or any
+    call-target rollback line; it is recorded only as an inconclusive capped
+    attempt, not as coverage.
+- Conclusion: the historical BSR seam is **not proven transaction-covered**.
+  Keep the legacy BSR scan as a compatibility shim.  Do not remove it until a
+  bounded trace or synthetic target-fetch-fault discriminator shows
+  `JIT_CALL_TARGET_ROLLBACK_TXN` for the `00003372/00003374 -> 00012b04` shape.

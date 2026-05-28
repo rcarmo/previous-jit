@@ -239,7 +239,10 @@ The expanded matrix in the correctness contract changes the near-term priority
 from per-PC frontier chasing to replacing or proving the remaining shims:
 
 1. Keep the historical BSR rollback scan only until producer metadata covers the
-   `00003372/00003374 -> 00012b04` target-fetch fault in a bounded trace.
+   `00003372/00003374 -> 00012b04` target-fetch fault in a bounded trace.  The
+   2026-05-28 bounded proof in the correctness contract found no such TXN
+   coverage yet; existing traces either use the legacy scan for the shifted seam
+   or catch `00012b04` directly.
 2. Prove JSR target-fetch behavior beyond the current allowlist with a synthetic
    target-fetch-fault discriminator before broadening native transaction policy.
 3. Audit post-RTE/page-fault resume state (`SR`, active A7, `USP/ISP/MSP`, frame

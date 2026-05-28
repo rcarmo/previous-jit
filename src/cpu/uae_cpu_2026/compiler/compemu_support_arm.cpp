@@ -1138,6 +1138,13 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 		 table68k[op].dmode == Aipi || table68k[op].dmode == Apdi))
 		return true;
 
+	/* 68040 MMU exception handlers update ATC/page state with PFLUSH/PTEST and
+	   related MMU operations. Keep those exact in RAM/MMU dispatch mode so a
+	   bridge-delivered page fault is retried against the same ATC state the
+	   interpreter/oracle would have after the handler runs. */
+	if (jit_allow_ram_dispatch_env() && table68k[op].mnemo == i_MMUOP)
+		return true;
+
 	/* 68040 MMU exception handlers commonly return to low user virtual PCs via
 	   RTE/RTR/RTS-style control transfers. Keep return-family opcodes exact in
 	   RAM dispatch mode until branch/return target xlate is fully audited. */

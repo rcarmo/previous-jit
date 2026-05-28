@@ -243,8 +243,9 @@ from per-PC frontier chasing to replacing or proving the remaining shims:
    2026-05-28 bounded proof in the correctness contract found no such TXN
    coverage yet; existing traces either use the legacy scan for the shifted seam
    or catch `00012b04` directly.
-2. Prove JSR target-fetch behavior beyond the current allowlist with a synthetic
-   target-fetch-fault discriminator before broadening native transaction policy.
+2. Prove JSR target-fetch behavior beyond the current allowlist with the
+   synthetic target-fetch-fault discriminator designed in the correctness
+   contract before broadening native transaction policy.
 3. Audit post-RTE/page-fault resume state (`SR`, active A7, `USP/ISP/MSP`, frame
    fields, and `pc_p`) separately from exact RTE opcode execution.
 4. Treat non-restartable write PC advancement as interpreter-oracle data, not a

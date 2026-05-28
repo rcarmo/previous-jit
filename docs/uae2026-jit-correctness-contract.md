@@ -548,3 +548,49 @@ Status vocabulary:
   Keep the legacy BSR scan as a compatibility shim.  Do not remove it until a
   bounded trace or synthetic target-fetch-fault discriminator shows
   `JIT_CALL_TARGET_ROLLBACK_TXN` for the `00003372/00003374 -> 00012b04` shape.
+
+### Discriminator design: JSR target-fetch fault beyond the allowlist
+
+- Contract clauses: 3 and 4, call-side side effects and target instruction-fetch
+  access-error framing.
+- Goal: determine, from an interpreter oracle, whether a non-allowlisted
+  `JSR (An)` target-fetch fault should roll back the return-address push or
+  commit/canonicalize the fault at the target PC.  Do this before broadening the
+  current JSR transaction policy beyond the explicit boot-seam allowlist.
+- Why this must be synthetic/short: the real boot seams that motivated the
+  allowlist occur too late or too nondeterministically for reliable ≤120s proof,
+  and previous broad JSR rollback experiments perturbed early boot.
+- Proposed harness extension, default-off and opcode-test-only:
+  - Add a fault-output mode such as `B2_TEST_EXPECT_EXCEPTION=2`; the opcode
+    harness treats one expected access error as success and prints `FAULTDUMP:`
+    instead of requiring `REGDUMP:`.
+  - Add an opcode-test-only target-fetch fault trigger such as
+    `B2_TEST_CODE_FAULT_ADDR=<addr>`.  It must be ignored unless
+    `Uae2026OpcodeTestModeActive()` is true.  When the interpreter or JIT code
+    fetches that exact logical PC, it raises the same access-error path the 040
+    MMU would use after publishing normal code-fetch restart state.
+  - `FAULTDUMP` must include at least: vector, `fault_pc`,
+    `regs.instruction_pc`, `m68k_getpc()`, `mmu_fault_addr`, `mmu_opcode`,
+    `mmu_restart`, `mmu_ssw`, `SR`, active `A7`, `USP/ISP/MSP`, top stack longs,
+    and any `JIT_CALL_TARGET_*` line when running the JIT side.
+- Proposed vector, deliberately outside the current JSR allowlist:
+  - Test PC: `TEST=0x04008000`.
+  - Code: `JSR (A0); MOVEQ #$55,D7; STOP #$2700` (`4E90 7E55 ...`).
+  - Init: `A0=TEST+0x100`, `A7=0x04010000`, user SR first (`0010`), with a
+    supervisor SR variant (`2700`) only if stack-mode differences need proof.
+  - Fault trigger: `B2_TEST_CODE_FAULT_ADDR=TEST+0x100`.  The stack write to
+    `0x0400fffc` must remain mapped so the only forced fault is the target code
+    fetch after the return-address push.
+- Expected oracle comparison:
+  - Interpreter run records whether `A7` is still post-push, whether the return
+    address is visible at `A7`, and whether the frame is attributed to the JSR
+    opcode PC or the target PC.
+  - JIT run must match those fields.  If interpreter reports retry at the opcode
+    PC with pre-push `A7`, rollback is correct.  If interpreter reports target-PC
+    fault with post-push `A7`, broad rollback is wrong for that class and the JIT
+    needs explicit metadata/policy for commit/canonicalization.
+- Runtime budget: the opcode harness already runs one interpreter and one JIT
+  instance in seconds; the focused `PREVIOUS_OPCODE_FILTER='jsr_target_fault'`
+  discriminator should remain well under 120s, including any incremental build.
+- Policy: until this discriminator exists and passes, keep the current JSR
+  allowlist narrow and do not generalize from boot-frontier symptoms.

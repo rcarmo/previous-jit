@@ -277,14 +277,16 @@ static void bridge_trace_codehost_frame(unsigned long n)
     const uae_u32 a6 = regs.regs[14];
     const uae_u32 a7 = regs.regs[15];
     const uae_u32 caller_fp = bridge_fault_frame_peek_long(a6);
+    const uae_u32 caller2_fp = bridge_fault_frame_peek_long(caller_fp);
     const uae_u32 argp = bridge_fault_frame_peek_long(a6 + 12u);
     fprintf(stderr,
-            "JIT_FAULT_FRAME n=%lu pc=%08x fault_pc=%08x a6=%08x a7=%08x caller_fp=%08x argp=%08x arg_last=%08x "
+            "JIT_FAULT_FRAME n=%lu pc=%08x fault_pc=%08x a6=%08x a7=%08x caller_fp=%08x caller2_fp=%08x argp=%08x arg_last=%08x "
             "a6_m16=%08x a6_m12=%08x a6_m8=%08x a6_m4=%08x a6_p0=%08x a6_p4=%08x a6_p8=%08x a6_p12=%08x a6_p16=%08x a6_p20=%08x "
             "caller_p0=%08x caller_p4=%08x caller_p8=%08x caller_p12=%08x caller_p16=%08x caller_p20=%08x caller_p24=%08x "
+            "caller2_p0=%08x caller2_p4=%08x caller2_p8=%08x caller2_p12=%08x caller2_p16=%08x caller2_p20=%08x caller2_p24=%08x "
             "a7_p0=%08x a7_p4=%08x a7_p8=%08x a7_p12=%08x arg_m16=%08x arg_m12=%08x arg_m8=%08x arg_m4=%08x arg_p0=%08x arg_p4=%08x arg_p8=%08x arg_p12=%08x\n",
             n, (unsigned)m68k_getpc(), (unsigned)regs.fault_pc,
-            (unsigned)a6, (unsigned)a7, (unsigned)caller_fp, (unsigned)argp,
+            (unsigned)a6, (unsigned)a7, (unsigned)caller_fp, (unsigned)caller2_fp, (unsigned)argp,
             (unsigned)(argp >= 4 ? bridge_fault_frame_peek_long(argp - 4u) : 0),
             bridge_fault_frame_peek_long(a6 - 16u), bridge_fault_frame_peek_long(a6 - 12u),
             bridge_fault_frame_peek_long(a6 - 8u), bridge_fault_frame_peek_long(a6 - 4u),
@@ -295,6 +297,10 @@ static void bridge_trace_codehost_frame(unsigned long n)
             bridge_fault_frame_peek_long(caller_fp + 8u), bridge_fault_frame_peek_long(caller_fp + 12u),
             bridge_fault_frame_peek_long(caller_fp + 16u), bridge_fault_frame_peek_long(caller_fp + 20u),
             bridge_fault_frame_peek_long(caller_fp + 24u),
+            bridge_fault_frame_peek_long(caller2_fp), bridge_fault_frame_peek_long(caller2_fp + 4u),
+            bridge_fault_frame_peek_long(caller2_fp + 8u), bridge_fault_frame_peek_long(caller2_fp + 12u),
+            bridge_fault_frame_peek_long(caller2_fp + 16u), bridge_fault_frame_peek_long(caller2_fp + 20u),
+            bridge_fault_frame_peek_long(caller2_fp + 24u),
             bridge_fault_frame_peek_long(a7), bridge_fault_frame_peek_long(a7 + 4u),
             bridge_fault_frame_peek_long(a7 + 8u), bridge_fault_frame_peek_long(a7 + 12u),
             bridge_fault_frame_peek_long(argp - 16u), bridge_fault_frame_peek_long(argp - 12u),

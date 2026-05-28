@@ -113,6 +113,7 @@ extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr);
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
+extern uint32 InterruptFlags;
 extern uintptr jit_MEMBaseDiff;
 extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value);
@@ -1158,13 +1159,22 @@ void m68k_do_compile_execute(void)
 								(unsigned)regs.intmask, (unsigned)regs.spcflags);
 							for (int _wi = 0; _wi < 12; _wi++)
 								fprintf(stderr, " w%d=%04x", _wi, (unsigned)Uae2026JitLiveGetWord(_pc + (uae_u32)(_wi * 2)));
+							uae_u32 _poll_a4 = 0, _poll_d6 = 0, _poll_d5 = 0;
+							if (regs.regs[12] >= 0x04000000u && regs.regs[12] < 0x08000000u)
+								_poll_a4 = Uae2026JitLiveGetLong((uae_u32)regs.regs[12]);
+							if (regs.regs[6] >= 0x04000000u && regs.regs[6] < 0x08000000u)
+								_poll_d6 = Uae2026JitLiveGetLong((uae_u32)regs.regs[6]);
+							if (regs.regs[5] >= 0x04000000u && regs.regs[5] < 0x08000000u)
+								_poll_d5 = Uae2026JitLiveGetLong((uae_u32)regs.regs[5]);
 							fprintf(stderr,
 								" d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x"
-								" a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
+								" a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x"
+								" live=%08x poll_a4=%08x poll_d6=%08x poll_d5=%08x\n",
 								(unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[2], (unsigned)regs.regs[3],
 								(unsigned)regs.regs[4], (unsigned)regs.regs[5], (unsigned)regs.regs[6], (unsigned)regs.regs[7],
 								(unsigned)regs.regs[8], (unsigned)regs.regs[9], (unsigned)regs.regs[10], (unsigned)regs.regs[11],
-								(unsigned)regs.regs[12], (unsigned)regs.regs[13], (unsigned)regs.regs[14], (unsigned)regs.regs[15]);
+								(unsigned)regs.regs[12], (unsigned)regs.regs[13], (unsigned)regs.regs[14], (unsigned)regs.regs[15],
+								(unsigned)InterruptFlags, (unsigned)_poll_a4, (unsigned)_poll_d6, (unsigned)_poll_d5);
 						}
 					}
 					static int dump_once = 0;

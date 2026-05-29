@@ -244,11 +244,14 @@ static inline void jit_maybe_prepare_fallback_return_pop_txn(uae_u32 op_pc, uae_
 
 extern "C" void Uae2026JitCanonicalizePcAfterFallback(void)
 {
-	const uae_u32 pc = regs.pc;
-	regs.fault_pc = pc;
+	const uae_u32 pc = m68k_getpc();
+	regs.pc = pc;
 	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled) {
+		Uae2026JitPublishFallbackState(pc, 0xffffu);
+		mmu_opcode = (uae_u16)-1;
 		regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(pc);
 	} else {
+		regs.fault_pc = pc;
 		regs.pc_p = get_real_address(pc, 0, sz_word);
 	}
 	regs.pc_oldp = regs.pc_p;

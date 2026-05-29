@@ -479,7 +479,7 @@ Status vocabulary:
 | CPU-space accesses, `MOVES`, SFC/DFC | 2, 4 | **Guarded/exact fallback** | RAM/MMU dispatch now forces every `table68k[op].mnemo == i_MOVES` through the interpreter barrier because the AArch64 MOVES gapfill is helper-backed through normal data helpers, while exact MOVES needs SFC/DFC-aware `sfc_get_*`/`dfc_put_*` and MOVES-specific SSW handling in `mmu_bus_error()`. | Static proof: verify the `i_MOVES` RAM/MMU barrier stays in `jit_force_interpreter_barrier_opcode()`; run focused `PREVIOUS_OPCODE_FILTER='moves_|movec_sfc|movec_dfc' ./tools/uae2026-opcode-harness.sh` after touching this family. |
 | Auto-increment/predecrement memory EAs (`Aipi`/`Apdi`) | 1, 3, 4 | **Guarded/exact fallback**, plus **heuristic compatibility shim** | RAM/MMU mode forces any opcode with source/destination `Aipi`/`Apdi` through an interpreter barrier.  The bridge still contains conservative postincrement/predecrement restoration for helper/fallback escapes and known MOVES signatures, gated by restartability where needed. | Static proof: verify `jit_force_interpreter_barrier_opcode()` still catches all `table68k[op].smode/dmode == Aipi/Apdi`.  If changing this, add targeted opcode vectors for restartable postincrement read and non-restartable predecrement write. |
 | BSR return-address push before target instruction fetch | 3, 4 | **Transaction-backed**, but one **heuristic compatibility shim** remains | Generated/fallback BSR paths publish `call_push` metadata and fallback BSR target metadata.  The historical `00003372/00003374 -> 00012b04` seam still uses the legacy bridge scan (`JIT_CALL_TARGET_ROLLBACK`) rather than `JIT_CALL_TARGET_ROLLBACK_TXN`. | Static proof: preserve the legacy scan until a bounded trace shows `JIT_CALL_TARGET_ROLLBACK_TXN` for the historical seam.  Existing `bsr_word_call_return` vector proves normal call/return, not target-fetch-fault rollback. |
-| JSR return-address push before target instruction fetch | 3, 4 | **Transaction-backed for selected seams**, otherwise **known forced-fault mismatch** | JSR `call_push` metadata is currently narrow (`0000003e`, `00003c26`, `00008334`, `0000c52c`, `05027706`) because broad JSR rollback stalled earlier boot probes.  Only the confirmed `05027706` target-fetch seam uses canonicalized target-PC framing.  The synthetic `fault_jsr_target_fetch` oracle confirms the interpreter commits the return push and frames the target fetch at `04008100`, while current JIT diverges before the forced target-fetch tuple. | Static proof: keep the allowlist explicit.  Discriminator artifact: `/workspace/tmp/previous-opcode-harness-20260529-194942`; do not broaden rollback/canonicalization beyond the allowlist until this forced-fault vector matches. |
+| JSR return-address push before target instruction fetch | 3, 4 | **Guarded/exact fallback**, selected metadata remains **known forced-fault mismatch** | RAM/MMU dispatch now forces `i_JSR` through the interpreter barrier.  JSR `call_push` metadata remains narrow (`0000003e`, `00003c26`, `00008334`, `0000c52c`, `05027706`) because broad rollback stalled earlier boot probes.  The synthetic `fault_jsr_target_fetch` oracle confirms the interpreter commits the return push and frames the target fetch at `04008100`, while current JIT still diverges before the forced target-fetch tuple even after the exact barrier. | Keep the JSR exact barrier and explicit metadata allowlist.  Latest discriminator artifact: `/workspace/tmp/previous-opcode-harness-20260529-200633`; do not broaden rollback/canonicalization until this forced-fault vector matches. |
 | RTS/RTR return target fetch after stack pop | 3, 4 | **Guarded/exact fallback** and **transaction-backed** | Return-family opcodes are interpreter barriers in RAM/MMU dispatch.  Fallback paths publish `return_pop` metadata for `RTS`/`RTR` so target-fetch faults can restore A7 from producer metadata rather than opcode-window guessing. | Static proof: verify `op == 0x4e75/0x4e77` remains in the RAM/MMU barrier list and fallback loops still call `Uae2026JitMmuTxnBeginReturnPopCurrentA7()`.  Add a focused return-target fault vector before native lowering. |
 | RTE SR/stack switch before return-code fetch | 1, 3, 4 | **Proven exact opcode path**, but native post-fault resume remains an **unaudited gap** | `jit_op_rte()` routes through `cpufunctbl[0x4e73]` after publishing fallback state.  Bridge-caught RTE/page-fault seams no longer auto-handoff unless `B2_JIT_RTE_FAULT_HANDOFF=1`, preserving native no-handoff for diagnosis. | Static proof: keep `RTE` on the RAM/MMU interpreter-barrier list.  Bounded discriminator target: short trace that catches `04001ae6 -> low user PC` and compares pre/post `Exception(2)` `SR/A7/USP/ISP/MSP`, frame format, and `pc_p` without running to desktop. |
 | MOVEM continuation frames and `MMU_SSW_CM` | 3, 4 | **Guarded/exact fallback**, partly proven | Bridge now preserves `MMU_SSW_CM` continuation EA instead of replacing it with `mmu_fault_addr`.  RAM direct MOVEM predecrement shortcut is default-off because it bypasses interpreter MOVEM restart/fixup bookkeeping.  Fast vectors cover normal MOVEM frame restore. | Static proof: keep `B2_JIT_RAM_DIRECT_MOVEM_PREDEC` default-off and verify `regs.mmu_effective_addr` is not overwritten when `MMU_SSW_CM` is set.  Future vector: MOVEM predecrement MMU write fault with continuation EA assertion. |
@@ -540,10 +540,12 @@ Status vocabulary:
   - `get_n_addr_jmp_mmu()` flushes and then publishes only `regs.pc`,
     `regs.fault_pc`, and `Uae2026JitLastInstructionPc` before the faultable
     `Uae2026JitMmuXlateCodeHost()` target translation.
-  - Bad-`pc_p` recovery in `execute_normal()` and the non-generated dispatch
-    helpers `Uae2026JitCanonicalizePcAfterFallback()` / `jit_set_guest_pc_fast()`
+  - Bad-`pc_p` recovery in `execute_normal()` and `jit_set_guest_pc_fast()` still
     rebuild `pc_p` through `Uae2026JitMmuXlateCodeHost()` without publishing the
-    full restart tuple first.
+    full restart tuple first.  `Uae2026JitCanonicalizePcAfterFallback()` now uses
+    `m68k_getpc()` and republishes a code-fetch-style tuple before RAM/MMU
+    code-host translation, but the JSR oracle below proves that is not sufficient
+    to make target-fetch rollback/canonicalization transaction-equivalent.
 - Decision: the main fallback and explicit code-fetch paths are covered, but the
   partial publishers above must not be used as proof for native call/return/trap
   conversion.  Any upgrade should be narrow and paired with a forced-fault oracle
@@ -638,10 +640,23 @@ Status vocabulary:
     `INSTRUCTION_PC=08000000`, `MMU_ADDR=08000002`, `MMU_OPCODE=0000`,
     `MMU_SSW=0121`, with no `JIT_CALL_TARGET_*` rollback/canonicalization line in
     the focused log.
+- Follow-up exact-barrier attempt:
+  - RAM/MMU dispatch now treats `i_JSR` as an interpreter barrier and
+    `Uae2026JitMmuXlateCode()` honors `B2_TEST_CODE_FAULT_ADDR` for code-host
+    translation attempts.  `Uae2026JitCanonicalizePcAfterFallback()` also uses
+    `m68k_getpc()` and republishes a code-fetch-style tuple before code-host
+    translation.
+  - Normal focused JSR/call vectors remained green:
+    `/workspace/tmp/previous-opcode-harness-20260529-200841` (`total=9`,
+    `pass=9`, `fail=0`, `infra_fail=0`).
+  - The forced-fault oracle still does **not** pass:
+    `/workspace/tmp/previous-opcode-harness-20260529-200633` reports the same
+    `PC=08000000` / `MMU_ADDR=08000002` JIT tuple.  Therefore the problem is not
+    solved by an L2 JSR barrier alone.
 - Policy: the discriminator exists and does **not** pass.  Keep the current JSR
-  allowlist narrow, do not add broad rollback/canonicalization from symptoms, and
-  require explicit producer metadata plus a passing `fault_jsr_target_fetch` tuple
-  before changing JSR policy.
+  metadata allowlist narrow, keep JSR exact in RAM/MMU mode, do not add broad
+  rollback/canonicalization from symptoms, and require explicit producer metadata
+  plus a passing `fault_jsr_target_fetch` tuple before changing JSR policy again.
 
 ### Post-RTE/page-fault resume audit
 

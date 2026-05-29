@@ -1159,6 +1159,14 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 		(op == 0x4e73 || op == 0x4e74 || op == 0x4e75 || op == 0x4e76 || op == 0x4e77))
 		return true;
 
+	/* Non-allowlisted JSR target-fetch faults currently do not match the
+	   interpreter tuple: the interpreter commits the return-address push and
+	   frames the code fetch at the target PC, while native JSR can continue with
+	   stale/partial target state.  Keep JSR exact in RAM/MMU mode until explicit
+	   call-target metadata makes fault_jsr_target_fetch pass. */
+	if (jit_allow_ram_dispatch_env() && table68k[op].mnemo == i_JSR)
+		return true;
+
 	/* Trap/exception-frame construction can itself fault while pushing a frame.
 	   Keep trap-family opcodes exact in RAM/MMU mode until explicit trap-frame
 	   transaction metadata and nested-fault discriminators exist.  This includes

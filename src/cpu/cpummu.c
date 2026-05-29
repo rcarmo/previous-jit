@@ -87,6 +87,12 @@ uae_u32 Uae2026JitMmuXlateData(uaecptr addr)
 
 uae_u32 Uae2026JitMmuXlateCode(uaecptr addr)
 {
+    if (Uae2026OpcodeTestShouldFaultCode(addr, sz_word)) {
+        regs.instruction_pc = addr;
+        regs.fault_pc = addr;
+        m68k_setpci(addr);
+        mmu_bus_error(addr, 0, FC_INST, false, sz_word, false);
+    }
     if (mmu_match_ttr(addr, regs.s != 0, false) == TTR_NO_MATCH && regs.mmu_enabled)
         addr = mmu_translate(addr, 0, regs.s != 0, false, false, sz_word);
     return addr;

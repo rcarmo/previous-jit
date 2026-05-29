@@ -247,7 +247,10 @@ from per-PC frontier chasing to replacing or proving the remaining shims:
    synthetic target-fetch-fault discriminator designed in the correctness
    contract before broadening native transaction policy.
 3. Audit post-RTE/page-fault resume state (`SR`, active A7, `USP/ISP/MSP`, frame
-   fields, and `pc_p`) separately from exact RTE opcode execution.
+   fields, and `pc_p`) separately from exact RTE opcode execution.  The
+   correctness-contract audit now proves the static bridge path through
+   `Exception(2)` and vector entry; any remaining RTE-resume work needs a focused
+   first-post-POST-dispatch `pc_p` trace before semantic edits.
 4. Treat non-restartable write PC advancement as interpreter-oracle data, not a
    pattern to generalize from local symptoms.
 

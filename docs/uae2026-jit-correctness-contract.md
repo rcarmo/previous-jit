@@ -594,3 +594,62 @@ Status vocabulary:
   discriminator should remain well under 120s, including any incremental build.
 - Policy: until this discriminator exists and passes, keep the current JSR
   allowlist narrow and do not generalize from boot-frontier symptoms.
+
+### Post-RTE/page-fault resume audit
+
+- Contract clauses: 1, 3, 4, and 7.  `RTE` can switch `SR`/active stack and then
+  fault fetching the return code stream; the bridge must build the access-error
+  frame from the correct pre/post-RTE state and then resume native dispatch with
+  a coherent `PC`/`pc_p` tuple.
+- Static source proof:
+  - `jit_op_rte()` is exact for opcode semantics: it publishes fallback state and
+    calls `cpufunctbl[0x4e73]`, so the frame reads, `SR` transition, stack switch,
+    and target prefetch come from the interpreter implementation.
+  - RAM/MMU dispatch also keeps return-family opcodes (`RTE`, `RTD`, `RTS`,
+    `TRAPV`, `RTR`) on the interpreter-barrier list, so native lowering is not
+    used for these paths.
+  - On MMU longjmp, the bridge first restores published flags/PC for restartable
+    faults and applies `mmufixup[]`; then it applies JIT transactions and the
+    known auto-EA/write shims.
+  - For a bridge-caught RTE fault, if `RTE` has already loaded user `SR` and the
+    cached pre-op `SR` was supervisor, the bridge restores the cached
+    pre-instruction supervisor `SR/A7` before `Exception(2)` so the exception is
+    framed as a faulting `RTE`, not as an unrelated user-mode handler fault.
+  - If `RTE` already switched to user mode and saved the post-pop supervisor
+    stack in `regs.isp`, the bridge preserves that value; it uses
+    `Uae2026JitLastExceptionSp` only if `regs.isp` is missing.
+  - The bridge deliberately does **not** rewrite RTE `fault_pc` or
+    `instruction_pc` to `mmu_fault_addr`; the opcode context and access address
+    remain distinct.
+  - After `Exception(2)`, the bridge captures the supervisor exception stack in
+    `Uae2026JitLastExceptionSp`/`ISP` or `MSP`, calls `MakeSR()`, canonicalizes
+    `handled_pc` with `m68k_setpc(handled_pc)`, and only performs the old
+    interpreter handoff when `B2_JIT_RTE_FAULT_HANDOFF=1` is explicitly set.
+  - On the next native dispatch boundary, RAM/MMU dispatch re-derives
+    `regs.pc_p` and `regs.pc_oldp` from `m68k_getpc()` via
+    `Uae2026JitMmuXlateCodeHost()`.  This is the static proof for post-exception
+    `pc_p` coherence; the existing low-PC resume trace records the pre/post
+    exception state but not the subsequent dispatch `pc_p` in the same line.
+- Short trace excerpt from existing diagnostic artifact
+  `/workspace/tmp/previous-jit-nohandoff-lowpcresume-late1200-20260526-054912`
+  (excerpt only; no new long run was performed):
+  - First RTE/page-fault catch: `pc=04001ae6`, `op=4e73`, `fault_pc=04001ae6`,
+    `addr=00003334`, `sr=2004`, `sp=101322e8`, `spc=00000008`; the bridge
+    handles it at vector `04001f52` with supervisor `sr=2004` and stack
+    `101322ac`.
+  - First following low-user access-error catch: `JIT_LOWPC_RESUME PRE n=0` has
+    `pc=00003344`, `fault_pc=0000333e`, `addr=00016004`, `mmu_restart=0`,
+    `sr=0000`, `s=0`, active `a7=03ffffc8`, `usp=03ffffd4`, `isp=101322f0`,
+    and cached `lastpc=0000333e`, `lastsr=00000000`, `lasta7=03ffffc8`.
+  - `JIT_LOWPC_RESUME POST n=1` has `pc=04001f52`, `sr=2000`, `s=1`, active
+    `a7=101322b4`, `usp=03ffffc8`, `isp=101322b4`, `spc=00000000`, and frame
+    fields `fr_vec=0413`, `fr8=22ea0413`, `fr12=228a0000`, matching the handled
+    vector-2 frame line.
+- Conclusion: the current static path and trace prove the bridge preserves the
+  critical RTE/page-fault resume invariants through `Exception(2)` and vector
+  entry: `SR`, active `A7`, `USP/ISP/MSP`, opcode-vs-fault-address separation,
+  and frame fields are recorded and canonicalized.  The remaining native resume
+  failures are therefore not justified by a broad RTE opcode rewrite.  Any future
+  RTE-resume optimization must first add a focused dispatch trace that captures
+  the first post-`JIT_LOWPC_RESUME POST` native dispatch `pc_p` alongside
+  `regs.pc` and the code-host words, still under the ≤120s rule.

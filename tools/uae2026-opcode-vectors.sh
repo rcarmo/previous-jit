@@ -19,7 +19,7 @@ declare -a TEST_ORDER=(
 )
 
 declare -a FAULT_TEST_ORDER=(
-  fault_bsr_target_fetch fault_rts_target_fetch fault_rtr_target_fetch fault_rte_return_fetch
+  fault_bsr_target_fetch fault_rts_target_fetch fault_rtr_target_fetch fault_rte_return_fetch fault_trap_frame_write
   fault_write_byte_d2 fault_write_byte_postinc moves_dfc_write_fault moves_sfc_read_fault movem_predec_write_fault
 )
 
@@ -170,6 +170,14 @@ MEM_LONGS[fault_rte_return_fetch]="04010000 00100100 04010002 TEST+0100 04010006
 EXPECT_EXCEPTION[fault_rte_return_fetch]=2
 CODE_FAULT_ADDR[fault_rte_return_fetch]="TEST+0100"
 DUMP_MEM_LONGS[fault_rte_return_fetch]="04010000 04010004 04010008"
+
+TESTS[fault_trap_frame_write]="4E40 7201"
+INIT_REGS[fault_trap_frame_write]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"
+EXPECT_EXCEPTION[fault_trap_frame_write]=2
+DATA_FAULT_ADDR[fault_trap_frame_write]="0400FFF8"
+DATA_FAULT_SIZE[fault_trap_frame_write]=W
+DATA_FAULT_WRITE[fault_trap_frame_write]=1
+DUMP_MEM_LONGS[fault_trap_frame_write]="0400FFF8 0400FFFC"
 
 TESTS[fault_write_byte_d2]="1082 2010"
 INIT_REGS[fault_write_byte_d2]="00000000 00000000 00000029 00000000 00000000 00000000 00000000 00000000 0400A000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"

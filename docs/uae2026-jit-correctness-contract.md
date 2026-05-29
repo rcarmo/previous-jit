@@ -647,12 +647,24 @@ Status vocabulary:
     `Uae2026JitCanonicalizePcAfterFallback()` also uses `m68k_getpc()` and
     republishes a code-fetch-style tuple before code-host translation.
   - Normal focused JSR/call vectors remained green:
-    `/workspace/tmp/previous-opcode-harness-20260529-203428` (`total=9`,
+    `/workspace/tmp/previous-opcode-harness-20260529-210216` (`total=9`,
     `pass=9`, `fail=0`, `infra_fail=0`).
-  - The forced-fault oracle still does **not** pass:
-    `/workspace/tmp/previous-opcode-harness-20260529-203300` reports the same
-    `PC=08000000` / `MMU_ADDR=08000002` JIT tuple.  Therefore the problem is not
-    solved by an L2 JSR barrier alone.
+  - Code-host target materialization now routes through `Uae2026JitMmuXlateCode()`
+    even when the 040 MMU runtime flag is clear, so opcode-test forced code-fault
+    hooks are honored on target streams.  The forced hook publishes
+    `INSTRUCTION_PC`/`LastInstructionPc` at the target, clears `FAULT_PC` and
+    `MMU_EA` to match the interpreter's code-fetch tuple shape, and preserves
+    `MMU_OPCODE=ffff`.
+  - Focused JSR/RTS target-fault run after this change:
+    `/workspace/tmp/previous-opcode-harness-20260529-210206` (`total=2`,
+    `interp_ok=2`, `jit_ok=2`, `pass=0`, `fail=2`, `infra_fail=0`).  The old
+    stale `PC=08000000` / `MMU_ADDR=08000002` tuple is gone; both JIT cases now
+    report the target `PC=04008100`, `FAULT_PC=00000000`,
+    `INSTRUCTION_PC=04008100`, `MMU_ADDR=04008100`, `MMU_EA=00000000`,
+    `MMU_OPCODE=ffff`, `MMU_RESTART=1`, `MMU_SSW=0542`.
+  - The oracle still does **not** pass because `SR`/`SPC` differ (`SR=0010`,
+    `SPC=00000000` on JIT versus `SR=0000`, `SPC=00000008` on the interpreter),
+    so it remains a diagnostic oracle rather than conversion permission.
 - Policy: the discriminator exists and does **not** pass.  Keep the current JSR
   metadata allowlist narrow, keep JSR exact in RAM/MMU mode, do not add broad
   rollback/canonicalization from symptoms, and require explicit producer metadata
@@ -921,7 +933,8 @@ Status vocabulary:
     validation.
   - Focused command shape:
     `PREVIOUS_OPCODE_INCLUDE_FAULTS=1 PREVIOUS_OPCODE_FILTER='^(fault_bsr_target_fetch|fault_jsr_target_fetch|fault_rts_target_fetch|fault_rtr_target_fetch|fault_rte_return_fetch|fault_trap_frame_write|fault_write_byte_d2|fault_write_byte_postinc|moves_dfc_write_fault|moves_sfc_read_fault|movem_predec_write_fault)$' PREVIOUS_UAE2026_JIT_RAM=1 B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1 PREVIOUS_OPCODE_TEST_ADDR=0x04008000 ./tools/uae2026-opcode-harness.sh`.
-  - Artifact: `/workspace/tmp/previous-opcode-harness-20260529-201653`.
+  - Current artifact after code-host forced-fault routing:
+    `/workspace/tmp/previous-opcode-harness-20260529-210536`.
   - Metrics: `total=11`, `interp_ok=11`, `jit_ok=10`, `pass=0`, `fail=10`,
     `infra_fail=1`, `score=0`, `jit_ram_requested=1`,
     `rte_handoff_disabled=1`.
@@ -932,18 +945,22 @@ Status vocabulary:
     `fault_write_byte_d2`, `fault_write_byte_postinc`, `moves_dfc_write_fault`,
     `moves_sfc_read_fault`, and `movem_predec_write_fault`.
   - Pattern change vs the older 9-vector run: adding the JSR and trap-frame
-    oracles broadens coverage, and `fault_rts_target_fetch` now produces a JIT
-    `FAULTDUMP` mismatch (`PC=08000000`) instead of timing out.  The overall
+    oracles broadens coverage, and code-host forced-fault routing now makes
+    `fault_jsr_target_fetch` / `fault_rts_target_fetch` reach the target
+    `PC=04008100` tuple instead of the stale `PC=08000000` class.  The overall
     conversion decision is unchanged: no rollback/canonicalization family passes
-    the oracle gate.
+    the oracle gate because the remaining JSR/RTS differences are `SR`/`SPC`.
   - Focused RTS follow-up after the JSR opcode-range barrier:
     `/workspace/tmp/previous-opcode-harness-20260529-203718` (`total=1`,
-    `interp_ok=1`, `jit_ok=1`, `pass=0`, `fail=1`, `infra_fail=0`) confirms the
-    return pop itself is committed on both sides (`A7=04010004`,
-    `MEMDUMP 04010000=04008100`), but the JIT target fetch still lands in the
-    stale `PC=08000000` / `MMU_ADDR=08000002` tuple.  This points at the same
-    post-fallback target-stream/code-host seam as `fault_jsr_target_fetch`, not at
-    permission to broaden return-pop rollback.
+    `interp_ok=1`, `jit_ok=1`, `pass=0`, `fail=1`, `infra_fail=0`) confirmed the
+    return pop itself was committed on both sides (`A7=04010004`,
+    `MEMDUMP 04010000=04008100`) while the JIT target fetch still landed in the
+    stale `PC=08000000` / `MMU_ADDR=08000002` tuple.
+  - After routing code-host target materialization through the forced code-fault
+    oracle, `/workspace/tmp/previous-opcode-harness-20260529-210206` confirms the
+    RTS target tuple now reaches `PC=04008100` / `MMU_ADDR=04008100`; the remaining
+    mismatch is `SR`/`SPC`, so this is still not permission to broaden return-pop
+    rollback.
 - Call-target decision:
   - Do **not** remove the legacy BSR scan.  The historical proof already showed
     `00003372/00003374 -> 00012b04` is not transaction-covered, and the synthetic

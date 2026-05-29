@@ -74,6 +74,7 @@ uae_u32 Uae2026JitMmuGetByte(uaecptr addr);
 uae_u32 Uae2026JitMmuGetWord(uaecptr addr);
 uae_u32 Uae2026JitMmuGetLong(uaecptr addr);
 uae_u32 Uae2026JitMmuFetchOpcode(uaecptr pc);
+extern uae_u32 Uae2026JitLastInstructionPc;
 void Uae2026JitMmuPutByte(uaecptr addr, uae_u32 value);
 void Uae2026JitMmuPutWord(uaecptr addr, uae_u32 value);
 void Uae2026JitMmuPutLong(uaecptr addr, uae_u32 value);
@@ -89,8 +90,11 @@ uae_u32 Uae2026JitMmuXlateCode(uaecptr addr)
 {
     if (Uae2026OpcodeTestShouldFaultCode(addr, sz_word)) {
         regs.instruction_pc = addr;
-        regs.fault_pc = addr;
+        regs.fault_pc = 0;
+        regs.mmu_effective_addr = 0;
+        Uae2026JitLastInstructionPc = addr;
         m68k_setpci(addr);
+        mmu_opcode = (uae_u16)-1;
         mmu_bus_error(addr, 0, FC_INST, false, sz_word, false);
     }
     if (mmu_match_ttr(addr, regs.s != 0, false) == TTR_NO_MATCH && regs.mmu_enabled)

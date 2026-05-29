@@ -216,8 +216,12 @@ extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr)
 {
     if (!jit_MEMBaseDiff)
         return 0;
+    /* Always route through Uae2026JitMmuXlateCode(): with the 040 MMU disabled
+     * it is an identity translation, but opcode-test forced code faults must
+     * still be honored so code-host target materialization uses the same oracle
+     * path as interpreter instruction fetches. */
+    addr = Uae2026JitMmuXlateCode(addr);
     if (Uae2026JitRuntimeMmuEnabled()) {
-        addr = Uae2026JitMmuXlateCode(addr);
         /* Code-space MMU translation returns a physical RAM address.  Keep the
          * executable JIT shadow coherent with the live memory map before exposing
          * the host pointer to execute_normal()/compiled branch targets; otherwise

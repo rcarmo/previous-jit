@@ -64,7 +64,7 @@ static inline void jit_publish_code_fetch_state(uae_u32 pc)
 
 static inline void jit_canonicalize_code_pc_if_ram_mmu(void)
 {
-	if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled)
+	if (!jit_allow_ram_dispatch_env() || (!regs.mmu_enabled && !Uae2026OpcodeTestModeActive()))
 		return;
 	uae_u32 pc = m68k_getpc() & ~1u;
 	jit_publish_code_fetch_state(pc);
@@ -1130,7 +1130,7 @@ void exec_nostats(void)
 			regs.pc = safe_pc;
 			regs.fault_pc = safe_pc;
 			Uae2026JitLastInstructionPc = safe_pc;
-			if (jit_allow_ram_dispatch_env() && regs.mmu_enabled)
+			if (jit_allow_ram_dispatch_env() && (regs.mmu_enabled || Uae2026OpcodeTestModeActive()))
 				regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(safe_pc);
 			else
 				regs.pc_p = get_real_address(safe_pc, 0, sz_word);
@@ -1272,7 +1272,7 @@ void execute_normal(void)
 			   - Previous RAM: 0x04000000 <= pc < 0x04000000 + RAMSize
 			   - ROM: ROMBaseMac <= pc < ROMBaseMac + ROMSize
 			   Anything else (NuBus space, frame buffer, unmapped) is a bus error. */
-			const bool mmu_code_path = jit_allow_ram_dispatch_env() && regs.mmu_enabled;
+			const bool mmu_code_path = jit_allow_ram_dispatch_env() && (regs.mmu_enabled || Uae2026OpcodeTestModeActive());
 			bool valid_mac_pc = (safe_pc < (uae_u32)RAMSize) ||
 				(safe_pc >= 0x04000000u && safe_pc < 0x04000000u + (uae_u32)RAMSize) ||
 				(safe_pc >= (uae_u32)ROMBaseMac && safe_pc < (uae_u32)(ROMBaseMac + ROMSize));

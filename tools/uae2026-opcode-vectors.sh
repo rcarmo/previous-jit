@@ -18,6 +18,11 @@ declare -a TEST_ORDER=(
   pack_dn_edge unpk_dn_edge moves_write_read movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip
 )
 
+declare -a FAULT_TEST_ORDER=(
+  fault_bsr_target_fetch fault_rts_target_fetch fault_rtr_target_fetch fault_rte_return_fetch
+  fault_write_byte_d2 fault_write_byte_postinc moves_dfc_write_fault moves_sfc_read_fault movem_predec_write_fault
+)
+
 declare -A TESTS
 # Optional per-vector register seeds: D0-D7 A0-A7 [SR].
 declare -A INIT_REGS
@@ -25,6 +30,13 @@ declare -A INIT_REGS
 declare -A MEM_LONGS
 # Optional per-vector long memory dump addresses appended to the comparison output.
 declare -A DUMP_MEM_LONGS
+# Optional per-vector test PC override and expected exception/fault injection controls.
+declare -A TEST_ADDRS
+declare -A EXPECT_EXCEPTION
+declare -A CODE_FAULT_ADDR
+declare -A DATA_FAULT_ADDR
+declare -A DATA_FAULT_SIZE
+declare -A DATA_FAULT_WRITE
 
 TESTS[ori_sr_hardfail]="007C 0700"
 TESTS[andi_sr_hardfail]="027C 27FF"
@@ -131,3 +143,75 @@ TESTS[moves_write_read]="41F9 0400 A000 203C DEAD BEEF 0E90 0800 2010"
 TESTS[movec_vbr_roundtrip]="203C 1234 0000 4E7B 0801 4E7A 1801"
 TESTS[movec_sfc_roundtrip]="7005 4E7B 0000 4E7A 1000"
 TESTS[movec_dfc_roundtrip]="7003 4E7B 0001 4E7A 1001"
+
+TESTS[fault_bsr_target_fetch]="6106 7201 6004 702B 4E75 7402"
+INIT_REGS[fault_bsr_target_fetch]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"
+EXPECT_EXCEPTION[fault_bsr_target_fetch]=2
+CODE_FAULT_ADDR[fault_bsr_target_fetch]="TEST+0008"
+DUMP_MEM_LONGS[fault_bsr_target_fetch]="0400FFFC"
+
+TESTS[fault_rts_target_fetch]="4E75 7201"
+INIT_REGS[fault_rts_target_fetch]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"
+MEM_LONGS[fault_rts_target_fetch]="04010000 TEST+0100"
+EXPECT_EXCEPTION[fault_rts_target_fetch]=2
+CODE_FAULT_ADDR[fault_rts_target_fetch]="TEST+0100"
+DUMP_MEM_LONGS[fault_rts_target_fetch]="04010000 04010004"
+
+TESTS[fault_rtr_target_fetch]="4E77 7201"
+INIT_REGS[fault_rtr_target_fetch]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"
+MEM_LONGS[fault_rtr_target_fetch]="04010000 00100400 04010002 TEST+0100"
+EXPECT_EXCEPTION[fault_rtr_target_fetch]=2
+CODE_FAULT_ADDR[fault_rtr_target_fetch]="TEST+0100"
+DUMP_MEM_LONGS[fault_rtr_target_fetch]="04010000 04010004"
+
+TESTS[fault_rte_return_fetch]="4E73 7201"
+INIT_REGS[fault_rte_return_fetch]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 2700"
+MEM_LONGS[fault_rte_return_fetch]="04010000 00100100 04010002 TEST+0100 04010006 00000000"
+EXPECT_EXCEPTION[fault_rte_return_fetch]=2
+CODE_FAULT_ADDR[fault_rte_return_fetch]="TEST+0100"
+DUMP_MEM_LONGS[fault_rte_return_fetch]="04010000 04010004 04010008"
+
+TESTS[fault_write_byte_d2]="1082 2010"
+INIT_REGS[fault_write_byte_d2]="00000000 00000000 00000029 00000000 00000000 00000000 00000000 00000000 0400A000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"
+MEM_LONGS[fault_write_byte_d2]="0400A000 11223344"
+EXPECT_EXCEPTION[fault_write_byte_d2]=2
+DATA_FAULT_ADDR[fault_write_byte_d2]="0400A000"
+DATA_FAULT_SIZE[fault_write_byte_d2]=B
+DATA_FAULT_WRITE[fault_write_byte_d2]=1
+DUMP_MEM_LONGS[fault_write_byte_d2]="0400A000"
+
+TESTS[fault_write_byte_postinc]="109A 2010"
+INIT_REGS[fault_write_byte_postinc]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A000 00000000 0400A010 00000000 00000000 00000000 00000000 04010000 0010"
+MEM_LONGS[fault_write_byte_postinc]="0400A000 11223344 0400A010 5A667788"
+EXPECT_EXCEPTION[fault_write_byte_postinc]=2
+DATA_FAULT_ADDR[fault_write_byte_postinc]="0400A000"
+DATA_FAULT_SIZE[fault_write_byte_postinc]=B
+DATA_FAULT_WRITE[fault_write_byte_postinc]=1
+DUMP_MEM_LONGS[fault_write_byte_postinc]="0400A000 0400A010"
+
+TESTS[moves_dfc_write_fault]="7001 4E7B 0001 0E90 0800 2010"
+INIT_REGS[moves_dfc_write_fault]="DEADBEEF 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 2700"
+MEM_LONGS[moves_dfc_write_fault]="0400A000 11223344"
+EXPECT_EXCEPTION[moves_dfc_write_fault]=2
+DATA_FAULT_ADDR[moves_dfc_write_fault]="0400A000"
+DATA_FAULT_SIZE[moves_dfc_write_fault]=L
+DATA_FAULT_WRITE[moves_dfc_write_fault]=1
+DUMP_MEM_LONGS[moves_dfc_write_fault]="0400A000"
+
+TESTS[moves_sfc_read_fault]="7001 4E7B 0000 0E90 0000 2010"
+INIT_REGS[moves_sfc_read_fault]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 2700"
+MEM_LONGS[moves_sfc_read_fault]="0400A000 11223344"
+EXPECT_EXCEPTION[moves_sfc_read_fault]=2
+DATA_FAULT_ADDR[moves_sfc_read_fault]="0400A000"
+DATA_FAULT_SIZE[moves_sfc_read_fault]=L
+DATA_FAULT_WRITE[moves_sfc_read_fault]=0
+DUMP_MEM_LONGS[moves_sfc_read_fault]="0400A000"
+
+TESTS[movem_predec_write_fault]="203C 1111 2222 223C 3333 4444 48E0 C000 4CDF 0003"
+INIT_REGS[movem_predec_write_fault]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A020 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"
+MEM_LONGS[movem_predec_write_fault]="0400A018 AAAAAAAA 0400A01C BBBBBBBB"
+EXPECT_EXCEPTION[movem_predec_write_fault]=2
+DATA_FAULT_ADDR[movem_predec_write_fault]="0400A01C"
+DATA_FAULT_SIZE[movem_predec_write_fault]=L
+DATA_FAULT_WRITE[movem_predec_write_fault]=1
+DUMP_MEM_LONGS[movem_predec_write_fault]="0400A018 0400A01C"

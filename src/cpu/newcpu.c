@@ -1589,6 +1589,9 @@ static void m68k_run_mmu040 (void)
 			mmufixup[0].reg = -1;
 		}
 
+		if (Uae2026OpcodeTestModeHandleExpectedException(prb))
+			return;
+
 		TRY (prb2) {
 			Exception (prb);
 		} CATCH (prb2) {

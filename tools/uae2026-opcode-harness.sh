@@ -13,6 +13,10 @@ KEEP_TMP_HOME="${PREVIOUS_OPCODE_KEEP_HOME:-0}"
 mkdir -p "$OUTDIR"
 source "$ROOT/tools/uae2026-opcode-vectors.sh"
 
+if [[ "${PREVIOUS_OPCODE_INCLUDE_FAULTS:-0}" != "0" ]]; then
+  TEST_ORDER+=("${FAULT_TEST_ORDER[@]}")
+fi
+
 if [[ -n "${PREVIOUS_OPCODE_FILTER:-}" ]]; then
   filtered_order=()
   for name in "${TEST_ORDER[@]}"; do
@@ -144,7 +148,7 @@ EOF
 
 expand_test_addr_tokens() {
   local input="$1"
-  local test_addr="${PREVIOUS_OPCODE_TEST_ADDR:-0x01001000}"
+  local test_addr="${2:-${PREVIOUS_OPCODE_TEST_ADDR:-0x01001000}}"
   local base=$((test_addr))
   local token offset
   for token in $input; do
@@ -180,6 +184,12 @@ run_case() {
   local init_regs="${INIT_REGS[$name]:-}"
   local mem_longs="${MEM_LONGS[$name]:-}"
   local dump_mem_longs="${DUMP_MEM_LONGS[$name]:-}"
+  local test_addr="${TEST_ADDRS[$name]:-${PREVIOUS_OPCODE_TEST_ADDR:-0x01001000}}"
+  local expect_exception="${EXPECT_EXCEPTION[$name]:-}"
+  local code_fault_addr="${CODE_FAULT_ADDR[$name]:-}"
+  local data_fault_addr="${DATA_FAULT_ADDR[$name]:-}"
+  local data_fault_size="${DATA_FAULT_SIZE[$name]:-}"
+  local data_fault_write="${DATA_FAULT_WRITE[$name]:-}"
   local wait_sec="$INTERP_WAIT_SEC"
   local rc=0
   local dump_count
@@ -197,7 +207,7 @@ run_case() {
     DISPLAY="$DISPLAY_NAME"
     B2_TEST_HEX="$full_hex"
     B2_TEST_DUMP=1
-    B2_TEST_ADDR="${PREVIOUS_OPCODE_TEST_ADDR:-0x01001000}"
+    B2_TEST_ADDR="$test_addr"
     PREVIOUS_UAE2026_JIT_BOOTSTRAP=0
     PREVIOUS_UAE2026_JIT_CACHE_KB="${PREVIOUS_UAE2026_JIT_CACHE_KB:-8192}"
     PREVIOUS_UAE2026_JIT_FPU="${PREVIOUS_UAE2026_JIT_FPU:-0}"
@@ -207,13 +217,28 @@ run_case() {
     B2_JIT_RTE_FAULT_HANDOFF_DISABLE="${B2_JIT_RTE_FAULT_HANDOFF_DISABLE:-0}"
   )
   if [[ -n "$init_regs" ]]; then
-    env_vars+=(B2_TEST_INIT="$(expand_test_addr_tokens "$init_regs")")
+    env_vars+=(B2_TEST_INIT="$(expand_test_addr_tokens "$init_regs" "$test_addr")")
   fi
   if [[ -n "$mem_longs" ]]; then
-    env_vars+=(B2_TEST_MEM_LONGS="$(expand_test_addr_tokens "$mem_longs")")
+    env_vars+=(B2_TEST_MEM_LONGS="$(expand_test_addr_tokens "$mem_longs" "$test_addr")")
   fi
   if [[ -n "$dump_mem_longs" ]]; then
-    env_vars+=(B2_TEST_DUMP_MEM_LONGS="$(expand_test_addr_tokens "$dump_mem_longs")")
+    env_vars+=(B2_TEST_DUMP_MEM_LONGS="$(expand_test_addr_tokens "$dump_mem_longs" "$test_addr")")
+  fi
+  if [[ -n "$expect_exception" ]]; then
+    env_vars+=(B2_TEST_EXPECT_EXCEPTION="$expect_exception")
+  fi
+  if [[ -n "$code_fault_addr" ]]; then
+    env_vars+=(B2_TEST_CODE_FAULT_ADDR="$(expand_test_addr_tokens "$code_fault_addr" "$test_addr")")
+  fi
+  if [[ -n "$data_fault_addr" ]]; then
+    env_vars+=(B2_TEST_DATA_FAULT_ADDR="$(expand_test_addr_tokens "$data_fault_addr" "$test_addr")")
+  fi
+  if [[ -n "$data_fault_size" ]]; then
+    env_vars+=(B2_TEST_DATA_FAULT_SIZE="$data_fault_size")
+  fi
+  if [[ -n "$data_fault_write" ]]; then
+    env_vars+=(B2_TEST_DATA_FAULT_WRITE="$data_fault_write")
   fi
 
   if [[ "$use_jit" == "jit" ]]; then
@@ -238,7 +263,11 @@ run_case() {
   rc=$?
   set -e
 
-  dump_count=$(grep -c '^REGDUMP:' "$log" 2>/dev/null || true)
+  if [[ -n "$expect_exception" ]]; then
+    dump_count=$(grep -c '^FAULTDUMP:' "$log" 2>/dev/null || true)
+  else
+    dump_count=$(grep -c '^REGDUMP:' "$log" 2>/dev/null || true)
+  fi
   if [[ "$dump_count" -gt 0 ]]; then
     found_dump=1
   fi
@@ -259,10 +288,14 @@ run_case() {
     return 1
   fi
 
-  grep -E '^(REGDUMP|MEMDUMP):' "$log" > "$outfile"
-  if ! grep -qi "A6=$sentinel" "$outfile"; then
-    echo sentinel_mismatch > "$reason_file"
-    return 1
+  if [[ -n "$expect_exception" ]]; then
+    grep -E '^(FAULTDUMP|MEMDUMP):' "$log" > "$outfile"
+  else
+    grep -E '^(REGDUMP|MEMDUMP):' "$log" > "$outfile"
+    if ! grep -qi "A6=$sentinel" "$outfile"; then
+      echo sentinel_mismatch > "$reason_file"
+      return 1
+    fi
   fi
 
   if [[ "$KEEP_TMP_HOME" != "1" ]]; then
@@ -344,6 +377,7 @@ score=$score
 jit_ram_requested=${PREVIOUS_UAE2026_JIT_RAM:-0}
 rte_handoff_disabled=${B2_JIT_RTE_FAULT_HANDOFF_DISABLE:-0}
 test_addr=${PREVIOUS_OPCODE_TEST_ADDR:-0x01001000}
+include_faults=${PREVIOUS_OPCODE_INCLUDE_FAULTS:-0}
 EOF
 
 cat "$OUTDIR/result.env"
@@ -357,6 +391,7 @@ echo "METRIC score=$score"
 echo "METRIC jit_ram_requested=${PREVIOUS_UAE2026_JIT_RAM:-0}"
 echo "METRIC rte_handoff_disabled=${B2_JIT_RTE_FAULT_HANDOFF_DISABLE:-0}"
 echo "METRIC test_addr=${PREVIOUS_OPCODE_TEST_ADDR:-0x01001000}"
+echo "METRIC include_faults=${PREVIOUS_OPCODE_INCLUDE_FAULTS:-0}"
 echo "OUTDIR=$OUTDIR"
 
 if [[ -s "$OUTDIR/infra.txt" ]]; then

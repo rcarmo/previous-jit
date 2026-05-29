@@ -1,8 +1,10 @@
 # UAE2026 opcode harness
 
 This harness runs short M68K opcode vectors inside `Previous` without waiting for a full NeXT boot.
-It uses the normal `Previous` binary, injects a tiny test program into the ROM mirror, seeds the CPU
-register file, runs one interpreter/JIT pass, and dumps register state as `REGDUMP:`.
+It uses the normal `Previous` binary, injects a tiny test program into the ROM mirror or RAM,
+seeds the CPU register file, runs one interpreter/JIT pass, and dumps register state as
+`REGDUMP:`.  Default-off fault-oracle vectors can instead stop at the first expected access
+error and dump `FAULTDUMP:`.
 
 ## Files
 
@@ -25,6 +27,10 @@ Environment variables reused from the BasiliskII harness:
 - `B2_TEST_DUMP_MEM_LONGS` — optional long addresses to append as `MEMDUMP:` comparison lines
 - `PREVIOUS_UAE2026_JIT=0|1` — interpreter vs bridge/JIT mode
 - `B2_JIT_FORCE_TRANSLATE=1` — force first-block translation in JIT mode
+- `B2_TEST_EXPECT_EXCEPTION=2` — default-off fault-oracle mode; one expected vector-2 access error prints `FAULTDUMP:` and stops instead of requiring the sentinel `REGDUMP:`
+- `B2_TEST_CODE_FAULT_ADDR=<addr>` — opcode-test-only forced instruction-fetch fault at a logical address
+- `B2_TEST_DATA_FAULT_ADDR=<addr>` with `B2_TEST_DATA_FAULT_WRITE=0|1` and optional `B2_TEST_DATA_FAULT_SIZE=B|W|L` — opcode-test-only forced data access fault
+- `PREVIOUS_OPCODE_INCLUDE_FAULTS=1` — append the default-off focused fault-oracle vectors to `TEST_ORDER`
 
 The harness appends:
 
@@ -46,8 +52,13 @@ known to exercise the brittle parts of the old generated `compemu` pipeline:
 - MMU-sensitive control/stack paths: `MOVEM.L ...,-(An)`, `JSR (An)`, `BSR.W`
 - seeded user-mode pointer/stack/call state for the `050069c8` seam (`MOVEA.L (A0),A0`, `MOVEA.L (32,A0),A1`, user stack push, MOVEM frame restore, stack/hash lookup, `JSR (A0)`, and a deterministic combined pointer→hash→call chain)
 - byte-store seam shapes from the native RAM/MMU fault path: `MOVE.B D2,(A0)` (`1082`) and `MOVE.B (A2)+,(A0)` (`109a`), including destination memory dumps and postincrement side effects
+- default-off forced-fault oracles for the currently unaudited MMU seams: BSR target fetch after return push, RTS/RTR target fetch after stack pop, RTE return-code fetch after SR/A7 switch, non-restartable byte stores, MOVES SFC/DFC read/write faults, and MOVEM predecrement write fault
 
 Absolute scratch addresses were remapped from BasiliskII-style low RAM to Previous RAM at `0x0400xxxx`.
+Fault-oracle vectors are not part of the default green regression set yet: they are discriminators
+for proving current JIT/MMU policy.  Run them explicitly with a narrow filter, inspect the
+`FAULTDUMP:` tuple, and only promote one to the default set after the interpreter and JIT tuples
+match for the intended semantics.
 
 ## Latest run (2026-05-26)
 

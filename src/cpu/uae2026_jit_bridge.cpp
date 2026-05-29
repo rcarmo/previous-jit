@@ -11,6 +11,7 @@
 #include "newcpu.h"
 #include "options_cpu.h"
 #include "uae2026_compiler_prefs_shim.h"
+#include "uae2026_opcode_test.h"
 #include "uae_cpu_2026/compiler/jit_native_helpers.h"
 
 #include <cstdio>
@@ -1200,6 +1201,8 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                         (unsigned)bridge_live_peek_word(regs.fault_pc + 6));
             }
         }
+        if (Uae2026OpcodeTestModeHandleExpectedException(prb))
+            return;
         bridge_trace_lowpc_resume("PRE", prb);
         int prb2 = setjmp(__exbuf);
         if (prb2 == 0) {

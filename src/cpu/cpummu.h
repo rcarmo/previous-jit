@@ -30,6 +30,7 @@
 //#include "uae/types.h"
 
 #include "mmu_common.h"
+#include "uae2026_opcode_test.h"
 
 #ifndef FULLMMU
 #define FULLMMU
@@ -284,6 +285,8 @@ static ALWAYS_INLINE void mmu_put_move16(uaecptr addr, uae_u32 *v, int size)
 
 static ALWAYS_INLINE uae_u32 mmu_get_ilong(uaecptr addr, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultCode(addr, size))
+        mmu_bus_error(addr, 0, FC_INST, false, size, false);
     if (mmu_match_ttr(addr,regs.s!=0,false) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, 0, regs.s!=0, false, false, size);
     }
@@ -292,6 +295,8 @@ static ALWAYS_INLINE uae_u32 mmu_get_ilong(uaecptr addr, int size)
 
 static ALWAYS_INLINE uae_u16 mmu_get_iword(uaecptr addr, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultCode(addr, size))
+        mmu_bus_error(addr, 0, FC_INST, false, size, false);
     if (mmu_match_ttr(addr,regs.s!=0,false) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, 0, regs.s!=0, false, false, size);
     }
@@ -300,6 +305,8 @@ static ALWAYS_INLINE uae_u16 mmu_get_iword(uaecptr addr, int size)
 
 static ALWAYS_INLINE uae_u8 mmu_get_ibyte(uaecptr addr, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultCode(addr, size))
+        mmu_bus_error(addr, 0, FC_INST, false, size, false);
     if (mmu_match_ttr(addr,regs.s!=0,false) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, 0, regs.s!=0, false, false, size);
     }
@@ -308,6 +315,8 @@ static ALWAYS_INLINE uae_u8 mmu_get_ibyte(uaecptr addr, int size)
 
 static ALWAYS_INLINE uae_u32 mmu_get_long(uaecptr addr, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultData(addr, size, false))
+        mmu_bus_error(addr, 0, FC_DATA, false, size, false);
     if (mmu_match_ttr(addr,regs.s!=0,true) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, 0, regs.s!=0, true, false, size);
     }
@@ -316,6 +325,8 @@ static ALWAYS_INLINE uae_u32 mmu_get_long(uaecptr addr, int size)
 
 static ALWAYS_INLINE uae_u16 mmu_get_word(uaecptr addr, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultData(addr, size, false))
+        mmu_bus_error(addr, 0, FC_DATA, false, size, false);
     if (mmu_match_ttr(addr,regs.s!=0,true) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, 0, regs.s!=0, true, false, size);
     }
@@ -324,6 +335,8 @@ static ALWAYS_INLINE uae_u16 mmu_get_word(uaecptr addr, int size)
 
 static ALWAYS_INLINE uae_u8 mmu_get_byte(uaecptr addr, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultData(addr, size, false))
+        mmu_bus_error(addr, 0, FC_DATA, false, size, false);
     if (mmu_match_ttr(addr,regs.s!=0,true) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, 0, regs.s!=0, true, false, size);
     }
@@ -332,6 +345,8 @@ static ALWAYS_INLINE uae_u8 mmu_get_byte(uaecptr addr, int size)
 
 static ALWAYS_INLINE void mmu_put_long(uaecptr addr, uae_u32 val, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultData(addr, size, true))
+        mmu_bus_error(addr, val, FC_DATA, true, size, false);
     if (mmu_match_ttr_write(addr,regs.s!=0,true,val,size,true) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, val, regs.s!=0, true, true, size);
     }
@@ -340,6 +355,8 @@ static ALWAYS_INLINE void mmu_put_long(uaecptr addr, uae_u32 val, int size)
 
 static ALWAYS_INLINE void mmu_put_word(uaecptr addr, uae_u16 val, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultData(addr, size, true))
+        mmu_bus_error(addr, val, FC_DATA, true, size, false);
     if (mmu_match_ttr_write(addr,regs.s!=0,true,val,size,true) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, val, regs.s!=0, true, true, size);
     }
@@ -348,6 +365,8 @@ static ALWAYS_INLINE void mmu_put_word(uaecptr addr, uae_u16 val, int size)
 
 static ALWAYS_INLINE void mmu_put_byte(uaecptr addr, uae_u8 val, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultData(addr, size, true))
+        mmu_bus_error(addr, val, FC_DATA, true, size, false);
     if (mmu_match_ttr_write(addr,regs.s!=0,true,val,size,true) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, val, regs.s!=0, true, true, size);
     }
@@ -356,6 +375,8 @@ static ALWAYS_INLINE void mmu_put_byte(uaecptr addr, uae_u8 val, int size)
 
 static ALWAYS_INLINE uae_u32 mmu_get_user_long(uaecptr addr, bool super, bool write, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultData(addr, size, write))
+        mmu_bus_error(addr, 0, FC_DATA, write, size, false);
     if (mmu_match_ttr_write(addr,super,true,0,size,write) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, 0, super, true, write, size);
     }
@@ -364,6 +385,8 @@ static ALWAYS_INLINE uae_u32 mmu_get_user_long(uaecptr addr, bool super, bool wr
 
 static ALWAYS_INLINE uae_u16 mmu_get_user_word(uaecptr addr, bool super, bool write, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultData(addr, size, write))
+        mmu_bus_error(addr, 0, FC_DATA, write, size, false);
     if (mmu_match_ttr_write(addr,super,true,0,size,write) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, 0, super, true, write, size);
     }
@@ -372,6 +395,8 @@ static ALWAYS_INLINE uae_u16 mmu_get_user_word(uaecptr addr, bool super, bool wr
 
 static ALWAYS_INLINE uae_u8 mmu_get_user_byte(uaecptr addr, bool super, bool write, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultData(addr, size, write))
+        mmu_bus_error(addr, 0, FC_DATA, write, size, false);
     if (mmu_match_ttr_write(addr,super,true,0,size,write) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, 0, super, true, write, size);
     }
@@ -380,6 +405,8 @@ static ALWAYS_INLINE uae_u8 mmu_get_user_byte(uaecptr addr, bool super, bool wri
 
 static ALWAYS_INLINE void mmu_put_user_long(uaecptr addr, uae_u32 val, bool super, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultData(addr, size, true))
+        mmu_bus_error(addr, val, FC_DATA, true, size, false);
     if (mmu_match_ttr_write(addr,super,true,val,size,true) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, val, super, true, true, size);
     }
@@ -388,6 +415,8 @@ static ALWAYS_INLINE void mmu_put_user_long(uaecptr addr, uae_u32 val, bool supe
 
 static ALWAYS_INLINE void mmu_put_user_word(uaecptr addr, uae_u16 val, bool super, int size)
 {
+    if (Uae2026OpcodeTestShouldFaultData(addr, size, true))
+        mmu_bus_error(addr, val, FC_DATA, true, size, false);
     if (mmu_match_ttr_write(addr,super,true,val,size,true) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, val, super, true, true, size);
     }
@@ -396,6 +425,8 @@ static ALWAYS_INLINE void mmu_put_user_word(uaecptr addr, uae_u16 val, bool supe
 
 static ALWAYS_INLINE void mmu_put_user_byte(uaecptr addr, uae_u8 val, bool super, int size)
 {    
+    if (Uae2026OpcodeTestShouldFaultData(addr, size, true))
+        mmu_bus_error(addr, val, FC_DATA, true, size, false);
     if (mmu_match_ttr_write(addr,super,true,val,size,true) == TTR_NO_MATCH && regs.mmu_enabled) {
         addr = mmu_translate(addr, val, super, true, true, size);
     }

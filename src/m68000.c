@@ -30,6 +30,8 @@ const char M68000_fileid[] = "Hatari m68000.c : " __DATE__ " " __TIME__;
 #if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
 extern void Uae2026JitSyncRamRangeToShadow(uae_u32 addr, uae_u32 bytes);
 #endif
+extern uae_u16 mmu_opcode;
+extern bool mmu_restart;
 
 Uint32 BusErrorAddress;         /* Stores the offending address for bus-/address errors */
 Uint32 BusErrorPC;              /* Value of the PC when bus error occurs */
@@ -323,6 +325,127 @@ bool Uae2026OpcodeTestModeHandleStopTrailer(void)
 	regs.stopped = 1;
 	set_special(SPCFLAG_STOP);
 	m68k_setpc(m68k_getpc() + 4);
+	return true;
+}
+
+static int opcode_test_size_bytes(int size)
+{
+	switch (size) {
+		case 0: return 1;  /* sz_byte */
+		case 1: return 2;  /* sz_word */
+		case 2: return 4;  /* sz_long */
+		case 16: return 16; /* MOVE16 cache line */
+		default: return 1;
+	}
+}
+
+static bool opcode_test_addr_in_access(uint32_t fault_addr, uint32_t addr, int size)
+{
+	const uint32_t bytes = (uint32_t)opcode_test_size_bytes(size);
+	return fault_addr >= addr && fault_addr < addr + bytes;
+}
+
+static int opcode_test_expected_exception(void)
+{
+	static int cached = -2;
+	if (cached == -2) {
+		const char *env = getenv("B2_TEST_EXPECT_EXCEPTION");
+		cached = (env && *env) ? (int)strtol(env, NULL, 0) : 0;
+	}
+	return cached;
+}
+
+bool Uae2026OpcodeTestShouldFaultCode(uint32_t addr, int size)
+{
+	static int enabled = -1;
+	static uint32_t fault_addr = 0;
+	if (!opcode_test_mode_active)
+		return false;
+	if (enabled < 0) {
+		const char *env = getenv("B2_TEST_CODE_FAULT_ADDR");
+		enabled = (env && *env) ? 1 : 0;
+		if (enabled)
+			fault_addr = (uint32_t)strtoul(env, NULL, 16);
+	}
+	return enabled && opcode_test_addr_in_access(fault_addr, addr, size);
+}
+
+bool Uae2026OpcodeTestShouldFaultData(uint32_t addr, int size, bool write)
+{
+	static int enabled = -1;
+	static int want_write = -1;
+	static int want_size = -1;
+	static uint32_t fault_addr = 0;
+	if (!opcode_test_mode_active)
+		return false;
+	if (enabled < 0) {
+		const char *addr_env = getenv("B2_TEST_DATA_FAULT_ADDR");
+		const char *write_env = getenv("B2_TEST_DATA_FAULT_WRITE");
+		const char *size_env = getenv("B2_TEST_DATA_FAULT_SIZE");
+		enabled = (addr_env && *addr_env) ? 1 : 0;
+		if (enabled)
+			fault_addr = (uint32_t)strtoul(addr_env, NULL, 16);
+		if (write_env && *write_env)
+			want_write = (strcmp(write_env, "0") != 0) ? 1 : 0;
+		if (size_env && *size_env) {
+			switch (size_env[0]) {
+				case 'b': case 'B': want_size = 1; break;
+				case 'w': case 'W': want_size = 2; break;
+				case 'l': case 'L': want_size = 4; break;
+				default: want_size = (int)strtol(size_env, NULL, 0); break;
+			}
+		}
+	}
+	if (!enabled || !opcode_test_addr_in_access(fault_addr, addr, size))
+		return false;
+	if (want_write >= 0 && want_write != (write ? 1 : 0))
+		return false;
+	if (want_size > 0 && want_size != opcode_test_size_bytes(size))
+		return false;
+	return true;
+}
+
+static void opcode_test_dump_fault(int vector)
+{
+	const char *dump_mem = getenv("B2_TEST_DUMP_MEM_LONGS");
+	Uint32 dump_words[256];
+	size_t dump_count = 0;
+	MakeSR();
+	fprintf(stderr,
+		"FAULTDUMP: VECTOR=%d D0=%08x D1=%08x D2=%08x D3=%08x D4=%08x D5=%08x D6=%08x D7=%08x "
+		"A0=%08x A1=%08x A2=%08x A3=%08x A4=%08x A5=%08x A6=%08x A7=%08x SR=%04x PC=%08x "
+		"FAULT_PC=%08x INSTRUCTION_PC=%08x MMU_ADDR=%08x MMU_EA=%08x MMU_OPCODE=%04x MMU_RESTART=%d MMU_SSW=%04x "
+		"WB2_STATUS=%02x WB2_ADDR=%08x WB3_STATUS=%04x WB3_DATA=%08x USP=%08x ISP=%08x MSP=%08x SPC=%08x\n",
+		vector,
+		(unsigned)m68k_dreg(regs, 0), (unsigned)m68k_dreg(regs, 1),
+		(unsigned)m68k_dreg(regs, 2), (unsigned)m68k_dreg(regs, 3),
+		(unsigned)m68k_dreg(regs, 4), (unsigned)m68k_dreg(regs, 5),
+		(unsigned)m68k_dreg(regs, 6), (unsigned)m68k_dreg(regs, 7),
+		(unsigned)m68k_areg(regs, 0), (unsigned)m68k_areg(regs, 1),
+		(unsigned)m68k_areg(regs, 2), (unsigned)m68k_areg(regs, 3),
+		(unsigned)m68k_areg(regs, 4), (unsigned)m68k_areg(regs, 5),
+		(unsigned)m68k_areg(regs, 6), (unsigned)m68k_areg(regs, 7),
+		(unsigned)regs.sr, (unsigned)m68k_getpc(),
+		(unsigned)regs.fault_pc, (unsigned)regs.instruction_pc,
+		(unsigned)regs.mmu_fault_addr, (unsigned)regs.mmu_effective_addr,
+		(unsigned)(uae_u16)mmu_opcode, mmu_restart ? 1 : 0,
+		(unsigned)regs.mmu_ssw, (unsigned)regs.wb2_status,
+		(unsigned)regs.wb2_address, (unsigned)regs.wb3_status,
+		(unsigned)regs.wb3_data, (unsigned)regs.usp, (unsigned)regs.isp,
+		(unsigned)regs.msp, (unsigned)regs.spcflags);
+	if (dump_mem && *dump_mem && opcode_test_parse_longs(dump_mem, dump_words, sizeof(dump_words) / sizeof(dump_words[0]), &dump_count)) {
+		for (size_t i = 0; i < dump_count; i++)
+			fprintf(stderr, "MEMDUMP: %08x=%08x\n", (unsigned)dump_words[i], (unsigned)NEXTMemory_ReadLong(dump_words[i]));
+	}
+}
+
+bool Uae2026OpcodeTestModeHandleExpectedException(int vector)
+{
+	if (!opcode_test_mode_active || opcode_test_expected_exception() != vector)
+		return false;
+	opcode_test_dump_fault(vector);
+	opcode_test_mode_active = false;
+	set_special(SPCFLAG_BRK);
 	return true;
 }
 

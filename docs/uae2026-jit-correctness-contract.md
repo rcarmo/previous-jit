@@ -641,16 +641,16 @@ Status vocabulary:
     `MMU_SSW=0121`, with no `JIT_CALL_TARGET_*` rollback/canonicalization line in
     the focused log.
 - Follow-up exact-barrier attempt:
-  - RAM/MMU dispatch now treats `i_JSR` as an interpreter barrier and
-    `Uae2026JitMmuXlateCode()` honors `B2_TEST_CODE_FAULT_ADDR` for code-host
-    translation attempts.  `Uae2026JitCanonicalizePcAfterFallback()` also uses
-    `m68k_getpc()` and republishes a code-fetch-style tuple before code-host
-    translation.
+  - RAM/MMU dispatch now treats the JSR opcode range (`(op & 0xffc0) == 0x4e80`)
+    as an interpreter barrier and `Uae2026JitMmuXlateCode()` honors
+    `B2_TEST_CODE_FAULT_ADDR` for code-host translation attempts.
+    `Uae2026JitCanonicalizePcAfterFallback()` also uses `m68k_getpc()` and
+    republishes a code-fetch-style tuple before code-host translation.
   - Normal focused JSR/call vectors remained green:
-    `/workspace/tmp/previous-opcode-harness-20260529-200841` (`total=9`,
+    `/workspace/tmp/previous-opcode-harness-20260529-203428` (`total=9`,
     `pass=9`, `fail=0`, `infra_fail=0`).
   - The forced-fault oracle still does **not** pass:
-    `/workspace/tmp/previous-opcode-harness-20260529-200633` reports the same
+    `/workspace/tmp/previous-opcode-harness-20260529-203300` reports the same
     `PC=08000000` / `MMU_ADDR=08000002` JIT tuple.  Therefore the problem is not
     solved by an L2 JSR barrier alone.
 - Policy: the discriminator exists and does **not** pass.  Keep the current JSR

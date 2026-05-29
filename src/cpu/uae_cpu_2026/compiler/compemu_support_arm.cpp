@@ -1164,7 +1164,7 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 	   frames the code fetch at the target PC, while native JSR can continue with
 	   stale/partial target state.  Keep JSR exact in RAM/MMU mode until explicit
 	   call-target metadata makes fault_jsr_target_fetch pass. */
-	if (jit_allow_ram_dispatch_env() && table68k[op].mnemo == i_JSR)
+	if (jit_allow_ram_dispatch_env() && (op & 0xffc0u) == 0x4e80u)
 		return true;
 
 	/* Trap/exception-frame construction can itself fault while pushing a frame.

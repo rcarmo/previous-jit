@@ -474,7 +474,7 @@ Status vocabulary:
 
 | Case family | Contract clause(s) | Current status | Rationale / current source of truth | ≤120s discriminator or static proof target |
 | --- | --- | --- | --- | --- |
-| Restart snapshot before RAM/MMU helpers | 1, 4 | **Guarded/exact fallback**, partly proven | `Uae2026JitPublishFallbackState()` and code-fetch publication record `fault_pc`, `Uae2026JitLastInstructionPc`, `SR`, `A7`, flags, `mmu_restart`, and `mmu_opcode`; earlier fixes also full-flush live state and publish flags before helper faults. | Static proof: enumerate every call to `Uae2026JitMmuFetchOpcode`, `Uae2026JitMmuXlateCodeHost`, and RAM/MMU bank helpers and verify publication immediately before faultable calls.  Use `git grep`/source review only unless a gap is found. |
+| Restart snapshot before RAM/MMU helpers | 1, 4 | **Static-audited with residual partial publishers** | `Uae2026JitPublishFallbackState()` and `jit_publish_code_fetch_state()` record the full restart tuple (`fault_pc`, `Uae2026JitLastInstructionPc`, `SR`, `A7`, flags, `mmu_restart`, and `mmu_opcode`) for fallback and primary code-fetch paths.  The audit below also identifies code-host/compiled helper callsites that publish only `regs.pc`/`fault_pc`/`Uae2026JitLastInstructionPc`; these are not conversion candidates until upgraded or covered by a passing oracle. | Static proof recorded below.  Do not treat partial publishers as transaction-equivalent for call/return/trap/MOVEM conversion; add a focused forced-fault oracle before broadening them. |
 | Code-space vs data-space translation | 2 | **Guarded/exact fallback**, with scoped code-host ranges | Data effective-address bank translation uses `Uae2026JitMmuXlateData()`.  Dispatch/branch/return materialization uses `Uae2026JitMmuXlateCodeHost()`.  Confirmed non-identity high-user and low33 post-RTE fetches use code-host bytes; broader low-virtual broadening was tested and reverted after regressions. | Static proof: list the current code-host gating predicates (`05000000..07ffffff`, low33 post-RTE, env-only low12b/low83/low7f) and confirm no normal data EA path calls the code-host helper. |
 | CPU-space accesses, `MOVES`, SFC/DFC | 2, 4 | **Guarded/exact fallback** | RAM/MMU dispatch now forces every `table68k[op].mnemo == i_MOVES` through the interpreter barrier because the AArch64 MOVES gapfill is helper-backed through normal data helpers, while exact MOVES needs SFC/DFC-aware `sfc_get_*`/`dfc_put_*` and MOVES-specific SSW handling in `mmu_bus_error()`. | Static proof: verify the `i_MOVES` RAM/MMU barrier stays in `jit_force_interpreter_barrier_opcode()`; run focused `PREVIOUS_OPCODE_FILTER='moves_|movec_sfc|movec_dfc' ./tools/uae2026-opcode-harness.sh` after touching this family. |
 | Auto-increment/predecrement memory EAs (`Aipi`/`Apdi`) | 1, 3, 4 | **Guarded/exact fallback**, plus **heuristic compatibility shim** | RAM/MMU mode forces any opcode with source/destination `Aipi`/`Apdi` through an interpreter barrier.  The bridge still contains conservative postincrement/predecrement restoration for helper/fallback escapes and known MOVES signatures, gated by restartability where needed. | Static proof: verify `jit_force_interpreter_barrier_opcode()` still catches all `table68k[op].smode/dmode == Aipi/Apdi`.  If changing this, add targeted opcode vectors for restartable postincrement read and non-restartable predecrement write. |
@@ -493,23 +493,62 @@ Status vocabulary:
 
 ### Prioritized next narrow audit targets
 
-1. **Replace the remaining BSR legacy scan with producer metadata only after a
-   bounded trace proves the historical `00003372/00003374 -> 00012b04` seam emits
-   `JIT_CALL_TARGET_ROLLBACK_TXN`.**  Until then, the scan is a documented
-   compatibility shim, not a correctness model.
-2. **Prove or narrow JSR target-fetch semantics beyond the current allowlist.**
-   The broad rule was already shown to perturb early boot, so the next step is a
-   synthetic target-fetch-fault vector or a short boot discriminator, not another
-   allowlist expansion by symptom.
-3. **Audit RTE/page-fault resume state statically and with a short trace.**  RTE
-   opcode semantics are exact; the missing proof is the post-`Exception(2)`
-   transition back to native dispatch (`SR`, active A7, `USP/ISP/MSP`, `pc_p`, and
-   frame-effective-address fields).
-4. **Generalize non-restartable write handling only from interpreter oracles.**
-   The two known byte-store PC shims are allowed because they match observed
-   interpreter post-advance behavior; adding new PCs without a matching oracle is
-   explicitly out of scope.  The bounded discriminator below defines the oracle
-   shape; a raw no-handoff boot fault-window is only a suspicion source.
+1. **Upgrade residual partial restart publishers only behind forced-fault
+   oracles.**  The static audit below proves the primary fallback/code-fetch
+   paths, but also identifies code-host and compiled-helper callsites that publish
+   only part of the restart tuple.
+2. **Keep the remaining BSR legacy scan until producer metadata covers the
+   historical `00003372/00003374 -> 00012b04` seam.**  Until then, the scan is a
+   documented compatibility shim, not a correctness model.
+3. **Keep JSR rollback/canonicalization narrow.**  The synthetic
+   `fault_jsr_target_fetch` oracle exists and fails by tuple mismatch, so the
+   boot-seam allowlist must remain explicit.
+4. **Treat remaining MOVEM/RTE/trap/FPU work as exact until metadata and focused
+   discriminators match.**  A raw no-handoff boot fault-window is only a suspicion
+   source, not a conversion proof.
+
+### Static audit: restart snapshot publication before faultable helpers
+
+- Contract clauses: 1 and 4.  Any faultable RAM/MMU helper or code-host
+  translation must publish enough state for `Exception(2)` to build the same
+  access-error tuple as the interpreter.
+- Full restart publishers:
+  - `Uae2026JitPublishFallbackState(pc, opcode)` records `regs.fault_pc`,
+    `Uae2026JitLastInstructionPc`, `Uae2026JitLastSr`, `Uae2026JitLastA7`,
+    `Uae2026JitLastFlags`, `mmu_restart=true`, and `mmu_opcode=opcode`.
+  - `jit_publish_code_fetch_state(pc)` additionally writes `regs.pc=pc` and
+    publishes `mmu_opcode=ffff` before code-host translation.
+- Covered callsites:
+  - `jit_canonicalize_code_pc_if_ram_mmu()` and `jit_fetch_opcode_via_code_host()`
+    call `jit_publish_code_fetch_state()` immediately before
+    `Uae2026JitMmuXlateCodeHost()`.
+  - `jit_fetch_opcode_for_current_pc()` publishes code-fetch state before the
+    low-virtual `Uae2026JitMmuFetchOpcode()` path.
+  - `Uae2026JitPrefetchGuard()` publishes a prefetch tuple before the faultable
+    fetch and republishes the fetched opcode after success, so later data faults
+    use the decoded opcode.
+  - The fallback execute loops commit any active transaction and call
+    `Uae2026JitPublishFallbackState()` before `cpufunctbl[]` fallback execution;
+    RTE fallback also explicitly republishes `0x4e73`.
+  - L2 per-instruction barriers emit a direct call to
+    `Uae2026JitPublishFallbackState()` before invoking fallback helpers.
+- Partial publishers that are **not** transaction-equivalent:
+  - `jit_sync_fault_pc_for_bank_helper()` runs before native bank helpers
+    (`readmem_special()` / `writemem_special()`), but it only stores `regs.pc`,
+    `regs.fault_pc`, and `Uae2026JitLastInstructionPc`.  It relies on earlier
+    fallback/block publication for `SR`, `A7`, flags, `mmu_restart`, and opcode.
+  - `get_n_addr_jmp_mmu()` flushes and then publishes only `regs.pc`,
+    `regs.fault_pc`, and `Uae2026JitLastInstructionPc` before the faultable
+    `Uae2026JitMmuXlateCodeHost()` target translation.
+  - Bad-`pc_p` recovery in `execute_normal()` and the non-generated dispatch
+    helpers `Uae2026JitCanonicalizePcAfterFallback()` / `jit_set_guest_pc_fast()`
+    rebuild `pc_p` through `Uae2026JitMmuXlateCodeHost()` without publishing the
+    full restart tuple first.
+- Decision: the main fallback and explicit code-fetch paths are covered, but the
+  partial publishers above must not be used as proof for native call/return/trap
+  conversion.  Any upgrade should be narrow and paired with a forced-fault oracle
+  that proves the full interpreter tuple, rather than inferred from a boot-frontier
+  change.
 
 ### Bounded proof 1: historical BSR target-fetch seam
 

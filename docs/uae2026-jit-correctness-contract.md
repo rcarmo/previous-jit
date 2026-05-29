@@ -483,7 +483,7 @@ Status vocabulary:
 | RTS/RTR return target fetch after stack pop | 3, 4 | **Guarded/exact fallback** and **transaction-backed** | Return-family opcodes are interpreter barriers in RAM/MMU dispatch.  Fallback paths publish `return_pop` metadata for `RTS`/`RTR` so target-fetch faults can restore A7 from producer metadata rather than opcode-window guessing. | Static proof: verify `op == 0x4e75/0x4e77` remains in the RAM/MMU barrier list and fallback loops still call `Uae2026JitMmuTxnBeginReturnPopCurrentA7()`.  Add a focused return-target fault vector before native lowering. |
 | RTE SR/stack switch before return-code fetch | 1, 3, 4 | **Proven exact opcode path**, but native post-fault resume remains an **unaudited gap** | `jit_op_rte()` routes through `cpufunctbl[0x4e73]` after publishing fallback state.  Bridge-caught RTE/page-fault seams no longer auto-handoff unless `B2_JIT_RTE_FAULT_HANDOFF=1`, preserving native no-handoff for diagnosis. | Static proof: keep `RTE` on the RAM/MMU interpreter-barrier list.  Bounded discriminator target: short trace that catches `04001ae6 -> low user PC` and compares pre/post `Exception(2)` `SR/A7/USP/ISP/MSP`, frame format, and `pc_p` without running to desktop. |
 | MOVEM continuation frames and `MMU_SSW_CM` | 3, 4 | **Guarded/exact fallback**, partly proven | Bridge now preserves `MMU_SSW_CM` continuation EA instead of replacing it with `mmu_fault_addr`.  RAM direct MOVEM predecrement shortcut is default-off because it bypasses interpreter MOVEM restart/fixup bookkeeping.  Fast vectors cover normal MOVEM frame restore. | Static proof: keep `B2_JIT_RAM_DIRECT_MOVEM_PREDEC` default-off and verify `regs.mmu_effective_addr` is not overwritten when `MMU_SSW_CM` is set.  Future vector: MOVEM predecrement MMU write fault with continuation EA assertion. |
-| Non-restartable write faults and post-advance PC | 4 | **Heuristic compatibility shim** for known byte stores; generalized behavior is an **unaudited gap** | Confirmed `0500b6ae` and `0500bc98` byte-store seams advance `fault_pc` only when `mmu_restart == false`.  The later `0500b6b0` candidate was reverted because it was already the visible post-advance PC. | Bounded discriminator: parse a ≤120s fault-window run for non-restartable writes and assert no repeated same-PC replay for the two known seams; do not add new PC shims without an interpreter oracle for the exact store. |
+| Non-restartable write faults and post-advance PC | 4 | **Heuristic compatibility shim** for known byte stores; generalized behavior is an **unaudited gap** | Confirmed `0500b6ae` and `0500bc98` byte-store seams advance `fault_pc` only when `mmu_restart == false`.  The later `0500b6b0` candidate was reverted because it was already the visible post-advance PC. | Bounded oracle/discriminator is defined below: first collect interpreter `FAULTDUMP` for the exact store shape with a forced write fault, then require the JIT to match `fault_pc`, `instruction_pc`, visible `PC`, `mmu_restart`, `SSW`, writeback fields, and side effects.  Do not add new PC shims from boot fault-window symptoms alone. |
 | ATC/MMU maintenance (`PTEST`, `PFLUSH`, `PMOVE`, `PLPA`, vendored `i_MMUOP`) | 5 | **Proven exact** | RAM/MMU dispatch forces vendored `i_MMUOP` exact.  This removed the repeated native `0501288e` stale/invalid retry fault where the interpreter could scan `00038000` successfully. | Static proof: verify `table68k[op].mnemo == i_MMUOP` remains a RAM/MMU barrier.  Regression discriminator: grep a capped fault-window run for `0501288e=0` only after touching this family. |
 | MOVEC/SR control-state changes and stale allocator state | 1, 6, 7 | **Guarded/exact fallback / block-ending barrier** | MOVEC helpers may update VBR/SFC/DFC and set `spcflags` in RAM mode; `jit_force_interpreter_barrier_opcode()` ends the block for `4e7a/4e7b`.  SR-write exacting was tested as a broad fix and reverted because it did not move the frontier. | Static proof: keep `MOVEC` block-ending barrier and focused `movec_vbr/sfc/dfc_roundtrip` vectors green.  Do not add a broad SR barrier unless a specific clause violation is proven. |
 | Trap/exception-frame construction before nested faults | 3, 4 | **Guarded/exact fallback**, but nested MMU frame-fault behavior is an **unaudited gap** | TRAP-family native generation generally falls back.  The transaction model still lists `trap_frame` as future work because frame pushes can themselves fault and must not be reconstructed from stale opcode windows. | Static proof: confirm TRAP/TRAPV/TRAPcc remain exact/fallback in RAM/MMU mode.  Future discriminator: synthetic TRAP with stack mapped to force frame write fault, comparing interpreter frame state. |
@@ -508,7 +508,8 @@ Status vocabulary:
 4. **Generalize non-restartable write handling only from interpreter oracles.**
    The two known byte-store PC shims are allowed because they match observed
    interpreter post-advance behavior; adding new PCs without a matching oracle is
-   explicitly out of scope.
+   explicitly out of scope.  The bounded discriminator below defines the oracle
+   shape; a raw no-handoff boot fault-window is only a suspicion source.
 
 ### Bounded proof 1: historical BSR target-fetch seam
 
@@ -653,3 +654,73 @@ Status vocabulary:
   RTE-resume optimization must first add a focused dispatch trace that captures
   the first post-`JIT_LOWPC_RESUME POST` native dispatch `pc_p` alongside
   `regs.pc` and the code-host words, still under the ≤120s rule.
+
+### Discriminator design: non-restartable write PC advancement
+
+- Contract clause: 4, exact 68040 access-error frame equivalence.
+- Goal: decide, per exact write opcode and EA shape, whether a non-restartable
+  data-write fault is reported at the write instruction PC or at the already
+  advanced post-instruction PC.  This is an interpreter-oracle question, not a
+  bridge pattern-matching question.
+- Current narrow shim:
+  - `uae2026_jit_bridge.cpp` advances only `0500b6ae` and `0500bc98`, only for
+    `prb == 2 && !mmu_restart`, then updates `regs.fault_pc`,
+    `regs.instruction_pc`, and `m68k_getpc()` together.
+  - The nearby `0500b6b0` hot loop is **not** a new approved shim.  A candidate
+    that advanced it was reverted because the capped diagnostic
+    `/workspace/tmp/previous-jit-byte-store-b6b0-nohandoff-20260527-151758` did
+    not move the frontier; the safer interpretation is that `0500b6b0` is
+    already the visible post-advance PC from the existing `0500b6ae` shape.
+- Why a raw boot fault-window is insufficient:
+  - `mmu_bus_error()` records write size/function-code state, writeback fields,
+    `regs.mmu_fault_addr`, and throws vector 2, but it does not itself prove
+    which logical `PC` the exact 040 interpreter had already published.
+  - `gencpu.c::gen_set_fault_pc()` is the generated-interpreter point that
+    marks 68040 writes non-restartable (`mmu_restart = false`) and syncs the
+    visible PC before the write helper.  Therefore the oracle must capture the
+    generated interpreter's fault state at the specific opcode/EA, not infer it
+    from `mmu_restart == false` alone.
+  - Existing `seam_byte_store_d2_fault_shape` and
+    `seam_byte_copy_postinc_fault_shape` opcode vectors cover normal mapped
+    side-effect shapes and memory dumps; they are not MMU write-fault oracles.
+- Proposed default-off opcode-test extension:
+  - Reuse the exception harness mode from the JSR target-fetch design:
+    `B2_TEST_EXPECT_EXCEPTION=2` makes one expected vector-2 access error a
+    successful test and emits `FAULTDUMP:` instead of requiring `REGDUMP:`.
+  - Add an opcode-test-only forced data-write fault trigger, for example
+    `B2_TEST_DATA_FAULT_ADDR=<addr>` plus optional `B2_TEST_DATA_FAULT_SIZE=B/W/L`
+    and `B2_TEST_DATA_FAULT_WRITE=1`.  The trigger must be ignored unless
+    `Uae2026OpcodeTestModeActive()` is true, and it must enter the same 040 MMU
+    access-error path (`mmu_bus_error(..., write=true, size, nonmmu=false)`) that
+    a real protected write uses after normal restart-state publication.
+  - `FAULTDUMP` must include at least: vector, `fault_pc`,
+    `regs.instruction_pc`, `m68k_getpc()`, `mmu_fault_addr`, `mmu_effective_addr`,
+    `mmu_opcode`, `mmu_restart`, `mmu_ssw`, `wb2/wb3` status/address/data, `SR`,
+    active `A7`, `USP/ISP/MSP`, all data/address registers, top stack longs, and
+    requested memory dumps around the destination/source operands.
+- Required oracle vectors before any new PC shim:
+  1. `MOVE.B D2,(A0)` (`1082`), with `A0` equal to the forced write-fault
+     address and `D2` containing a nonzero byte.  This is the synthetic shape for
+     the approved `0500b6ae` seam and the rejected `0500b6b0` candidate.
+  2. `MOVE.B (A2)+,(A0)` (`109a`), with source mapped/readable, destination equal
+     to the forced write-fault address, and dumps of `A0`, old `A2`, new `A2`, and
+     destination memory.  This is the synthetic shape for the approved
+     `0500bc98` seam and proves the source postincrement side effect.
+  3. A negative control such as `MOVE.L D0,-(A7)` with a forced stack write fault,
+     matching the known `0000c53c` non-restartable low-virtual behavior where the
+     bridge must not apply the high-user byte-store shim.
+- Acceptance rule:
+  - First run interpreter-only and record the oracle tuple
+    `(fault_pc, instruction_pc, visible_pc, mmu_restart, mmu_ssw, wb fields,
+    side-effect registers, memory dumps)`.
+  - Then run JIT/RAM/MMU with the same forced fault.  A PC shim is valid only if
+    the JIT differs from the interpreter solely by arriving at the pre-write PC
+    while all already-committed side effects match, and advancing to the
+    interpreter's post-PC tuple makes every recorded field match.
+  - If the interpreter reports a pre-write PC, if `mmu_restart` is true, if SSW
+    write/size/function-code bits differ, or if side effects differ, do not add a
+    PC shim; keep the opcode exact or add explicit transaction metadata instead.
+- Runtime budget: the forced-fault opcode discriminator should run one
+  interpreter and one JIT instance in the existing opcode harness and remain well
+  under 120s.  A capped no-handoff boot fault-window may still be used to find
+  suspicious PCs, but it is not an acceptance test for new advancement shims.

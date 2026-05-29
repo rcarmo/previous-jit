@@ -914,6 +914,28 @@ Status vocabulary:
       `MMU_EA=0400a020`, `SR=0000`, `SPC=00000008`; JIT reports
       `MMU_EA=0400a01c`, `SR=0010`, `SPC=00000000`.  Keep MOVEM exact until the
       format-7 continuation metadata is explicit and matched.
+- Post-`af54814` forced-fault baseline:
+  - An unfiltered `PREVIOUS_OPCODE_INCLUDE_FAULTS=1` opcode-harness run exceeded
+    the 120s cap before reaching the full fault set; artifact
+    `/workspace/tmp/previous-opcode-harness-20260529-201425` is **not** counted as
+    validation.
+  - Focused command shape:
+    `PREVIOUS_OPCODE_INCLUDE_FAULTS=1 PREVIOUS_OPCODE_FILTER='^(fault_bsr_target_fetch|fault_jsr_target_fetch|fault_rts_target_fetch|fault_rtr_target_fetch|fault_rte_return_fetch|fault_trap_frame_write|fault_write_byte_d2|fault_write_byte_postinc|moves_dfc_write_fault|moves_sfc_read_fault|movem_predec_write_fault)$' PREVIOUS_UAE2026_JIT_RAM=1 B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1 PREVIOUS_OPCODE_TEST_ADDR=0x04008000 ./tools/uae2026-opcode-harness.sh`.
+  - Artifact: `/workspace/tmp/previous-opcode-harness-20260529-201653`.
+  - Metrics: `total=11`, `interp_ok=11`, `jit_ok=10`, `pass=0`, `fail=10`,
+    `infra_fail=1`, `score=0`, `jit_ram_requested=1`,
+    `rte_handoff_disabled=1`.
+  - Infra failure: `fault_bsr_target_fetch` JIT still exits via normal emulator
+    completion (`emu_exit_0`) instead of a matching forced `FAULTDUMP`.
+  - Equivalence failures: `fault_jsr_target_fetch`, `fault_rts_target_fetch`,
+    `fault_rtr_target_fetch`, `fault_rte_return_fetch`, `fault_trap_frame_write`,
+    `fault_write_byte_d2`, `fault_write_byte_postinc`, `moves_dfc_write_fault`,
+    `moves_sfc_read_fault`, and `movem_predec_write_fault`.
+  - Pattern change vs the older 9-vector run: adding the JSR and trap-frame
+    oracles broadens coverage, and `fault_rts_target_fetch` now produces a JIT
+    `FAULTDUMP` mismatch (`PC=08000000`) instead of timing out.  The overall
+    conversion decision is unchanged: no rollback/canonicalization family passes
+    the oracle gate.
 - Call-target decision:
   - Do **not** remove the legacy BSR scan.  The historical proof already showed
     `00003372/00003374 -> 00012b04` is not transaction-covered, and the synthetic

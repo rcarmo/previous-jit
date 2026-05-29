@@ -1127,6 +1127,13 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 	if (jit_allow_ram_dispatch_env() && (op == 0x4e7a || op == 0x4e7b))
 		return true;
 
+	/* MOVES must preserve SFC/DFC function-code semantics and MOVES-specific
+	   68040 SSW bits.  The helper-backed AArch64 gapfill uses normal data
+	   helpers, so keep every MOVES variant exact while RAM/MMU dispatch is
+	   active. */
+	if (jit_allow_ram_dispatch_env() && table68k[op].mnemo == i_MOVES)
+		return true;
+
 	/* RAM/MMU dispatch must preserve 68040 restart state for auto-update EAs.
 	   The generated native ARM64 paths update An before a later MMU fault can
 	   longjmp back to the bridge, but the interpreter paths publish mmufixup[]

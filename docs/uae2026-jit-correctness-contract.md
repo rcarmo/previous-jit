@@ -476,7 +476,7 @@ Status vocabulary:
 | --- | --- | --- | --- | --- |
 | Restart snapshot before RAM/MMU helpers | 1, 4 | **Guarded/exact fallback**, partly proven | `Uae2026JitPublishFallbackState()` and code-fetch publication record `fault_pc`, `Uae2026JitLastInstructionPc`, `SR`, `A7`, flags, `mmu_restart`, and `mmu_opcode`; earlier fixes also full-flush live state and publish flags before helper faults. | Static proof: enumerate every call to `Uae2026JitMmuFetchOpcode`, `Uae2026JitMmuXlateCodeHost`, and RAM/MMU bank helpers and verify publication immediately before faultable calls.  Use `git grep`/source review only unless a gap is found. |
 | Code-space vs data-space translation | 2 | **Guarded/exact fallback**, with scoped code-host ranges | Data effective-address bank translation uses `Uae2026JitMmuXlateData()`.  Dispatch/branch/return materialization uses `Uae2026JitMmuXlateCodeHost()`.  Confirmed non-identity high-user and low33 post-RTE fetches use code-host bytes; broader low-virtual broadening was tested and reverted after regressions. | Static proof: list the current code-host gating predicates (`05000000..07ffffff`, low33 post-RTE, env-only low12b/low83/low7f) and confirm no normal data EA path calls the code-host helper. |
-| CPU-space accesses, `MOVES`, SFC/DFC | 2, 4 | **Guarded/exact fallback** | Vendored `MOVES` compiler entries are `NULL`/failure and therefore run through the interpreter path; the old RAM direct `MOVES.* reg,(An)+` shortcut was removed.  `mmu_bus_error()` has MOVES-specific function-code SSW handling. | Static proof: check `compstbl.cpp` `MOVES` entries remain `NULL`; run focused `PREVIOUS_OPCODE_FILTER='moves_|movec_sfc|movec_dfc' ./tools/uae2026-opcode-harness.sh` only if source changes touch this family. |
+| CPU-space accesses, `MOVES`, SFC/DFC | 2, 4 | **Guarded/exact fallback** | RAM/MMU dispatch now forces every `table68k[op].mnemo == i_MOVES` through the interpreter barrier because the AArch64 MOVES gapfill is helper-backed through normal data helpers, while exact MOVES needs SFC/DFC-aware `sfc_get_*`/`dfc_put_*` and MOVES-specific SSW handling in `mmu_bus_error()`. | Static proof: verify the `i_MOVES` RAM/MMU barrier stays in `jit_force_interpreter_barrier_opcode()`; run focused `PREVIOUS_OPCODE_FILTER='moves_|movec_sfc|movec_dfc' ./tools/uae2026-opcode-harness.sh` after touching this family. |
 | Auto-increment/predecrement memory EAs (`Aipi`/`Apdi`) | 1, 3, 4 | **Guarded/exact fallback**, plus **heuristic compatibility shim** | RAM/MMU mode forces any opcode with source/destination `Aipi`/`Apdi` through an interpreter barrier.  The bridge still contains conservative postincrement/predecrement restoration for helper/fallback escapes and known MOVES signatures, gated by restartability where needed. | Static proof: verify `jit_force_interpreter_barrier_opcode()` still catches all `table68k[op].smode/dmode == Aipi/Apdi`.  If changing this, add targeted opcode vectors for restartable postincrement read and non-restartable predecrement write. |
 | BSR return-address push before target instruction fetch | 3, 4 | **Transaction-backed**, but one **heuristic compatibility shim** remains | Generated/fallback BSR paths publish `call_push` metadata and fallback BSR target metadata.  The historical `00003372/00003374 -> 00012b04` seam still uses the legacy bridge scan (`JIT_CALL_TARGET_ROLLBACK`) rather than `JIT_CALL_TARGET_ROLLBACK_TXN`. | Static proof: preserve the legacy scan until a bounded trace shows `JIT_CALL_TARGET_ROLLBACK_TXN` for the historical seam.  Existing `bsr_word_call_return` vector proves normal call/return, not target-fetch-fault rollback. |
 | JSR return-address push before target instruction fetch | 3, 4 | **Transaction-backed for selected seams**, otherwise **unaudited gap** | JSR `call_push` metadata is currently narrow (`0000003e`, `00003c26`, `00008334`, `0000c52c`, `05027706`) because broad JSR rollback stalled earlier boot probes.  Only the confirmed `05027706` target-fetch seam uses canonicalized target-PC framing. | Static proof: keep the allowlist explicit.  Next proof target is a synthetic or boot-short discriminator that forces a `JSR (An)` target-fetch fault and verifies whether rollback vs target-PC canonicalization matches the interpreter. |
@@ -724,3 +724,64 @@ Status vocabulary:
   interpreter and one JIT instance in the existing opcode harness and remain well
   under 120s.  A capped no-handoff boot fault-window may still be used to find
   suspicious PCs, but it is not an acceptance test for new advancement shims.
+
+### Static proof 4: RAM/MMU guard invariants before semantic edits
+
+- Contract clauses: 1, 2, 3, 4, and 5.  These are guardrails that must remain
+  true before any rollback/translation/native-lowering semantic edit is allowed.
+- Restart snapshot publication:
+  - `Uae2026JitPublishFallbackState(pc, opcode)` writes `regs.fault_pc`,
+    `Uae2026JitLastInstructionPc`, pre-op `SR`, pre-op active `A7`, flags,
+    `mmu_restart=true`, and `mmu_opcode=opcode`.
+  - `jit_publish_code_fetch_state(pc)` additionally writes `regs.pc=pc` and
+    publishes `mmu_opcode=-1` before a faultable code fetch.
+  - Native bank helper calls go through `jit_sync_fault_pc_for_bank_helper()` for
+    read/write helpers and `jit_prepare_for_mmu_helper_call()` for explicit MMU
+    helper calls; both publish or flush live state before faultable work.
+  - Dispatch/fallback loops call `Uae2026JitMmuTxnCommit()` and then
+    `Uae2026JitPublishFallbackState()` before executing fallback/interpreter
+    opcodes.
+- Code/data/CPU-space split:
+  - `Uae2026JitMmuXlateData()` translates with `data=true`; `Uae2026JitMmuXlateCode()`
+    and `Uae2026JitMmuXlateCodeHost()` are code-space paths with `data=false`.
+  - JIT dispatch/branch/return target materialization uses the code-host path
+    (`jit_fetch_opcode_via_code_host()`, `get_n_addr_jmp_mmu()`, and RAM/MMU
+    dispatch `pc_p` rebuilds).
+  - Normal generated memory reads/writes use data/bank helpers (`readmem_special`,
+    `writemem_special`, `Uae2026JitMmuGet*`, `Uae2026JitMmuPut*`), not code-host
+    translation.
+  - CPU-space MOVES is guarded exact in RAM/MMU mode; see below.
+- MOVES/SFC/DFC guard:
+  - The AArch64 `compstbl_arm.cpp` has helper-backed MOVES gapfill entries, but
+    `jit_op_moves()` uses normal `get_*`/`put_*` helpers and therefore cannot be
+    the correctness source for SFC/DFC function-code faults.
+  - RAM/MMU dispatch now forces `table68k[op].mnemo == i_MOVES` through the
+    interpreter barrier, preserving `sfc_get_*`/`dfc_put_*`, `ismoves`, and the
+    MOVES-specific SSW/function-code rewrite in `mmu_bus_error()`.
+- Auto-EA barriers:
+  - `jit_force_interpreter_barrier_opcode()` keeps any opcode whose source or
+    destination mode is `Aipi` or `Apdi` exact while RAM dispatch is enabled.
+    This protects pre/post-update address-register restart state until explicit
+    auto-EA transaction metadata replaces the bridge shim.
+- MOVEC control-state barrier:
+  - `jit_force_interpreter_barrier_opcode()` treats `4e7a`/`4e7b` (`MOVEC2` /
+    `MOVE2C`) as RAM/MMU interpreter barriers, ending the block so VBR/SFC/DFC,
+    `spcflags`, and allocator-visible guest state are reloaded before the next
+    native instruction.
+- MMUOP exact barrier:
+  - `jit_force_interpreter_barrier_opcode()` forces `table68k[op].mnemo ==
+    i_MMUOP` exact in RAM/MMU dispatch.  This keeps `PTEST`/`PFLUSH`/`PMOVE`/ATC
+    state changes in the vendored interpreter path and prevents stale native MMU
+    retry state.
+- Zero-PC MMU behavior:
+  - The `JIT_ZERO_PC` recovery branch in RAM dispatch is gated by
+    `_pc == 0 && jit_allow_ram_dispatch_env() && !regs.mmu_enabled`; with the 040
+    MMU enabled, PC=0 is not recovered and remains a diagnostic symptom.
+  - The bridge also canonicalizes `handled_pc` after `Exception(2)` and logs the
+    frame state, but this is vector-entry canonicalization, not a blanket zero-PC
+    recovery while MMU is active.
+- Conclusion: the guard invariants are now statically documented.  The only gap
+  found during proof was MOVES: the AArch64 gapfill was not an exact SFC/DFC
+  source, so RAM/MMU dispatch now barriers all `i_MOVES` before further semantic
+  rollback edits.  Do not weaken these guards unless a focused `FAULTDUMP` oracle
+  proves equivalent metadata or native lowering.

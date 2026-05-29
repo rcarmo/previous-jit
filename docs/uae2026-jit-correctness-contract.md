@@ -665,6 +665,19 @@ Status vocabulary:
   - The oracle still does **not** pass because `SR`/`SPC` differ (`SR=0010`,
     `SPC=00000000` on JIT versus `SR=0000`, `SPC=00000008` on the interpreter),
     so it remains a diagnostic oracle rather than conversion permission.
+  - Source-path audit of the residual `SR`/`SPC` delta:
+    - Interpreter forced faults are caught in `m68k_run_mmu040()` after the loop's
+      local restart snapshot `f` is restored, then `Uae2026OpcodeTestModeHandleExpectedException()`
+      dumps immediately before `Exception(2)`.
+    - Bridge forced faults are caught in `Uae2026JitBridgeEnter()` and restore
+      `regflags` from `Uae2026JitLastFlags` before the same opcode-test dump hook.
+      That preserves the entry X bit from the seeded `SR=0010`, while the
+      interpreter oracle reports `SR=0000`.
+    - The `SPC=00000008` vs `SPC=00000000` difference is likewise pre-Exception
+      opcode-test harness state: the JIT bridge has not run the interpreter loop's
+      pending-interrupt/special-flag path before dumping.  Do not paper over this
+      in rollback/canonicalization code; if exact fault-oracle equality is needed,
+      add an explicit harness normalization rule and justify it separately.
 - Policy: the discriminator exists and does **not** pass.  Keep the current JSR
   metadata allowlist narrow, keep JSR exact in RAM/MMU mode, do not add broad
   rollback/canonicalization from symptoms, and require explicit producer metadata
@@ -959,8 +972,9 @@ Status vocabulary:
   - After routing code-host target materialization through the forced code-fault
     oracle, `/workspace/tmp/previous-opcode-harness-20260529-210206` confirms the
     RTS target tuple now reaches `PC=04008100` / `MMU_ADDR=04008100`; the remaining
-    mismatch is `SR`/`SPC`, so this is still not permission to broaden return-pop
-    rollback.
+    mismatch is `SR`/`SPC`.  As with JSR, this is a pre-`Exception(2)` opcode-test
+    dump-state delta between the interpreter loop catch path and the bridge catch
+    path, not permission to broaden return-pop rollback.
 - Call-target decision:
   - Do **not** remove the legacy BSR scan.  The historical proof already showed
     `00003372/00003374 -> 00012b04` is not transaction-covered, and the synthetic

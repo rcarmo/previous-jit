@@ -19,7 +19,7 @@ declare -a TEST_ORDER=(
 )
 
 declare -a FAULT_TEST_ORDER=(
-  fault_bsr_target_fetch fault_rts_target_fetch fault_rtr_target_fetch fault_rte_return_fetch fault_trap_frame_write
+  fault_bsr_target_fetch fault_jsr_target_fetch fault_rts_target_fetch fault_rtr_target_fetch fault_rte_return_fetch fault_trap_frame_write
   fault_write_byte_d2 fault_write_byte_postinc moves_dfc_write_fault moves_sfc_read_fault movem_predec_write_fault
 )
 
@@ -149,6 +149,12 @@ INIT_REGS[fault_bsr_target_fetch]="00000000 00000000 00000000 00000000 00000000 
 EXPECT_EXCEPTION[fault_bsr_target_fetch]=2
 CODE_FAULT_ADDR[fault_bsr_target_fetch]="TEST+0008"
 DUMP_MEM_LONGS[fault_bsr_target_fetch]="0400FFFC"
+
+TESTS[fault_jsr_target_fetch]="4E90 7E55"
+INIT_REGS[fault_jsr_target_fetch]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 TEST+0100 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"
+EXPECT_EXCEPTION[fault_jsr_target_fetch]=2
+CODE_FAULT_ADDR[fault_jsr_target_fetch]="TEST+0100"
+DUMP_MEM_LONGS[fault_jsr_target_fetch]="0400FFFC 04010000"
 
 TESTS[fault_rts_target_fetch]="4E75 7201"
 INIT_REGS[fault_rts_target_fetch]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"

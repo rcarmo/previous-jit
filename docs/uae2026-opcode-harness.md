@@ -52,7 +52,7 @@ known to exercise the brittle parts of the old generated `compemu` pipeline:
 - MMU-sensitive control/stack paths: `MOVEM.L ...,-(An)`, `JSR (An)`, `BSR.W`
 - seeded user-mode pointer/stack/call state for the `050069c8` seam (`MOVEA.L (A0),A0`, `MOVEA.L (32,A0),A1`, user stack push, MOVEM frame restore, stack/hash lookup, `JSR (A0)`, and a deterministic combined pointer→hash→call chain)
 - byte-store seam shapes from the native RAM/MMU fault path: `MOVE.B D2,(A0)` (`1082`) and `MOVE.B (A2)+,(A0)` (`109a`), including destination memory dumps and postincrement side effects
-- default-off forced-fault oracles for the currently unaudited MMU seams: BSR target fetch after return push, RTS/RTR target fetch after stack pop, RTE return-code fetch after SR/A7 switch, TRAP exception-frame write fault, non-restartable byte stores, MOVES SFC/DFC read/write faults, and MOVEM predecrement write fault
+- default-off forced-fault oracles for the currently unaudited MMU seams: BSR/JSR target fetch after return push, RTS/RTR target fetch after stack pop, RTE return-code fetch after SR/A7 switch, TRAP exception-frame write fault, non-restartable byte stores, MOVES SFC/DFC read/write faults, and MOVEM predecrement write fault
 
 Absolute scratch addresses were remapped from BasiliskII-style low RAM to Previous RAM at `0x0400xxxx`.
 Fault-oracle vectors are not part of the default green regression set yet: they are discriminators

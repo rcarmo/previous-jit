@@ -1159,6 +1159,16 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 		(op == 0x4e73 || op == 0x4e74 || op == 0x4e75 || op == 0x4e76 || op == 0x4e77))
 		return true;
 
+	/* Trap/exception-frame construction can itself fault while pushing a frame.
+	   Keep trap-family opcodes exact in RAM/MMU mode until explicit trap-frame
+	   transaction metadata and nested-fault discriminators exist.  This includes
+	   A/F-line illegal traps that otherwise have an L2 runtime helper. */
+	if (jit_allow_ram_dispatch_env() &&
+		(table68k[op].mnemo == i_TRAP || table68k[op].mnemo == i_TRAPV ||
+		 table68k[op].mnemo == i_TRAPcc || table68k[op].mnemo == i_FTRAPcc ||
+		 table68k[op].mnemo == i_BKPT || table68k[op].mnemo == i_ILLG))
+		return true;
+
 	/* Environment-gated barriers for debugging (B2_JIT_RESTORE_BARRIERS). */
 	if (jit_restore_barrier("sr")) {
 		if (table68k[op].mnemo == i_MV2SR && table68k[op].size == sz_word)

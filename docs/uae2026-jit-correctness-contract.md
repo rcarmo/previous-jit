@@ -785,3 +785,71 @@ Status vocabulary:
   source, so RAM/MMU dispatch now barriers all `i_MOVES` before further semantic
   rollback edits.  Do not weaken these guards unless a focused `FAULTDUMP` oracle
   proves equivalent metadata or native lowering.
+
+### Conversion gate: call-target and auto-EA rollback shims
+
+- Contract clauses: 1, 3, and 4.  This gate decides whether any remaining
+  bridge-side opcode-window reconstruction can be removed or broadened.
+- Bounded discriminator run:
+  - Command shape:
+    `PREVIOUS_OPCODE_INCLUDE_FAULTS=1 PREVIOUS_OPCODE_FILTER='^(fault_bsr_target_fetch|fault_rts_target_fetch|fault_rtr_target_fetch|fault_rte_return_fetch|fault_write_byte_d2|fault_write_byte_postinc|moves_dfc_write_fault|moves_sfc_read_fault|movem_predec_write_fault)$' PREVIOUS_UAE2026_JIT_RAM=1 B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1 PREVIOUS_OPCODE_TEST_ADDR=0x04008000 ./tools/uae2026-opcode-harness.sh`.
+  - Artifact: `/workspace/tmp/previous-opcode-harness-20260529-192504`.
+  - Metrics: `total=9`, `interp_ok=9`, `jit_ok=7`, `pass=0`, `fail=7`,
+    `infra_fail=2`, `score=0`, `jit_ram_requested=1`,
+    `rte_handoff_disabled=1`.
+  - Infra failures: `fault_bsr_target_fetch` JIT reached normal `REGDUMP` instead
+    of `FAULTDUMP` (`PC=04008016`, stack contains return `04008002`);
+    `fault_rts_target_fetch` JIT timed out after repeatedly compiling/falling
+    through target `04008100` instead of delivering the forced code-fetch fault.
+  - Representative mismatches:
+    - `fault_rtr_target_fetch`: interpreter faults at target fetch
+      `PC=04008100`, `A7=04010006`, `MMU_OPCODE=ffff`, `MMU_RESTART=1`,
+      `MMU_SSW=0542`; JIT faults against stack-frame state (`PC=04010000`,
+      `MMU_OPCODE=0010`, `MMU_RESTART=0`, `MMU_SSW=0021`).
+    - `fault_rte_return_fetch`: interpreter records the return-code fetch with
+      post-RTE `SR=0000`, `A7=04010000`, `ISP=04010008`, `MMU_OPCODE=ffff`,
+      `MMU_RESTART=1`; JIT again faults from stack-frame data state
+      (`PC=04010000`, `SR=0014`, `MMU_OPCODE=0010`, `MMU_RESTART=0`) instead of
+      the target code fetch.
+    - `fault_write_byte_d2`: interpreter oracle reports post-write
+      `PC=04008002`, `FAULT_PC=00000000`, `MMU_EA=00000000`, `SPC=00000008`;
+      JIT reports pre-write `PC=04008000`, `FAULT_PC=04008000`,
+      `MMU_EA=0400a000`, `SPC=00000000`.  This confirms the existing high-user
+      byte-store post-PC shim class is real but does **not** authorize new PCs
+      without exact oracle matching.
+    - `fault_write_byte_postinc`: interpreter and JIT agree on rolled-back
+      `A2=0400a011`, but the same post-write/pre-write PC tuple mismatch remains.
+    - `moves_dfc_write_fault`: interpreter reports post-MOVES
+      `PC=0400800a`, `FAULT_PC=00000000`, `MMU_EA=00000000`; JIT reports
+      `PC=04008006`, `FAULT_PC=04008006`, `MMU_EA=0400a000`.  The focused oracle
+      still shows JIT/interpreter PC tuple differences under forced fault, so
+      MOVES remains exact/guarded and is not a native metadata candidate yet.
+    - `moves_sfc_read_fault`: restartable read state matches on data/control
+      (`MMU_RESTART=1`, `MMU_SSW=0501`, `PC=04008006`), but bridge-published
+      `FAULT_PC`/`MMU_EA` still diverge from the interpreter tuple.
+    - `movem_predec_write_fault`: interpreter preserves continuation EA
+      `MMU_EA=0400a020`, `SR=0000`, `SPC=00000008`; JIT reports
+      `MMU_EA=0400a01c`, `SR=0010`, `SPC=00000000`.  Keep MOVEM exact until the
+      format-7 continuation metadata is explicit and matched.
+- Call-target decision:
+  - Do **not** remove the legacy BSR scan.  The historical proof already showed
+    `00003372/00003374 -> 00012b04` is not transaction-covered, and the synthetic
+    BSR target-fetch oracle did not produce a matching JIT `FAULTDUMP`.
+  - Do **not** broaden JSR call-push rollback beyond the existing allowlist.  The
+    JSR target-fetch discriminator is designed but not yet implemented/passing as
+    an equivalence oracle.
+  - Keep return-pop transaction metadata for RTS/RTR producer paths, but do not
+    use the current forced-fault mismatch as permission for native return-family
+    lowering; return-family opcodes remain exact barriers in RAM/MMU mode.
+- Auto-EA decision:
+  - Do **not** replace `bridge_restore_autoea_fault_side_effects()` yet.  The
+    function remains a conservative bridge compatibility shim for helper/fallback
+    escapes: exact postincrement `fault_addr+inc` restoration, restartable-only
+    predecrement restoration, and MOVES signatures.
+  - RAM/MMU dispatch continues to barrier all `Aipi`/`Apdi` opcodes, so there is
+    no approved native auto-EA producer path to convert until explicit autoinc /
+    predec transaction metadata and passing forced-fault oracles exist.
+- Conclusion: the conversion gate did **not** pass.  The correct action is to
+  preserve the documented compatibility shims and exact barriers, not to convert
+  or broaden rollback policy.  Future conversion work must first make the
+  focused `FAULTDUMP` vectors match interpreter tuples under the ≤120s rule.

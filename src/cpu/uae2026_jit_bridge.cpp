@@ -478,6 +478,18 @@ static int bridge_move_size_increment(uae_u16 opcode, int areg)
     return 0;
 }
 
+static bool bridge_proven_post_advance_byte_write_opcode(uae_u32 pc)
+{
+    if (!bridge_live_readable(pc, 2))
+        return false;
+    const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(pc);
+    /* Interpreter-oracle covered non-restartable byte-write shapes:
+     *   1082  MOVE.B D2,(A0)       (fault_write_byte_d2)
+     *   109a  MOVE.B (A2)+,(A0)    (fault_write_byte_postinc)
+     * Keep this exact until broader opcode/EA coverage exists. */
+    return opcode == 0x1082u || opcode == 0x109au;
+}
+
 static void bridge_set_active_a7(uae_u32 value)
 {
     m68k_areg(regs, 7) = value;
@@ -1082,12 +1094,20 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
         }
         bridge_restore_autoea_fault_side_effects(regs.fault_pc, mmu_restart);
         bridge_restore_call_target_fault_side_effects(regs.fault_pc);
-        /* Confirmed user write seams: the 040 interpreter reports these
-         * non-restartable byte-store faults after advancing PC to the next
-         * instruction.  Native helper faults arrive with PC still on the write,
-         * causing replay while source/destination side effects have already
-         * completed (for example MOVE.B (A2)+,(A0) at 0500bc98). */
-        if (prb == 2 && !mmu_restart &&
+        /* Confirmed byte-write seams: the 040 interpreter reports these
+         * non-restartable faults after advancing PC to the next instruction.
+         * Synthetic forced-fault oracles for the exact MOVE.B D2,(A0) and
+         * MOVE.B (A2)+,(A0) shapes also show fault_pc/mmu_effective_addr clear
+         * in the pre-Exception dump.  Keep broader/native policy gated to the
+         * exact opcodes and preserve the historical PC-only compatibility shim
+         * for the original boot seams if an unlisted opcode reaches them. */
+        if (prb == 2 && !mmu_restart && bridge_proven_post_advance_byte_write_opcode(regs.fault_pc)) {
+            const uae_u32 post_pc = regs.fault_pc + 2;
+            regs.fault_pc = 0;
+            regs.instruction_pc = post_pc;
+            regs.mmu_effective_addr = 0;
+            m68k_setpc(post_pc);
+        } else if (prb == 2 && !mmu_restart &&
             (regs.fault_pc == 0x0500b6aeu || regs.fault_pc == 0x0500bc98u)) {
             regs.fault_pc += 2;
             regs.instruction_pc = regs.fault_pc;
@@ -1120,7 +1140,7 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
          * must be built from the faulting instruction PC.  Keep this narrow to
          * kernel RAM text; low-virtual call faults can publish extension-word
          * PCs and are handled by explicit call/return transactions above. */
-        if (prb == 2 && !bridge_rte_fault && regs.fault_pc < 0x00020000u &&
+        if (prb == 2 && !bridge_rte_fault && regs.fault_pc != 0 && regs.fault_pc < 0x00020000u &&
             regs.mmu_fault_addr != regs.fault_pc) {
             const uae_u16 fc = regs.mmu_ssw & 0x0007u; /* 68040 SSW TM/function-code bits */
             /* MMU_SSW_CM: preserve the 68040 MOVEM continuation EA. */

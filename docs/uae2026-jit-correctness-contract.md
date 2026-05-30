@@ -483,7 +483,7 @@ Status vocabulary:
 | RTS/RTR return target fetch after stack pop | 3, 4 | **Guarded/exact fallback** and **transaction-backed**, but forced target-fetch still mismatches | Return-family opcodes are interpreter barriers in RAM/MMU dispatch.  Fallback paths publish `return_pop` metadata for `RTS`/`RTR` so target-fetch faults can restore A7 from producer metadata rather than opcode-window guessing.  The latest `fault_rts_target_fetch` oracle shows the pop is committed (`A7=04010004`) but JIT still falls through to the same `PC=08000000` target-stream mismatch class after reaching `04008100`. | Static proof: verify `op == 0x4e75/0x4e77` remains in the RAM/MMU barrier list and fallback loops still call `Uae2026JitMmuTxnBeginReturnPopCurrentA7()`.  Do not native-lower return-family opcodes until `fault_rts_target_fetch` / `fault_rtr_target_fetch` match. |
 | RTE SR/stack switch before return-code fetch | 1, 3, 4 | **Proven exact opcode path**, but native post-fault resume remains an **unaudited gap** | `jit_op_rte()` routes through `cpufunctbl[0x4e73]` after publishing fallback state.  Bridge-caught RTE/page-fault seams no longer auto-handoff unless `B2_JIT_RTE_FAULT_HANDOFF=1`, preserving native no-handoff for diagnosis. | Static proof: keep `RTE` on the RAM/MMU interpreter-barrier list.  Bounded discriminator target: short trace that catches `04001ae6 -> low user PC` and compares pre/post `Exception(2)` `SR/A7/USP/ISP/MSP`, frame format, and `pc_p` without running to desktop. |
 | MOVEM continuation frames and `MMU_SSW_CM` | 3, 4 | **Guarded/exact fallback**, continuation EA now oracle-matched | Bridge preserves `MMU_SSW_CM` continuation EA instead of replacing it with `mmu_fault_addr`, including the high-RAM bridge-delivered helper-fault path.  RAM direct MOVEM predecrement shortcut is default-off because it bypasses interpreter MOVEM restart/fixup bookkeeping.  Fast vectors cover normal MOVEM frame restore. | Static proof: keep `B2_JIT_RAM_DIRECT_MOVEM_PREDEC` default-off and keep the high-RAM bridge `mmu_effective_addr` rewrite gated off when `MMU_SSW_CM` is set.  Focused vector `movem_predec_write_fault` now matches the interpreter continuation EA; remaining deltas are `FAULT_PC` and harness-only `SR`/`SPC`. |
-| Non-restartable write faults and post-advance PC | 4 | **Heuristic compatibility shim** for known byte stores; generalized behavior is an **unaudited gap** | Confirmed `0500b6ae` and `0500bc98` byte-store seams advance `fault_pc` only when `mmu_restart == false`.  The later `0500b6b0` candidate was reverted because it was already the visible post-advance PC. | Bounded oracle/discriminator is defined below: first collect interpreter `FAULTDUMP` for the exact store shape with a forced write fault, then require the JIT to match `fault_pc`, `instruction_pc`, visible `PC`, `mmu_restart`, `SSW`, writeback fields, and side effects.  Do not add new PC shims from boot fault-window symptoms alone. |
+| Non-restartable write faults and post-advance PC | 4 | **Exact opcode-shape shim**, oracle-matched except harness `SPC` | Synthetic forced-write oracles for `MOVE.B D2,(A0)` (`1082`) and `MOVE.B (A2)+,(A0)` (`109a`) prove the interpreter reports the post-write PC with `FAULT_PC=0` and `MMU_EA=0` while preserving writeback fields and side effects.  The bridge now applies that exact tuple only for those proven opcodes; the older `0500b6ae`/`0500bc98` PC-only compatibility shim remains as fallback for unlisted historical seams.  The later `0500b6b0` candidate remains rejected. | Bounded proof recorded below.  Do not add new post-PC shims for other write opcodes/EA shapes without the same forced-fault oracle matching side effects, writeback fields, SSW, and visible PC. |
 | ATC/MMU maintenance (`PTEST`, `PFLUSH`, `PMOVE`, `PLPA`, vendored `i_MMUOP`) | 5 | **Proven exact** | RAM/MMU dispatch forces vendored `i_MMUOP` exact.  This removed the repeated native `0501288e` stale/invalid retry fault where the interpreter could scan `00038000` successfully. | Static proof: verify `table68k[op].mnemo == i_MMUOP` remains a RAM/MMU barrier.  Regression discriminator: grep a capped fault-window run for `0501288e=0` only after touching this family. |
 | MOVEC/SR control-state changes and stale allocator state | 1, 6, 7 | **Guarded/exact fallback / block-ending barrier** | MOVEC helpers may update VBR/SFC/DFC and set `spcflags` in RAM mode; `jit_force_interpreter_barrier_opcode()` ends the block for `4e7a/4e7b`.  SR-write exacting was tested as a broad fix and reverted because it did not move the frontier. | Static proof: keep `MOVEC` block-ending barrier and focused `movec_vbr/sfc/dfc_roundtrip` vectors green.  Do not add a broad SR barrier unless a specific clause violation is proven. |
 | Trap/exception-frame construction before nested faults | 3, 4 | **Guarded/exact fallback**, but nested MMU frame-fault behavior is a **known forced-fault mismatch** | RAM/MMU dispatch now forces trap-family opcodes (`i_TRAP`, `i_TRAPV`, `i_TRAPcc`, `i_FTRAPcc`, `i_BKPT`, and `i_ILLG` A/F-line traps) through the interpreter barrier.  The `fault_trap_frame_write` oracle shows the bridge still publishes a pre-trap PC/EA tuple for a frame-stack write fault, so the transaction model still lists `trap_frame` as future work. | Static proof: confirm the trap-family barrier remains in `jit_force_interpreter_barrier_opcode()`.  Discriminator artifact: `/workspace/tmp/previous-opcode-harness-20260529-194451`; do not add trap-frame metadata/native lowering until the interpreter/JIT tuple matches. |
@@ -804,10 +804,14 @@ Status vocabulary:
   advanced post-instruction PC.  This is an interpreter-oracle question, not a
   bridge pattern-matching question.
 - Current narrow shim:
-  - `uae2026_jit_bridge.cpp` advances only `0500b6ae` and `0500bc98`, only for
-    `prb == 2 && !mmu_restart`, then updates `regs.fault_pc`,
-    `regs.instruction_pc`, and `m68k_getpc()` together.
-  - The nearby `0500b6b0` hot loop is **not** a new approved shim.  A candidate
+  - `uae2026_jit_bridge.cpp` now recognizes only the two interpreter-oracle
+    covered byte-write opcodes, `1082` (`MOVE.B D2,(A0)`) and `109a`
+    (`MOVE.B (A2)+,(A0)`), when `prb == 2 && !mmu_restart`.  For those shapes it
+    publishes the interpreter tuple: visible/instruction PC advanced by 2,
+    `fault_pc=0`, and `mmu_effective_addr=0`.
+  - The older `0500b6ae` and `0500bc98` PC-only compatibility shim remains as a
+    fallback if either historical seam reaches the bridge with an unlisted opcode.
+    The nearby `0500b6b0` hot loop is **not** a new approved shim.  A candidate
     that advanced it was reverted because the capped diagnostic
     `/workspace/tmp/previous-jit-byte-store-b6b0-nohandoff-20260527-151758` did
     not move the frontier; the safer interpretation is that `0500b6b0` is
@@ -865,6 +869,27 @@ Status vocabulary:
   interpreter and one JIT instance in the existing opcode harness and remain well
   under 120s.  A capped no-handoff boot fault-window may still be used to find
   suspicious PCs, but it is not an acceptance test for new advancement shims.
+
+#### Bounded result: exact byte-write post-PC tuple
+
+- Command shape:
+  `PREVIOUS_OPCODE_INCLUDE_FAULTS=1 PREVIOUS_OPCODE_FILTER='^(fault_write_byte_d2|fault_write_byte_postinc)$' PREVIOUS_UAE2026_JIT_RAM=1 B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1 PREVIOUS_OPCODE_TEST_ADDR=0x04008000 ./tools/uae2026-opcode-harness.sh`.
+- Artifact: `/workspace/tmp/previous-opcode-harness-20260530-165212`.
+- Metrics: `total=2`, `interp_ok=2`, `jit_ok=2`, `pass=0`, `fail=2`,
+  `infra_fail=0`.
+- Result after the exact opcode-shape shim:
+  - `fault_write_byte_d2` and `fault_write_byte_postinc` now match the interpreter
+    for visible `PC=04008002`, `FAULT_PC=00000000`,
+    `INSTRUCTION_PC=04008002`, `MMU_ADDR=0400a000`, `MMU_EA=00000000`,
+    `MMU_RESTART=0`, `MMU_SSW=0421`, and writeback status/data.
+  - The postincrement vector also preserves the already-committed source side
+    effect `A2=0400a011` and source/destination memory dumps.
+  - The only remaining mismatch in both vectors is the known pre-`Exception(2)`
+    opcode-test `SPC=00000000` vs interpreter `SPC=00000008` dump-state delta.
+- Follow-up full forced-fault set:
+  `/workspace/tmp/previous-opcode-harness-20260530-165531` remains `total=11`,
+  `interp_ok=11`, `jit_ok=11`, `pass=0`, `fail=11`, `infra_fail=0`, so this is a
+  narrow tuple match for proven byte-write shapes, not a conversion-gate pass.
 
 ### Static proof 4: RAM/MMU guard invariants before semantic edits
 
@@ -975,12 +1000,12 @@ Status vocabulary:
       the target code fetch.
     - `fault_write_byte_d2`: interpreter oracle reports post-write
       `PC=04008002`, `FAULT_PC=00000000`, `MMU_EA=00000000`, `SPC=00000008`;
-      JIT reports pre-write `PC=04008000`, `FAULT_PC=04008000`,
-      `MMU_EA=0400a000`, `SPC=00000000`.  This confirms the existing high-user
-      byte-store post-PC shim class is real but does **not** authorize new PCs
-      without exact oracle matching.
-    - `fault_write_byte_postinc`: interpreter and JIT agree on rolled-back
-      `A2=0400a011`, but the same post-write/pre-write PC tuple mismatch remains.
+      older JIT artifacts reported pre-write `PC=04008000`, `FAULT_PC=04008000`,
+      `MMU_EA=0400a000`, `SPC=00000000`, proving the exact byte-store post-PC
+      class.
+    - `fault_write_byte_postinc`: interpreter and JIT agree on the committed
+      source side effect `A2=0400a011`, but older artifacts had the same
+      post-write/pre-write PC tuple mismatch.
     - `moves_dfc_write_fault`: interpreter reports post-MOVES
       `PC=0400800a`, `FAULT_PC=00000000`, `MMU_EA=00000000`; JIT reports
       `PC=04008006`, `FAULT_PC=04008006`, `MMU_EA=0400a000`.  The focused oracle

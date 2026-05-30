@@ -475,7 +475,7 @@ Status vocabulary:
 | Case family | Contract clause(s) | Current status | Rationale / current source of truth | ≤120s discriminator or static proof target |
 | --- | --- | --- | --- | --- |
 | Restart snapshot before RAM/MMU helpers | 1, 4 | **Static-audited with residual partial publishers** | `Uae2026JitPublishFallbackState()` and `jit_publish_code_fetch_state()` record the full restart tuple (`fault_pc`, `Uae2026JitLastInstructionPc`, `SR`, `A7`, flags, `mmu_restart`, and `mmu_opcode`) for fallback and primary code-fetch paths.  The audit below also identifies code-host/compiled helper callsites that publish only `regs.pc`/`fault_pc`/`Uae2026JitLastInstructionPc`; these are not conversion candidates until upgraded or covered by a passing oracle. | Static proof recorded below.  Do not treat partial publishers as transaction-equivalent for call/return/trap/MOVEM conversion; add a focused forced-fault oracle before broadening them. |
-| Code-space vs data-space translation | 2 | **Guarded/exact fallback**, with scoped code-host ranges | Data effective-address bank translation uses `Uae2026JitMmuXlateData()`.  Dispatch/branch/return materialization uses `Uae2026JitMmuXlateCodeHost()`.  Confirmed non-identity high-user and low33 post-RTE fetches use code-host bytes; broader low-virtual broadening was tested and reverted after regressions. | Static proof: list the current code-host gating predicates (`05000000..07ffffff`, low33 post-RTE, env-only low12b/low83/low7f) and confirm no normal data EA path calls the code-host helper. |
+| Code-space vs data-space translation | 2 | **Static-audited scoped code-host ranges** | Data effective-address bank translation uses `Uae2026JitMmuXlateData()` through bank/data helpers.  Dispatch/branch/return materialization uses `Uae2026JitMmuXlateCodeHost()`, which always routes through `Uae2026JitMmuXlateCode()` before exposing a JIT-shadow host pointer.  Confirmed non-identity high-user and low33 post-RTE fetches use code-host bytes; broader low-virtual broadening was tested and reverted after regressions. | Static proof recorded below: current code-host gates are high-user `05000000..07ffffff`, low33 post-RTE under `VBR=040ae61c`, env-only low12b/low83/low7f diagnostics, target materialization/prefetch guards, and `pc_p` rebuilds.  Normal generated data EAs go through bank/data helpers, not the code-host helper. |
 | CPU-space accesses, `MOVES`, SFC/DFC | 2, 4 | **Guarded/exact fallback** | RAM/MMU dispatch now forces every `table68k[op].mnemo == i_MOVES` through the interpreter barrier because the AArch64 MOVES gapfill is helper-backed through normal data helpers, while exact MOVES needs SFC/DFC-aware `sfc_get_*`/`dfc_put_*` and MOVES-specific SSW handling in `mmu_bus_error()`. | Static proof: verify the `i_MOVES` RAM/MMU barrier stays in `jit_force_interpreter_barrier_opcode()`; run focused `PREVIOUS_OPCODE_FILTER='moves_|movec_sfc|movec_dfc' ./tools/uae2026-opcode-harness.sh` after touching this family. |
 | Auto-increment/predecrement memory EAs (`Aipi`/`Apdi`) | 1, 3, 4 | **Guarded/exact fallback**, plus **heuristic compatibility shim** | RAM/MMU mode forces any opcode with source/destination `Aipi`/`Apdi` through an interpreter barrier.  The bridge still contains conservative postincrement/predecrement restoration for helper/fallback escapes and known MOVES signatures, gated by restartability where needed. | Static proof: verify `jit_force_interpreter_barrier_opcode()` still catches all `table68k[op].smode/dmode == Aipi/Apdi`.  If changing this, add targeted opcode vectors for restartable postincrement read and non-restartable predecrement write. |
 | BSR return-address push before target instruction fetch | 3, 4 | **Transaction-backed**, but one **heuristic compatibility shim** remains | Generated/fallback BSR paths publish `call_push` metadata and fallback BSR target metadata.  RAM/MMU mode now disables BSR const-jump following and native BSR probes the target code stream after the architectural return push, so synthetic target-fetch faults reach the target tuple instead of completing normally.  The historical `00003372/00003374 -> 00012b04` seam still uses the legacy bridge scan (`JIT_CALL_TARGET_ROLLBACK`) rather than `JIT_CALL_TARGET_ROLLBACK_TXN`. | Static proof: preserve the legacy scan until a bounded trace shows `JIT_CALL_TARGET_ROLLBACK_TXN` for the historical seam.  `fault_bsr_target_fetch` now reaches a JIT `FAULTDUMP` and matches the target-fetch tuple except for the already classified harness-only `SR`/`SPC` dump-state delta. |
@@ -551,6 +551,60 @@ Status vocabulary:
   conversion.  Any upgrade should be narrow and paired with a forced-fault oracle
   that proves the full interpreter tuple, rather than inferred from a boot-frontier
   change.
+
+### Static proof 2: code-host predicates and data-space split
+
+- Contract clause: 2, code-space fetches and data-space EAs must stay distinct
+  under the 040 MMU.
+- Code-host helper boundary:
+  - `Uae2026JitMmuXlateCodeHost(addr)` always calls `Uae2026JitMmuXlateCode(addr)`
+    before forming `jit_MEMBaseDiff + addr`.  With the runtime 040 MMU disabled
+    this remains identity translation, but opcode-test forced code faults still
+    fire through the same hook used by target-fetch oracles.
+  - When the runtime 040 MMU is enabled, the translated code page is synced from
+    live addrbank memory into the executable JIT shadow before returning the host
+    pointer.
+- Current code-host consumers:
+  - `jit_canonicalize_code_pc_if_ram_mmu()` and
+    `jit_fetch_opcode_via_code_host()` publish code-fetch restart state and then
+    call `Uae2026JitMmuXlateCodeHost()`.
+  - `Uae2026JitPrefetchGuard()` now uses `jit_fetch_opcode_via_code_host()` when
+    RAM dispatch is active and either the runtime 040 MMU or opcode-test forced
+    fault mode is active.  This covers synthetic call/return target-fetch faults.
+  - `Uae2026JitCanonicalizePcAfterFallback()`, `jit_set_guest_pc_fast()`, and the
+    dispatch loop rebuild `regs.pc_p`/`regs.pc_oldp` through the code-host helper
+    only for guest PC materialization, not for data EAs.
+  - `get_n_addr_jmp_mmu()` is the generated branch/JSR/RTS/RTE target path; it
+    publishes the target PC tuple and then calls the code-host helper.
+- Current opcode-fetch gating predicates:
+  - `jit_fetch_opcode_for_current_pc()` uses code-host bytes only when
+    `regs.pc_p` is non-identity and the guest PC is either high-user
+    `05000000..07ffffff`, low33 post-RTE (`VBR=040ae61c` and
+    `00003300..00003400`), or one of the explicit diagnostic env-only ranges:
+    `B2_JIT_LOW12B_CODEHOST` (`00012b00..00012c00`),
+    `B2_JIT_LOW83_CODEHOST` (`00008300..00008340`), or
+    `B2_JIT_LOW7F_CODEHOST` (`00007f70..00008000`).  Other low-virtual opcode
+    fetches stay on the legacy 040 fetch path because broad low-virtual code-host
+    routing previously perturbed early ROM/SCSI boot.
+  - `jit_dispatch_code_host_opcode_window()` has the narrower dispatch-cache read
+    predicate: high-user `05000000..07ffffff` or low33 post-RTE
+    `00003300..00003400` under `VBR=040ae61c`, again only when the existing
+    `regs.pc_p` host pointer is non-identity.
+- Data-space split:
+  - `Uae2026JitBankXlate()` calls `Uae2026JitMmuXlateData()` when the runtime MMU
+    is enabled; this is the bank/data host-pointer path.
+  - Generated normal memory helpers (`writebyte/word/long`,
+    `readbyte/word/long`, clobber variants, and `get_n_addr_old()`) choose
+    `writemem_special()` / `readmem_special()` when RAM/MMU or special-memory
+    conditions require bank access.  Those helpers call
+    `jit_sync_fault_pc_for_bank_helper()` and then `jnf_MEM_*MEMBANK`; they do
+    **not** call `Uae2026JitMmuXlateCodeHost()`.
+  - The only nearby helper with `CodeHost` in this generator section is
+    `get_n_addr_jmp_mmu()`, whose name and use are branch/target materialization,
+    not generic data EA translation.
+- Decision: the current code/data split is narrow and static-audited.  Do not
+  broaden low-virtual code-host ranges or reuse code-host translation for data
+  helpers unless a focused oracle proves the exact code-space/data-space tuple.
 
 ### Bounded proof 1: historical BSR target-fetch seam
 

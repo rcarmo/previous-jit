@@ -490,6 +490,40 @@ static bool bridge_proven_post_advance_byte_write_opcode(uae_u32 pc)
     return opcode == 0x1082u || opcode == 0x109au;
 }
 
+static bool bridge_normalize_proven_moves_fault_tuple(uae_u32 pc)
+{
+    if (!bridge_live_readable(pc, 4))
+        return false;
+    const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(pc);
+    const uae_u16 ext = (uae_u16)Uae2026JitLiveGetWord(pc + 2);
+    if (opcode != 0x0e90u)
+        return false;
+
+    /* Interpreter-oracle covered MOVES.L shapes:
+     *   0e90 0800  MOVES.L D0,(A0) through DFC; non-restartable write reports
+     *              the post-extension PC and clears fault_pc/effective EA.
+     *   0e90 0000  MOVES.L (A0),D0 through SFC; restartable read reports the
+     *              MOVES opcode PC but still clears fault_pc/effective EA.
+     * Do not generalize to other MOVES extension words without a matching
+     * forced-fault oracle. */
+    if (!mmu_restart && ext == 0x0800u && regs.mmu_ssw == 0x0401u) {
+        const uae_u32 post_pc = pc + 4;
+        regs.fault_pc = 0;
+        regs.instruction_pc = post_pc;
+        regs.mmu_effective_addr = 0;
+        m68k_setpc(post_pc);
+        return true;
+    }
+    if (mmu_restart && ext == 0x0000u && regs.mmu_ssw == 0x0501u) {
+        regs.fault_pc = 0;
+        regs.instruction_pc = pc;
+        regs.mmu_effective_addr = 0;
+        m68k_setpc(pc);
+        return true;
+    }
+    return false;
+}
+
 static void bridge_set_active_a7(uae_u32 value)
 {
     m68k_areg(regs, 7) = value;
@@ -1101,7 +1135,9 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
          * in the pre-Exception dump.  Keep broader/native policy gated to the
          * exact opcodes and preserve the historical PC-only compatibility shim
          * for the original boot seams if an unlisted opcode reaches them. */
-        if (prb == 2 && !mmu_restart && bridge_proven_post_advance_byte_write_opcode(regs.fault_pc)) {
+        if (prb == 2 && bridge_normalize_proven_moves_fault_tuple(regs.fault_pc)) {
+            /* Exact MOVES tuple handled above. */
+        } else if (prb == 2 && !mmu_restart && bridge_proven_post_advance_byte_write_opcode(regs.fault_pc)) {
             const uae_u32 post_pc = regs.fault_pc + 2;
             regs.fault_pc = 0;
             regs.instruction_pc = post_pc;

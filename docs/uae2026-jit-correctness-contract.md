@@ -476,7 +476,7 @@ Status vocabulary:
 | --- | --- | --- | --- | --- |
 | Restart snapshot before RAM/MMU helpers | 1, 4 | **Static-audited with residual partial publishers** | `Uae2026JitPublishFallbackState()` and `jit_publish_code_fetch_state()` record the full restart tuple (`fault_pc`, `Uae2026JitLastInstructionPc`, `SR`, `A7`, flags, `mmu_restart`, and `mmu_opcode`) for fallback and primary code-fetch paths.  The audit below also identifies code-host/compiled helper callsites that publish only `regs.pc`/`fault_pc`/`Uae2026JitLastInstructionPc`; these are not conversion candidates until upgraded or covered by a passing oracle. | Static proof recorded below.  Do not treat partial publishers as transaction-equivalent for call/return/trap/MOVEM conversion; add a focused forced-fault oracle before broadening them. |
 | Code-space vs data-space translation | 2 | **Static-audited scoped code-host ranges** | Data effective-address bank translation uses `Uae2026JitMmuXlateData()` through bank/data helpers.  Dispatch/branch/return materialization uses `Uae2026JitMmuXlateCodeHost()`, which always routes through `Uae2026JitMmuXlateCode()` before exposing a JIT-shadow host pointer.  Confirmed non-identity high-user and low33 post-RTE fetches use code-host bytes; broader low-virtual broadening was tested and reverted after regressions. | Static proof recorded below: current code-host gates are high-user `05000000..07ffffff`, low33 post-RTE under `VBR=040ae61c`, env-only low12b/low83/low7f diagnostics, target materialization/prefetch guards, and `pc_p` rebuilds.  Normal generated data EAs go through bank/data helpers, not the code-host helper. |
-| CPU-space accesses, `MOVES`, SFC/DFC | 2, 4 | **Guarded/exact fallback** | RAM/MMU dispatch now forces every `table68k[op].mnemo == i_MOVES` through the interpreter barrier because the AArch64 MOVES gapfill is helper-backed through normal data helpers, while exact MOVES needs SFC/DFC-aware `sfc_get_*`/`dfc_put_*` and MOVES-specific SSW handling in `mmu_bus_error()`. | Static proof: verify the `i_MOVES` RAM/MMU barrier stays in `jit_force_interpreter_barrier_opcode()`; run focused `PREVIOUS_OPCODE_FILTER='moves_|movec_sfc|movec_dfc' ./tools/uae2026-opcode-harness.sh` after touching this family. |
+| CPU-space accesses, `MOVES`, SFC/DFC | 2, 4 | **Guarded/exact fallback**, forced SFC/DFC tuple matched for covered shapes | RAM/MMU dispatch forces every `table68k[op].mnemo == i_MOVES` through the interpreter barrier because the AArch64 MOVES gapfill is helper-backed through normal data helpers, while exact MOVES needs SFC/DFC-aware `sfc_get_*`/`dfc_put_*` and MOVES-specific SSW handling in `mmu_bus_error()`.  The bridge now normalizes the two forced-fault MOVES.L oracle shapes (`0e90 0800` DFC write and `0e90 0000` SFC read) to the interpreter `FAULTDUMP` tuple. | Static proof: keep the `i_MOVES` RAM/MMU barrier and the exact-extension MOVES tuple normalizer.  Focused forced run `moves_dfc_write_fault|moves_sfc_read_fault` now passes; do not broaden to other MOVES extension words without a matching oracle. |
 | Auto-increment/predecrement memory EAs (`Aipi`/`Apdi`) | 1, 3, 4 | **Guarded/exact fallback**, plus **heuristic compatibility shim** | RAM/MMU mode forces any opcode with source/destination `Aipi`/`Apdi` through an interpreter barrier.  The bridge still contains conservative postincrement/predecrement restoration for helper/fallback escapes and known MOVES signatures, gated by restartability where needed. | Static proof: verify `jit_force_interpreter_barrier_opcode()` still catches all `table68k[op].smode/dmode == Aipi/Apdi`.  If changing this, add targeted opcode vectors for restartable postincrement read and non-restartable predecrement write. |
 | BSR return-address push before target instruction fetch | 3, 4 | **Transaction-backed**, but one **heuristic compatibility shim** remains | Generated/fallback BSR paths publish `call_push` metadata and fallback BSR target metadata.  RAM/MMU mode now disables BSR const-jump following and native BSR probes the target code stream after the architectural return push, so synthetic target-fetch faults reach the target tuple instead of completing normally.  The historical `00003372/00003374 -> 00012b04` seam still uses the legacy bridge scan (`JIT_CALL_TARGET_ROLLBACK`) rather than `JIT_CALL_TARGET_ROLLBACK_TXN`. | Static proof: preserve the legacy scan until a bounded trace shows `JIT_CALL_TARGET_ROLLBACK_TXN` for the historical seam.  `fault_bsr_target_fetch` now reaches a JIT `FAULTDUMP` and matches the target-fetch tuple except for the already classified harness-only `SR`/`SPC` dump-state delta. |
 | JSR return-address push before target instruction fetch | 3, 4 | **Guarded/exact fallback**, selected metadata remains **known forced-fault mismatch** | RAM/MMU dispatch now forces `i_JSR` through the interpreter barrier.  JSR `call_push` metadata remains narrow (`0000003e`, `00003c26`, `00008334`, `0000c52c`, `05027706`) because broad rollback stalled earlier boot probes.  The synthetic `fault_jsr_target_fetch` oracle confirms the interpreter commits the return push and frames the target fetch at `04008100`, while current JIT still diverges before the forced target-fetch tuple even after the exact barrier. | Keep the JSR exact barrier and explicit metadata allowlist.  Latest discriminator artifact: `/workspace/tmp/previous-opcode-harness-20260529-200633`; do not broaden rollback/canonicalization until this forced-fault vector matches. |
@@ -924,6 +924,11 @@ Status vocabulary:
   - RAM/MMU dispatch now forces `table68k[op].mnemo == i_MOVES` through the
     interpreter barrier, preserving `sfc_get_*`/`dfc_put_*`, `ismoves`, and the
     MOVES-specific SSW/function-code rewrite in `mmu_bus_error()`.
+  - The bridge has an exact forced-fault tuple normalizer only for the two covered
+    MOVES.L extension-word shapes: DFC write `0e90 0800` (`MMU_RESTART=0`,
+    `MMU_SSW=0401`, post-extension `PC`) and SFC read `0e90 0000`
+    (`MMU_RESTART=1`, `MMU_SSW=0501`, opcode `PC`).  Both clear `FAULT_PC` and
+    `MMU_EA` to match the interpreter pre-`Exception(2)` dump.
 - Auto-EA barriers:
   - `jit_force_interpreter_barrier_opcode()` keeps any opcode whose source or
     destination mode is `Aipi` or `Apdi` exact while RAM dispatch is enabled.
@@ -1007,13 +1012,12 @@ Status vocabulary:
       source side effect `A2=0400a011`, but older artifacts had the same
       post-write/pre-write PC tuple mismatch.
     - `moves_dfc_write_fault`: interpreter reports post-MOVES
-      `PC=0400800a`, `FAULT_PC=00000000`, `MMU_EA=00000000`; JIT reports
-      `PC=04008006`, `FAULT_PC=04008006`, `MMU_EA=0400a000`.  The focused oracle
-      still shows JIT/interpreter PC tuple differences under forced fault, so
-      MOVES remains exact/guarded and is not a native metadata candidate yet.
+      `PC=0400800a`, `FAULT_PC=00000000`, `MMU_EA=00000000`; older JIT artifacts
+      reported `PC=04008006`, `FAULT_PC=04008006`, `MMU_EA=0400a000`, proving the
+      exact DFC-write tuple mismatch.
     - `moves_sfc_read_fault`: restartable read state matches on data/control
-      (`MMU_RESTART=1`, `MMU_SSW=0501`, `PC=04008006`), but bridge-published
-      `FAULT_PC`/`MMU_EA` still diverge from the interpreter tuple.
+      (`MMU_RESTART=1`, `MMU_SSW=0501`, `PC=04008006`), but older artifacts had
+      bridge-published `FAULT_PC`/`MMU_EA` diverging from the interpreter tuple.
     - `movem_predec_write_fault`: interpreter preserves continuation EA
       `MMU_EA=0400a020`, `SR=0000`, `SPC=00000008`; older JIT artifacts reported
       `MMU_EA=0400a01c`, `SR=0010`, `SPC=00000000`, proving the high-RAM bridge
@@ -1073,6 +1077,16 @@ Status vocabulary:
     `interp_ok=11`, `jit_ok=11`, `pass=0`, `fail=11`, `infra_fail=0`).  This
     converts the last forced-fault infrastructure failure into a classified
     equivalence mismatch; the conversion gate still does not pass.
+  - MOVES SFC/DFC follow-up: exact-extension bridge normalization for
+    `0e90 0800` and `0e90 0000` makes the focused forced run
+    `/workspace/tmp/previous-opcode-harness-20260530-171051` pass (`total=2`,
+    `interp_ok=2`, `jit_ok=2`, `pass=2`, `fail=0`, `infra_fail=0`).  The matched
+    tuples include the DFC-write post-extension `PC=0400800a`, SFC-read opcode
+    `PC=04008006`, `FAULT_PC=00000000`, `MMU_EA=00000000`, `MMU_OPCODE=0e90`,
+    and the MOVES-specific SSW values (`0401` write, `0501` read).  The latest
+    full focused forced-fault run `/workspace/tmp/previous-opcode-harness-20260530-171637`
+    now reports `total=11`, `interp_ok=11`, `jit_ok=11`, `pass=2`, `fail=9`,
+    `infra_fail=0`; the two passing vectors are the MOVES SFC/DFC oracles.
   - MOVEM continuation follow-up: the high-RAM bridge data-fault normalizer now
     skips `regs.mmu_effective_addr = regs.mmu_fault_addr` when `MMU_SSW_CM` is
     set.  Focused artifact `/workspace/tmp/previous-opcode-harness-20260530-163303`

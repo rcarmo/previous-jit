@@ -486,7 +486,7 @@ Status vocabulary:
 | Non-restartable write faults and post-advance PC | 4 | **Exact opcode-shape shim**, oracle-matched except harness `SPC` | Synthetic forced-write oracles for `MOVE.B D2,(A0)` (`1082`) and `MOVE.B (A2)+,(A0)` (`109a`) prove the interpreter reports the post-write PC with `FAULT_PC=0` and `MMU_EA=0` while preserving writeback fields and side effects.  The bridge now applies that exact tuple only for those proven opcodes; the older `0500b6ae`/`0500bc98` PC-only compatibility shim remains as fallback for unlisted historical seams.  The later `0500b6b0` candidate remains rejected. | Bounded proof recorded below.  Do not add new post-PC shims for other write opcodes/EA shapes without the same forced-fault oracle matching side effects, writeback fields, SSW, and visible PC. |
 | ATC/MMU maintenance (`PTEST`, `PFLUSH`, `PMOVE`, `PLPA`, vendored `i_MMUOP`) | 5 | **Proven exact** | RAM/MMU dispatch forces vendored `i_MMUOP` exact.  This removed the repeated native `0501288e` stale/invalid retry fault where the interpreter could scan `00038000` successfully. | Static proof: verify `table68k[op].mnemo == i_MMUOP` remains a RAM/MMU barrier.  Regression discriminator: grep a capped fault-window run for `0501288e=0` only after touching this family. |
 | MOVEC/SR control-state changes and stale allocator state | 1, 6, 7 | **Guarded/exact fallback / block-ending barrier** | MOVEC helpers may update VBR/SFC/DFC and set `spcflags` in RAM mode; `jit_force_interpreter_barrier_opcode()` ends the block for `4e7a/4e7b`.  SR-write exacting was tested as a broad fix and reverted because it did not move the frontier. | Static proof: keep `MOVEC` block-ending barrier and focused `movec_vbr/sfc/dfc_roundtrip` vectors green.  Do not add a broad SR barrier unless a specific clause violation is proven. |
-| Trap/exception-frame construction before nested faults | 3, 4 | **Guarded/exact fallback**, but nested MMU frame-fault behavior is a **known forced-fault mismatch** | RAM/MMU dispatch now forces trap-family opcodes (`i_TRAP`, `i_TRAPV`, `i_TRAPcc`, `i_FTRAPcc`, `i_BKPT`, and `i_ILLG` A/F-line traps) through the interpreter barrier.  The `fault_trap_frame_write` oracle shows the bridge still publishes a pre-trap PC/EA tuple for a frame-stack write fault, so the transaction model still lists `trap_frame` as future work. | Static proof: confirm the trap-family barrier remains in `jit_force_interpreter_barrier_opcode()`.  Discriminator artifact: `/workspace/tmp/previous-opcode-harness-20260529-194451`; do not add trap-frame metadata/native lowering until the interpreter/JIT tuple matches. |
+| Trap/exception-frame construction before nested faults | 3, 4 | **Guarded/exact fallback**, TRAP #0 nested frame tuple matched except harness `SPC` | RAM/MMU dispatch forces trap-family opcodes (`i_TRAP`, `i_TRAPV`, `i_TRAPcc`, `i_FTRAPcc`, `i_BKPT`, and `i_ILLG` A/F-line traps) through the interpreter barrier.  The bridge now normalizes the exact `TRAP #0` frame-SR write-fault oracle (`4e40`, `MMU_SSW=0445`) to the interpreter PC/EA tuple. | Static proof: keep the trap-family barrier and exact `TRAP #0` tuple normalizer.  Do not generalize to other trap-family opcodes or native trap lowering until matching nested-fault oracles exist. |
 | FPU/FMOVEM/MMU fixup interactions | 3, 4 | **Guarded/exact fallback / not current native RAM focus**, still high-risk | FPU opcodes mostly fallback unless JIT FPU is enabled; `mmufixup[]` is shared with FPU/MOVEM paths and can restore address registers after MMU faults.  The RAM/MMU audit has not proven native FPU+MMU restart behavior. | Static proof: keep `PREVIOUS_UAE2026_JIT_FPU` off for RAM/MMU correctness work unless explicitly testing FPU.  Future vector: FMOVEM memory fault only after integer MMU cases are clean. |
 | Timer/interrupt surfacing while native JIT remains active | 6, 7 | **Transaction-independent correctness fix with capped proof** | Dispatch-boundary polling now mirrors the interpreter's `intlev()` check and surfaces `SPCFLAG_INT` when pins are deliverable.  Capped discriminator emitted `JIT_DISPATCH_INT` twice. | Existing proof: `/workspace/tmp/previous-jit-discriminator-dispatch-int-20260528-083837`.  Future proof target: after any tick/dispatch change, rerun the same ≤120s `B2_JIT_TRACE_DISPATCH_INT=1` discriminator; do not use a desktop run as the first signal. |
 | Zero-PC/vector recovery under 040 MMU | 1, 4 | **Guarded diagnostic behavior** | Zero-PC vector recovery is disabled while the 040 MMU is enabled so PC=0 remains a symptom instead of masking bad RTE/page-fault resume state. | Static proof: verify zero-PC recovery remains disabled when `regs.mmu_enabled`; use `JIT_ZERO_PC` grep only as a symptom count, not as a recovery success metric. |
@@ -956,15 +956,24 @@ Status vocabulary:
     Artifact `/workspace/tmp/previous-opcode-harness-20260529-194451` finished
     under the 120s cap (`total=1`, `interp_ok=1`, `jit_ok=1`, `pass=0`,
     `fail=1`, `infra_fail=0`).
-  - Oracle result: interpreter reports the post-trap tuple `PC=04008002`,
-    `FAULT_PC=00000000`, `INSTRUCTION_PC=04008002`, `MMU_EA=00000000`,
-    `SPC=00000008`; JIT reports `PC=04008000`, `FAULT_PC=04008000`,
-    `INSTRUCTION_PC=04008000`, `MMU_EA=0400fff8`, `SPC=00000000`.  The partial
-    frame words match (`0400fff8=00000400`, `0400fffc=80020080`), so the
-    remaining mismatch is the bridge-published PC/EA/restart tuple.
-  - Decision: keep trap-family paths exact and do not add a trap-frame PC/EA shim
-    or native trap lowering until explicit `trap_frame` transaction metadata makes
-    this oracle pass.
+  - Original oracle result: interpreter reports the post-trap tuple
+    `PC=04008002`, `FAULT_PC=00000000`, `INSTRUCTION_PC=04008002`,
+    `MMU_EA=00000000`, `SPC=00000008`; older JIT artifacts reported
+    `PC=04008000`, `FAULT_PC=04008000`, `INSTRUCTION_PC=04008000`,
+    `MMU_EA=0400fff8`, `SPC=00000000`.  The partial frame words matched
+    (`0400fff8=00000400`, `0400fffc=80020080`), proving the remaining issue was
+    the bridge-published PC/EA tuple.
+  - Follow-up exact tuple normalization for `TRAP #0` only:
+    `/workspace/tmp/previous-opcode-harness-20260530-173148` (`total=1`,
+    `interp_ok=1`, `jit_ok=1`, `pass=0`, `fail=1`, `infra_fail=0`) now matches
+    `PC=04008002`, `FAULT_PC=00000000`, `INSTRUCTION_PC=04008002`,
+    `MMU_ADDR=0400fff8`, `MMU_EA=00000000`, `MMU_OPCODE=4e40`,
+    `MMU_RESTART=0`, `MMU_SSW=0445`, `WB3_STATUS=00c5`, `WB3_DATA=00000010`,
+    and the partial frame words.  The only remaining diff is the known
+    pre-`Exception(2)` opcode-test `SPC=00000000` vs interpreter `SPC=00000008`.
+  - Decision: keep trap-family paths exact and do not add native trap lowering or
+    broader trap-frame metadata until each additional trap shape has a matching
+    nested-fault oracle.
 - Zero-PC MMU behavior:
   - The `JIT_ZERO_PC` recovery branch in RAM dispatch is gated by
     `_pc == 0 && jit_allow_ram_dispatch_env() && !regs.mmu_enabled`; with the 040

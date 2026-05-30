@@ -524,6 +524,26 @@ static bool bridge_normalize_proven_moves_fault_tuple(uae_u32 pc)
     return false;
 }
 
+static bool bridge_normalize_proven_trap_frame_fault_tuple(uae_u32 pc)
+{
+    if (!bridge_live_readable(pc, 2))
+        return false;
+    const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(pc);
+    /* Interpreter-oracle covered nested trap-frame write fault:
+     *   4e40  TRAP #0 from user mode.  The SR frame word write faults after the
+     *         trap has switched to supervisor and advanced PC past the opcode.
+     *         The interpreter pre-Exception dump clears fault_pc/effective EA.
+     * Do not generalize to other trap-family opcodes without a matching oracle. */
+    if (opcode != 0x4e40u || mmu_restart || regs.mmu_ssw != 0x0445u || mmu_opcode != 0x4e40u)
+        return false;
+    const uae_u32 post_pc = pc + 2;
+    regs.fault_pc = 0;
+    regs.instruction_pc = post_pc;
+    regs.mmu_effective_addr = 0;
+    m68k_setpc(post_pc);
+    return true;
+}
+
 static void bridge_set_active_a7(uae_u32 value)
 {
     m68k_areg(regs, 7) = value;
@@ -1135,7 +1155,9 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
          * in the pre-Exception dump.  Keep broader/native policy gated to the
          * exact opcodes and preserve the historical PC-only compatibility shim
          * for the original boot seams if an unlisted opcode reaches them. */
-        if (prb == 2 && bridge_normalize_proven_moves_fault_tuple(regs.fault_pc)) {
+        if (prb == 2 && bridge_normalize_proven_trap_frame_fault_tuple(regs.fault_pc)) {
+            /* Exact trap-frame tuple handled above. */
+        } else if (prb == 2 && bridge_normalize_proven_moves_fault_tuple(regs.fault_pc)) {
             /* Exact MOVES tuple handled above. */
         } else if (prb == 2 && !mmu_restart && bridge_proven_post_advance_byte_write_opcode(regs.fault_pc)) {
             const uae_u32 post_pc = regs.fault_pc + 2;

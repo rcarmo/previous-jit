@@ -2240,6 +2240,17 @@ gen_opcode (unsigned int opcode)
 		  "\tcompemu_raw_mov_l_ri(REG_PAR1,op_pc);\n"
 		  "\tcompemu_raw_mov_l_ri(REG_PAR2,target_pc);\n"
 		  "\tcompemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushTarget);\n");
+	comprintf("\tif (jit_allow_ram_dispatch_env()) {\n"
+		  "\t\t/* Direct native BSR can continue into the compiled target without an\n"
+		  "\t\t * interpreter/code-host dispatch boundary.  Probe the target code\n"
+		  "\t\t * stream after the architectural return push so RAM/MMU target-fetch\n"
+		  "\t\t * faults are delivered before native target instructions run. */\n"
+		  "\t\tprepare_for_call_1();\n"
+		  "\t\tprepare_for_call_2();\n"
+		  "\t\tcompemu_raw_mov_l_ri(REG_PAR1,target_pc);\n"
+		  "\t\tcompemu_raw_mov_l_ri(REG_PAR2,0xffffu);\n"
+		  "\t\tcompemu_raw_call((uintptr)Uae2026JitPrefetchGuard);\n"
+		  "\t}\n");
 	comprintf("\tadd_l_ri(src,m68k_pc_offset_thisinst+2);\n");
 	comprintf("\tm68k_pc_offset=0;\n");
 	comprintf("\tadd_l(PC_P,src);\n");

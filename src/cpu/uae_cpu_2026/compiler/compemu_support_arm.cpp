@@ -5575,7 +5575,8 @@ void build_comp(void)
 
     for (i = 0; tbl[i].opcode < 65536; i++) {
         int cflow = table68k[tbl[i].opcode].cflow;
-        if (follow_const_jumps && (tbl[i].specific & COMP_OPCODE_ISCJUMP))
+        if (follow_const_jumps && (tbl[i].specific & COMP_OPCODE_ISCJUMP) &&
+            !(jit_allow_ram_dispatch_env() && (tbl[i].opcode & 0xff00u) == 0x6100u))
             cflow = fl_const_jump;
         else
             cflow &= ~fl_const_jump;

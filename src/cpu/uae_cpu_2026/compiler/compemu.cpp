@@ -29565,6 +29565,17 @@ void REGPARAM2 op_6100_0_comp_ff(uae_u32 opcode) /* BSR */
 	compemu_raw_mov_l_ri(REG_PAR1, op_pc);
 	compemu_raw_mov_l_ri(REG_PAR2, target_pc);
 	compemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushTarget);
+	if (jit_allow_ram_dispatch_env()) {
+		/* Direct native BSR can continue into the compiled target without an
+		 * interpreter/code-host dispatch boundary.  Probe the target code
+		 * stream after the architectural return push so RAM/MMU target-fetch
+		 * faults are delivered before native target instructions run. */
+		prepare_for_call_1();
+		prepare_for_call_2();
+		compemu_raw_mov_l_ri(REG_PAR1,target_pc);
+		compemu_raw_mov_l_ri(REG_PAR2,0xffffu);
+		compemu_raw_call((uintptr)Uae2026JitPrefetchGuard);
+	}
 	add_l_ri(src,m68k_pc_offset_thisinst+2);
 	m68k_pc_offset=0;
 	add_l(PC_P,src);
@@ -29595,6 +29606,17 @@ void REGPARAM2 op_6101_0_comp_ff(uae_u32 opcode) /* BSR */
 	compemu_raw_mov_l_ri(REG_PAR1, op_pc);
 	compemu_raw_mov_l_ri(REG_PAR2, target_pc);
 	compemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushTarget);
+	if (jit_allow_ram_dispatch_env()) {
+		/* Direct native BSR can continue into the compiled target without an
+		 * interpreter/code-host dispatch boundary.  Probe the target code
+		 * stream after the architectural return push so RAM/MMU target-fetch
+		 * faults are delivered before native target instructions run. */
+		prepare_for_call_1();
+		prepare_for_call_2();
+		compemu_raw_mov_l_ri(REG_PAR1,target_pc);
+		compemu_raw_mov_l_ri(REG_PAR2,0xffffu);
+		compemu_raw_call((uintptr)Uae2026JitPrefetchGuard);
+	}
 	add_l_ri(src,m68k_pc_offset_thisinst+2);
 	m68k_pc_offset=0;
 	add_l(PC_P,src);
@@ -29625,6 +29647,17 @@ void REGPARAM2 op_61ff_0_comp_ff(uae_u32 opcode) /* BSR */
 	compemu_raw_mov_l_ri(REG_PAR1, op_pc);
 	compemu_raw_mov_l_ri(REG_PAR2, target_pc);
 	compemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushTarget);
+	if (jit_allow_ram_dispatch_env()) {
+		/* Direct native BSR can continue into the compiled target without an
+		 * interpreter/code-host dispatch boundary.  Probe the target code
+		 * stream after the architectural return push so RAM/MMU target-fetch
+		 * faults are delivered before native target instructions run. */
+		prepare_for_call_1();
+		prepare_for_call_2();
+		compemu_raw_mov_l_ri(REG_PAR1,target_pc);
+		compemu_raw_mov_l_ri(REG_PAR2,0xffffu);
+		compemu_raw_call((uintptr)Uae2026JitPrefetchGuard);
+	}
 	add_l_ri(src,m68k_pc_offset_thisinst+2);
 	m68k_pc_offset=0;
 	add_l(PC_P,src);
@@ -74467,6 +74500,17 @@ void REGPARAM2 op_6100_0_comp_nf(uae_u32 opcode) /* BSR */
 	compemu_raw_mov_l_ri(REG_PAR1, op_pc);
 	compemu_raw_mov_l_ri(REG_PAR2, target_pc);
 	compemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushTarget);
+	if (jit_allow_ram_dispatch_env()) {
+		/* Direct native BSR can continue into the compiled target without an
+		 * interpreter/code-host dispatch boundary.  Probe the target code
+		 * stream after the architectural return push so RAM/MMU target-fetch
+		 * faults are delivered before native target instructions run. */
+		prepare_for_call_1();
+		prepare_for_call_2();
+		compemu_raw_mov_l_ri(REG_PAR1,target_pc);
+		compemu_raw_mov_l_ri(REG_PAR2,0xffffu);
+		compemu_raw_call((uintptr)Uae2026JitPrefetchGuard);
+	}
 	add_l_ri(src,m68k_pc_offset_thisinst+2);
 	m68k_pc_offset=0;
 	add_l(PC_P,src);
@@ -74497,6 +74541,17 @@ void REGPARAM2 op_6101_0_comp_nf(uae_u32 opcode) /* BSR */
 	compemu_raw_mov_l_ri(REG_PAR1, op_pc);
 	compemu_raw_mov_l_ri(REG_PAR2, target_pc);
 	compemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushTarget);
+	if (jit_allow_ram_dispatch_env()) {
+		/* Direct native BSR can continue into the compiled target without an
+		 * interpreter/code-host dispatch boundary.  Probe the target code
+		 * stream after the architectural return push so RAM/MMU target-fetch
+		 * faults are delivered before native target instructions run. */
+		prepare_for_call_1();
+		prepare_for_call_2();
+		compemu_raw_mov_l_ri(REG_PAR1,target_pc);
+		compemu_raw_mov_l_ri(REG_PAR2,0xffffu);
+		compemu_raw_call((uintptr)Uae2026JitPrefetchGuard);
+	}
 	add_l_ri(src,m68k_pc_offset_thisinst+2);
 	m68k_pc_offset=0;
 	add_l(PC_P,src);
@@ -74527,6 +74582,17 @@ void REGPARAM2 op_61ff_0_comp_nf(uae_u32 opcode) /* BSR */
 	compemu_raw_mov_l_ri(REG_PAR1, op_pc);
 	compemu_raw_mov_l_ri(REG_PAR2, target_pc);
 	compemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushTarget);
+	if (jit_allow_ram_dispatch_env()) {
+		/* Direct native BSR can continue into the compiled target without an
+		 * interpreter/code-host dispatch boundary.  Probe the target code
+		 * stream after the architectural return push so RAM/MMU target-fetch
+		 * faults are delivered before native target instructions run. */
+		prepare_for_call_1();
+		prepare_for_call_2();
+		compemu_raw_mov_l_ri(REG_PAR1,target_pc);
+		compemu_raw_mov_l_ri(REG_PAR2,0xffffu);
+		compemu_raw_call((uintptr)Uae2026JitPrefetchGuard);
+	}
 	add_l_ri(src,m68k_pc_offset_thisinst+2);
 	m68k_pc_offset=0;
 	add_l(PC_P,src);

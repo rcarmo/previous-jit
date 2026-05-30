@@ -137,7 +137,7 @@ extern "C" uae_u32 Uae2026JitPrefetchGuard(uae_u32 pc, uae_u32 opcode)
 	regs.fault_pc = pc;
 	mmu_restart = true;
 	mmu_opcode = (uae_u16)-1;
-	const uae_u16 fetched_opcode = (jit_allow_ram_dispatch_env() && regs.mmu_enabled)
+	const uae_u16 fetched_opcode = (jit_allow_ram_dispatch_env() && (regs.mmu_enabled || Uae2026OpcodeTestModeActive()))
 		? jit_fetch_opcode_via_code_host(pc)
 		: (uae_u16)Uae2026JitMmuFetchOpcode(pc);
 	if ((uae_u16)opcode != 0xffffu && fetched_opcode != (uae_u16)opcode && getenv("B2_JIT_TRACE_PREFETCH_GUARD")) {

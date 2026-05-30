@@ -1131,8 +1131,12 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
             /* Previous's legacy format-7 frame builder stores mmu_effective_addr
              * as the EA word.  JIT-delivered helper faults may leave that field
              * stale from an earlier low-virtual fault; make it match the actual
-             * bus fault address for bridge-delivered RAM/MMU data cycles. */
-            regs.mmu_effective_addr = regs.mmu_fault_addr;
+             * bus fault address for bridge-delivered RAM/MMU data cycles.  Do
+             * not do this for 68040 continuation frames (MMU_SSW_CM), where the
+             * interpreter keeps the continuation EA distinct from the faulting
+             * writeback bus address (e.g. MOVEM predecrement). */
+            if (!(regs.mmu_ssw & 0x1000u))
+                regs.mmu_effective_addr = regs.mmu_fault_addr;
             if (m68k_getpc() != regs.fault_pc)
                 m68k_setpc(regs.fault_pc);
         }

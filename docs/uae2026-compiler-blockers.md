@@ -34,8 +34,9 @@ prelude, without linking it into `Previous` yet.
 - object compile probe: **passing**
 - emulator/runtime integration of vendored compiler entry points: **wired under `ENABLE_EXPERIMENTAL_UAE2026_JIT`**
 - default/ROM translated execution reaches the NEXTSTEP desktop in the latest smoke check (`/workspace/tmp/previous-jit-bsr-metadata-default-20260526-132634`, `desktop_reached=1`)
-- opcode harness remains clean after the latest RAM/MMU changes (`/workspace/tmp/previous-opcode-harness-20260526-132114`, `pass=75 fail=0 score=100`)
+- historical full opcode harness remains clean (`/workspace/tmp/previous-opcode-harness-20260526-132114`, `pass=75 fail=0 score=100`)
 - RAM-code MMU fast smoke remains clean from RAM execution at `0x04008000` (`/workspace/tmp/previous-mmu-fast-smoke-20260526-132114`, `pass=32 fail=0 score=100`)
+- latest bounded RAM/JIT gates after the forced-fault oracle tranche are clean: focused forced-fault tuple gate `/workspace/tmp/previous-opcode-harness-20260531-090328` (`pass=11 fail=0 score=100`) and non-fault seam/call gate `/workspace/tmp/previous-opcode-harness-20260531-090739` (`pass=12 fail=0 score=100`); the broader unfiltered non-fault RAM run hit the 120s cap and is not counted (`/workspace/tmp/previous-opcode-harness-20260531-090522`).
 - RAM/MMU dispatch mode is still experimental. The explicit conservative oracle `B2_JIT_RTE_FAULT_HANDOFF=1` boots to a stable desktop in the latest long/no-DC run (`/workspace/tmp/previous-jit-bsr-metadata-ram-handoff-long-20260526-133132`, `desktop_reached=1`, `stable_reached=1`). Native no-handoff remains unfixed after `9441c84`; it now has cleaner fallback BSR transaction metadata but still times out after RTE/low-PC churn in `/workspace/tmp/previous-jit-bsr-metadata-nohandoff-long-20260526-145233`.
 - latest diagnostic audit keeps default `B2_JIT_PCTRACE_WORDS` non-invasive by logging only `PCTOPS` plus executable-shadow `PCTSHADOW`; live addrbank reads are opt-in via `B2_JIT_PCTRACE_LIVE=1` because they can have side effects or fault.
 

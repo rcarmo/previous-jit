@@ -82,6 +82,25 @@ Artifact: `/workspace/tmp/previous-opcode-harness-20260531-090328`
 Metrics: `total=11`, `interp_ok=11`, `jit_ok=11`, `pass=11`, `fail=0`,
 `infra_fail=0`, `score=100`.
 
+Latest bounded non-fault RAM gate (2026-05-31):
+
+```bash
+PREVIOUS_UAE2026_JIT_RAM=1 \
+B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1 \
+PREVIOUS_OPCODE_TEST_ADDR=0x04008000 \
+PREVIOUS_OPCODE_FILTER='^(seam_|bsr_|jsr_)' \
+./tools/uae2026-opcode-harness.sh
+```
+
+Artifact: `/workspace/tmp/previous-opcode-harness-20260531-090739`
+
+Metrics: `total=12`, `interp_ok=12`, `jit_ok=12`, `pass=12`, `fail=0`,
+`infra_fail=0`, `score=100`.
+
+A broader unfiltered non-fault RAM run hit the 120s cap at
+`/workspace/tmp/previous-opcode-harness-20260531-090522` before writing
+`result.env`; it is not counted as validation.
+
 ## Latest default run (2026-05-26)
 
 Commands:

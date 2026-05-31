@@ -66,7 +66,23 @@ known opcode-test catch-path state rather than part of the 68040 access-error tu
 `*.compare` when `B2_TEST_EXPECT_EXCEPTION` is active.  Promote a fault vector only after the raw
 semantic tuple has been reviewed and any normalization is documented.
 
-## Latest run (2026-05-26)
+Latest focused forced-fault oracle gate (2026-05-31):
+
+```bash
+PREVIOUS_UAE2026_JIT_RAM=1 \
+B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1 \
+PREVIOUS_OPCODE_TEST_ADDR=0x04008000 \
+PREVIOUS_OPCODE_INCLUDE_FAULTS=1 \
+PREVIOUS_OPCODE_FILTER='^(fault_bsr_target_fetch|fault_jsr_target_fetch|fault_rts_target_fetch|fault_rtr_target_fetch|fault_rte_return_fetch|fault_trap_frame_write|fault_write_byte_d2|fault_write_byte_postinc|moves_dfc_write_fault|moves_sfc_read_fault|movem_predec_write_fault)$' \
+./tools/uae2026-opcode-harness.sh
+```
+
+Artifact: `/workspace/tmp/previous-opcode-harness-20260531-090328`
+
+Metrics: `total=11`, `interp_ok=11`, `jit_ok=11`, `pass=11`, `fail=0`,
+`infra_fail=0`, `score=100`.
+
+## Latest default run (2026-05-26)
 
 Commands:
 

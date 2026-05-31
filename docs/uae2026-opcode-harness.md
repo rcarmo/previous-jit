@@ -56,9 +56,15 @@ known to exercise the brittle parts of the old generated `compemu` pipeline:
 
 Absolute scratch addresses were remapped from BasiliskII-style low RAM to Previous RAM at `0x0400xxxx`.
 Fault-oracle vectors are not part of the default green regression set yet: they are discriminators
-for proving current JIT/MMU policy.  Run them explicitly with a narrow filter, inspect the
-`FAULTDUMP:` tuple, and only promote one to the default set after the interpreter and JIT tuples
-match for the intended semantics.
+for proving current JIT/MMU policy.  Run them explicitly with a narrow filter and inspect the
+raw `FAULTDUMP:` tuple.
+
+For comparisons only, the harness normalizes forced-fault `FAULTDUMP:` lines for fields that are
+known opcode-test catch-path state rather than part of the 68040 access-error tuple under test:
+`SPC` is replaced with a placeholder and the X bit is cleared from `SR`.  The raw
+`*.interp.regdump` / `*.jit.regdump` files are kept unchanged; normalized copies are written as
+`*.compare` when `B2_TEST_EXPECT_EXCEPTION` is active.  Promote a fault vector only after the raw
+semantic tuple has been reviewed and any normalization is documented.
 
 ## Latest run (2026-05-26)
 

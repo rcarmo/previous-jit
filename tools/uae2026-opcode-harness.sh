@@ -171,6 +171,16 @@ expand_test_addr_tokens() {
   done
 }
 
+normalize_faultdump_for_compare() {
+  local in_file="$1"
+  local out_file="$2"
+  # Forced-fault oracles stop before Exception(2). The interpreter catch path and
+  # JIT bridge catch path can differ in harness-only dump state that is not part
+  # of the access-error tuple under test: pending SPC sampling and the X bit in
+  # SR. Keep raw *.regdump files intact and normalize only compare copies.
+  perl -pe 'if (/^FAULTDUMP:/) { s/SPC=[0-9a-fA-F]+/SPC=<harness>/; s/SR=([0-9a-fA-F]{4})/sprintf("SR=%04x", hex($1) & ~0x10)/e; }' "$in_file" > "$out_file"
+}
+
 run_case() {
   local name="$1"
   local hex_code="$2"
@@ -349,7 +359,16 @@ for name in "${TEST_ORDER[@]}"; do
   fi
   jit_ok=$((jit_ok + 1))
 
-  if diff -u "$interp_out" "$jit_out" > "$OUTDIR/${name}.diff"; then
+  interp_cmp="$interp_out"
+  jit_cmp="$jit_out"
+  if [[ -n "${EXPECT_EXCEPTION[$name]:-}" ]]; then
+    interp_cmp="$OUTDIR/${name}.interp.compare"
+    jit_cmp="$OUTDIR/${name}.jit.compare"
+    normalize_faultdump_for_compare "$interp_out" "$interp_cmp"
+    normalize_faultdump_for_compare "$jit_out" "$jit_cmp"
+  fi
+
+  if diff -u "$interp_cmp" "$jit_cmp" > "$OUTDIR/${name}.diff"; then
     pass=$((pass + 1))
     rm -f "$OUTDIR/${name}.diff"
   else

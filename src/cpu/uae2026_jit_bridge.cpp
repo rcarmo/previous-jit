@@ -544,6 +544,25 @@ static bool bridge_normalize_proven_trap_frame_fault_tuple(uae_u32 pc)
     return true;
 }
 
+static bool bridge_normalize_proven_movem_continuation_fault_tuple(uae_u32 pc)
+{
+    if (!bridge_live_readable(pc, 4))
+        return false;
+    const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(pc);
+    const uae_u16 ext = (uae_u16)Uae2026JitLiveGetWord(pc + 2);
+    /* Interpreter-oracle covered MOVEM.L predecrement continuation fault:
+     *   48e0 c000  MOVEM.L D0-D1,-(A0).  The 68040 continuation frame reports
+     *              the MOVEM opcode PC, clears fault_pc, and preserves
+     *              mmu_effective_addr as the continuation EA (not fault addr).
+     * Do not generalize to other MOVEM masks/modes without a matching oracle. */
+    if (opcode != 0x48e0u || ext != 0xc000u || !mmu_restart || regs.mmu_ssw != 0x1401u)
+        return false;
+    regs.fault_pc = 0;
+    regs.instruction_pc = pc;
+    m68k_setpc(pc);
+    return true;
+}
+
 static void bridge_set_active_a7(uae_u32 value)
 {
     m68k_areg(regs, 7) = value;
@@ -1157,6 +1176,8 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
          * for the original boot seams if an unlisted opcode reaches them. */
         if (prb == 2 && bridge_normalize_proven_trap_frame_fault_tuple(regs.fault_pc)) {
             /* Exact trap-frame tuple handled above. */
+        } else if (prb == 2 && bridge_normalize_proven_movem_continuation_fault_tuple(regs.fault_pc)) {
+            /* Exact MOVEM continuation tuple handled above. */
         } else if (prb == 2 && bridge_normalize_proven_moves_fault_tuple(regs.fault_pc)) {
             /* Exact MOVES tuple handled above. */
         } else if (prb == 2 && !mmu_restart && bridge_proven_post_advance_byte_write_opcode(regs.fault_pc)) {

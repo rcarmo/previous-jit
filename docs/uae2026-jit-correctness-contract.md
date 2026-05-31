@@ -482,7 +482,7 @@ Status vocabulary:
 | JSR return-address push before target instruction fetch | 3, 4 | **Guarded/exact fallback**, selected metadata remains **known forced-fault mismatch** | RAM/MMU dispatch now forces `i_JSR` through the interpreter barrier.  JSR `call_push` metadata remains narrow (`0000003e`, `00003c26`, `00008334`, `0000c52c`, `05027706`) because broad rollback stalled earlier boot probes.  The synthetic `fault_jsr_target_fetch` oracle confirms the interpreter commits the return push and frames the target fetch at `04008100`, while current JIT still diverges before the forced target-fetch tuple even after the exact barrier. | Keep the JSR exact barrier and explicit metadata allowlist.  Latest discriminator artifact: `/workspace/tmp/previous-opcode-harness-20260529-200633`; do not broaden rollback/canonicalization until this forced-fault vector matches. |
 | RTS/RTR return target fetch after stack pop | 3, 4 | **Guarded/exact fallback** and **transaction-backed**, but forced target-fetch still mismatches | Return-family opcodes are interpreter barriers in RAM/MMU dispatch.  Fallback paths publish `return_pop` metadata for `RTS`/`RTR` so target-fetch faults can restore A7 from producer metadata rather than opcode-window guessing.  The latest `fault_rts_target_fetch` oracle shows the pop is committed (`A7=04010004`) but JIT still falls through to the same `PC=08000000` target-stream mismatch class after reaching `04008100`. | Static proof: verify `op == 0x4e75/0x4e77` remains in the RAM/MMU barrier list and fallback loops still call `Uae2026JitMmuTxnBeginReturnPopCurrentA7()`.  Do not native-lower return-family opcodes until `fault_rts_target_fetch` / `fault_rtr_target_fetch` match. |
 | RTE SR/stack switch before return-code fetch | 1, 3, 4 | **Proven exact opcode path**, but native post-fault resume remains an **unaudited gap** | `jit_op_rte()` routes through `cpufunctbl[0x4e73]` after publishing fallback state.  Bridge-caught RTE/page-fault seams no longer auto-handoff unless `B2_JIT_RTE_FAULT_HANDOFF=1`, preserving native no-handoff for diagnosis. | Static proof: keep `RTE` on the RAM/MMU interpreter-barrier list.  Bounded discriminator target: short trace that catches `04001ae6 -> low user PC` and compares pre/post `Exception(2)` `SR/A7/USP/ISP/MSP`, frame format, and `pc_p` without running to desktop. |
-| MOVEM continuation frames and `MMU_SSW_CM` | 3, 4 | **Guarded/exact fallback**, continuation EA now oracle-matched | Bridge preserves `MMU_SSW_CM` continuation EA instead of replacing it with `mmu_fault_addr`, including the high-RAM bridge-delivered helper-fault path.  RAM direct MOVEM predecrement shortcut is default-off because it bypasses interpreter MOVEM restart/fixup bookkeeping.  Fast vectors cover normal MOVEM frame restore. | Static proof: keep `B2_JIT_RAM_DIRECT_MOVEM_PREDEC` default-off and keep the high-RAM bridge `mmu_effective_addr` rewrite gated off when `MMU_SSW_CM` is set.  Focused vector `movem_predec_write_fault` now matches the interpreter continuation EA; remaining deltas are `FAULT_PC` and harness-only `SR`/`SPC`. |
+| MOVEM continuation frames and `MMU_SSW_CM` | 3, 4 | **Guarded/exact fallback**, continuation tuple oracle-matched for covered shape | Bridge preserves `MMU_SSW_CM` continuation EA instead of replacing it with `mmu_fault_addr`, including the high-RAM bridge-delivered helper-fault path.  For the covered `48e0 c000` MOVEM.L predecrement continuation oracle, the bridge also clears `FAULT_PC` to match the interpreter tuple.  RAM direct MOVEM predecrement shortcut is default-off because it bypasses interpreter MOVEM restart/fixup bookkeeping. | Static proof: keep `B2_JIT_RAM_DIRECT_MOVEM_PREDEC` default-off and keep the high-RAM bridge `mmu_effective_addr` rewrite gated off when `MMU_SSW_CM` is set.  Do not broaden MOVEM continuation tuple normalization to other masks/modes without a matching oracle. |
 | Non-restartable write faults and post-advance PC | 4 | **Exact opcode-shape shim**, oracle-matched except harness `SPC` | Synthetic forced-write oracles for `MOVE.B D2,(A0)` (`1082`) and `MOVE.B (A2)+,(A0)` (`109a`) prove the interpreter reports the post-write PC with `FAULT_PC=0` and `MMU_EA=0` while preserving writeback fields and side effects.  The bridge now applies that exact tuple only for those proven opcodes; the older `0500b6ae`/`0500bc98` PC-only compatibility shim remains as fallback for unlisted historical seams.  The later `0500b6b0` candidate remains rejected. | Bounded proof recorded below.  Do not add new post-PC shims for other write opcodes/EA shapes without the same forced-fault oracle matching side effects, writeback fields, SSW, and visible PC. |
 | ATC/MMU maintenance (`PTEST`, `PFLUSH`, `PMOVE`, `PLPA`, vendored `i_MMUOP`) | 5 | **Proven exact** | RAM/MMU dispatch forces vendored `i_MMUOP` exact.  This removed the repeated native `0501288e` stale/invalid retry fault where the interpreter could scan `00038000` successfully. | Static proof: verify `table68k[op].mnemo == i_MMUOP` remains a RAM/MMU barrier.  Regression discriminator: grep a capped fault-window run for `0501288e=0` only after touching this family. |
 | MOVEC/SR control-state changes and stale allocator state | 1, 6, 7 | **Guarded/exact fallback / block-ending barrier** | MOVEC helpers may update VBR/SFC/DFC and set `spcflags` in RAM mode; `jit_force_interpreter_barrier_opcode()` ends the block for `4e7a/4e7b`.  SR-write exacting was tested as a broad fix and reverted because it did not move the frontier. | Static proof: keep `MOVEC` block-ending barrier and focused `movec_vbr/sfc/dfc_roundtrip` vectors green.  Do not add a broad SR barrier unless a specific clause violation is proven. |
@@ -729,9 +729,11 @@ Status vocabulary:
       interpreter oracle reports `SR=0000`.
     - The `SPC=00000008` vs `SPC=00000000` difference is likewise pre-Exception
       opcode-test harness state: the JIT bridge has not run the interpreter loop's
-      pending-interrupt/special-flag path before dumping.  Do not paper over this
-      in rollback/canonicalization code; if exact fault-oracle equality is needed,
-      add an explicit harness normalization rule and justify it separately.
+      pending-interrupt/special-flag path before dumping.
+    - Harness policy after the tuple-fix tranches: raw `FAULTDUMP` artifacts stay
+      unchanged, but forced-fault compare copies normalize only these catch-path
+      fields (`SPC` and SR.X) so remaining pass/fail signals reflect the access-
+      error tuple under test rather than opcode-test plumbing.
 - Policy: the discriminator exists and does **not** pass.  Keep the current JSR
   metadata allowlist narrow, keep JSR exact in RAM/MMU mode, do not add broad
   rollback/canonicalization from symptoms, and require explicit producer metadata
@@ -1103,13 +1105,14 @@ Status vocabulary:
     shows `movem_predec_write_fault` now matches the interpreter continuation EA:
     `MMU_ADDR=0400a01c`, `MMU_EA=0400a020`, `MMU_OPCODE=48e0`,
     `MMU_RESTART=1`, `MMU_SSW=1401`, `WB3_STATUS=0081`, `WB3_DATA=33334444`,
-    and `A0=0400a020`.  Remaining differences are `FAULT_PC=0400800c` versus
-    interpreter `00000000` and the already-classified pre-`Exception(2)`
-    `SR`/`SPC` dump-state delta.  The subsequent full focused forced-fault run
-    `/workspace/tmp/previous-opcode-harness-20260530-163733` remains
-    `total=11`, `interp_ok=11`, `jit_ok=11`, `pass=0`, `fail=11`,
-    `infra_fail=0`, confirming this is a tuple-narrowing fix, not conversion-gate
-    success.
+    and `A0=0400a020`.  A follow-up exact tuple normalizer for the covered
+    `48e0 c000` MOVEM.L predecrement continuation shape clears `FAULT_PC` while
+    preserving the continuation EA.  With harness-only `SPC`/SR.X normalization,
+    the latest full focused forced-fault run
+    `/workspace/tmp/previous-opcode-harness-20260531-085924` now passes all 11
+    default-off fault oracles (`total=11`, `interp_ok=11`, `jit_ok=11`,
+    `pass=11`, `fail=0`, `infra_fail=0`).  This does not change broader MOVEM
+    policy: other MOVEM masks/modes still require matching continuation oracles.
 - Call-target decision:
   - Do **not** remove the legacy BSR scan.  The historical proof already showed
     `00003372/00003374 -> 00012b04` is not transaction-covered.  The synthetic

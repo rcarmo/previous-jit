@@ -5,15 +5,17 @@
 - Repository: `/workspace/projects/previous`
 - Branch: `main` (JIT fork / bring-up branch)
 - Base build-fix commit: `59b1131` (`Fix AArch64/GCC build for Previous on modern toolchains`)
-- Native binary currently builds at: `build-clean/src/Previous`
+- Native experimental binary currently builds at: `build-vnc/src/Previous` with `ENABLE_EXPERIMENTAL_UAE2026_JIT=ON`
 - Experimental VNC output path is now available via `PREVIOUS_VNC=1` (port with `PREVIOUS_VNC_PORT`, default `5900`)
 - Vendored BasiliskII UAE 2026 subtree is now staged under `src/cpu/uae_cpu_2026/`
 - Headless fresh-image harness is now available at `tools/headless-nextstep-harness.sh`
 - Experimental bridge smoke harness is now available at `tools/headless-jit-bridge-smoke.sh`
-- Default/ROM translated execution reaches the NEXTSTEP desktop. RAM/MMU dispatch mode still uses the explicit conservative oracle `B2_JIT_RTE_FAULT_HANDOFF=1` to boot to a stable desktop; without that handoff the active remaining blocker is native JIT resume after the RTE/page-fault seam. Commit `9441c84` aligns fallback BSR call-push transaction metadata, but native no-handoff still times out after RTE/low-PC churn (`00012052`, `00005030`, `0000a7a8`, `00004492`, `04001ae6` in the latest long run).
-- Early bootstrap probe harness is now available at `tools/headless-jit-bootstrap-probe.sh`
+- Default/ROM bootstrap is freshly validated under the 120s rule (`/workspace/tmp/previous-jit-bootstrap-20260601-130216`: `bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`, `aslr_active=1`).  The longer default/ROM desktop smoke remains the historical passing artifact (`/workspace/tmp/previous-jit-bsr-metadata-default-20260526-132634`, `desktop_reached=1`) and was not rerun under the current cap.
+- Current bounded regression baselines are clean: default non-fault opcode set split into three chunks (`/workspace/tmp/previous-opcode-harness-20260601-124403`, `...124502`, `...124558`, combined `pass=75 fail=0 score=100`), RAM-code MMU fast-smoke set split into two chunks (`/workspace/tmp/previous-opcode-harness-20260601-125250`, `...125405`, combined `pass=32 fail=0 score=100`), and the focused forced-fault tuple gate (`/workspace/tmp/previous-opcode-harness-20260531-090328`, `pass=11 fail=0 score=100`).
+- RAM/MMU dispatch mode still has no current desktop-reaching native no-handoff proof.  The explicit conservative oracle `B2_JIT_RTE_FAULT_HANDOFF=1` remains the desktop-boot reference; broader native resume changes must keep the bounded opcode/fault gates green first.
+- Early bootstrap probe harness is available at `tools/headless-jit-bootstrap-probe.sh`
 - Compiler-facing prefs shim now lives in `src/cpu/uae2026_compiler_prefs_shim.cpp`
-- Direct vendored compiler blocker inventory now lives in `docs/uae2026-compiler-blockers.md`
+- Direct vendored compiler blocker inventory now lives in `docs/uae2026-compiler-blockers.md`; latest syntax/object probes pass with zero tracked blocker counters.
 - Vendored compiler object probe is available at `tools/uae2026-compiler-object-probe.sh`
 - Ongoing change log lives in `docs/uae2026-jit-bringup.md`
 
@@ -138,7 +140,7 @@ Why:
 1. **MMU correctness**
    - NeXTSTEP/OpenStep depend on 68030/68040 MMU behavior
    - this is the biggest correctness risk for RAM-mode JIT dispatch
-   - current active frontier: native JIT resume after an RTE/page-fault seam. The earlier low-ROM probe loop at `00003352`, the `00003964/A2=00000002` shifted-stack failure, the `init exited with 212` path, the panic-monitor `bad exception stack format` failure, the `000000de` loop, and the high-user `050abffe`/`050069cc` frontiers have all been cleared, bypassed, or superseded. The explicit `B2_JIT_RTE_FAULT_HANDOFF=1` oracle boots; the unfixed native path now has aligned fallback BSR metadata (`9441c84`) but still times out after the same RTE/low-PC churn. The sampled high-kernel `0409f592/0409f5cc` polling loop did not move under exact execution and is not treated as a local codegen root cause.
+   - current active frontier: native RAM/MMU resume still lacks a desktop-reaching no-handoff proof. The earlier low-ROM probe loop at `00003352`, the `00003964/A2=00000002` shifted-stack failure, the `init exited with 212` path, the panic-monitor `bad exception stack format` failure, the `000000de` loop, and the high-user `050abffe`/`050069cc` frontiers have all been cleared, bypassed, or superseded. The explicit `B2_JIT_RTE_FAULT_HANDOFF=1` oracle boots; recent bounded work instead proves focused opcode/fault tuples (`pass=75`, `pass=32`, and `pass=11` gates) and keeps broad native resume changes gated behind matching ≤120s discriminators. The sampled high-kernel `0409f592/0409f5cc` polling loop did not move under exact execution and is not treated as a local codegen root cause.
 
 2. **Exception / restart semantics**
    - page faults, bus faults, restartable FPU/MMU instructions

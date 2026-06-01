@@ -185,6 +185,10 @@ Expected success metrics:
 - `bootstrap_active=1`
 - `aslr_active=1`
 
+Latest bounded bootstrap refresh (2026-06-01):
+- `/workspace/tmp/previous-jit-bootstrap-20260601-130216`
+- `bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`, `aslr_active=1`, `wait_sec=15`
+
 ### Run the experimental bridge smoke harness
 
 ```bash
@@ -214,7 +218,7 @@ Latest translated-execution debug checkpoint:
 - refreshed default opcode vector-set baseline passes when split into bounded chunks under the 120s rule: combined `total=75`, `jit_ok=75`, `pass=75`, `fail=0`, `infra_fail=0`, `score=100` across `/workspace/tmp/previous-opcode-harness-20260601-124403`, `/workspace/tmp/previous-opcode-harness-20260601-124502`, and `/workspace/tmp/previous-opcode-harness-20260601-124558`.  The unfiltered default opcode harness exceeded the cap at `/workspace/tmp/previous-opcode-harness-20260601-124112` and is not counted.
 - refreshed RAM-code MMU fast-smoke vector-set baseline passes when split into bounded chunks under the 120s rule: combined `total=32`, `jit_ok=32`, `pass=32`, `fail=0`, `infra_fail=0`, `score=100` across `/workspace/tmp/previous-opcode-harness-20260601-125250` and `/workspace/tmp/previous-opcode-harness-20260601-125405`.  The unchunked `uae2026-mmu-fast-smoke.sh` wrapper exceeded the cap at `/workspace/tmp/previous-mmu-fast-smoke-20260601-125024` and is not counted.
 - follow-up bounded RAM gates after the forced-fault oracle work pass on 2026-05-31: focused forced-fault tuple gate `total=11`, `pass=11`, `fail=0` (`/workspace/tmp/previous-opcode-harness-20260531-090328`) and non-fault RAM seam/call gate `total=12`, `pass=12`, `fail=0` (`/workspace/tmp/previous-opcode-harness-20260531-090739`).  The unfiltered non-fault RAM opcode harness exceeded the 120s cap at `/workspace/tmp/previous-opcode-harness-20260531-090522` and is not counted as validation.
-- default/ROM JIT smoke reaches the desktop (`/workspace/tmp/previous-jit-bsr-metadata-default-20260526-132634`, `desktop_reached=1`, `harness_rc=0`)
+- default/ROM JIT bootstrap probe is refreshed and clean (`/workspace/tmp/previous-jit-bootstrap-20260601-130216`, `bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`, `aslr_active=1`); the longer desktop smoke remains the historical `/workspace/tmp/previous-jit-bsr-metadata-default-20260526-132634` (`desktop_reached=1`, `harness_rc=0`) and was not rerun under the 120s rule.
 - RAM translation remains gated by `PREVIOUS_UAE2026_JIT_RAM=1`; true RAM dispatch is counted only for `0x04000000..0x07ffffff` dispatch PCs so bogus zero-PC recovery does not look like RAM progress
 - explicit handoff RAM-requested mode reaches and holds the desktop when `B2_JIT_RTE_FAULT_HANDOFF=1` is set (`/workspace/tmp/previous-jit-bsr-metadata-ram-handoff-long-20260526-133132`: `desktop_reached=1`, `stable_reached=1`, `jit_ram_requested=1`, `harness_rc=0`)
 - automatic RAM-mode RTE handoff remains removed, so `PREVIOUS_UAE2026_JIT_RAM=1` preserves the native 100%-JIT path unless `B2_JIT_RTE_FAULT_HANDOFF=1` is explicitly set. Native no-handoff is not fixed. The old `000042f8` / `addr=0000020c` loop was traced to `0000aef4` MOVEM continuation-frame effective-address corruption and is now gone; commit `9441c84` also fixed stale fallback BSR transaction target metadata, but long no-handoff still times out after the familiar RTE/low-PC churn (`/workspace/tmp/previous-jit-bsr-metadata-nohandoff-long-20260526-145233`).

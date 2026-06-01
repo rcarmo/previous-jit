@@ -242,6 +242,10 @@ Expected success metrics:
 - `rc=0`
 - object file produced for `compemu_support_arm.cpp`
 
+Latest bounded probe refresh (2026-06-01):
+- syntax probe: `/workspace/tmp/previous-uae2026-syntax-20260601-125758`, `rc=0`, all tracked blocker counters zero
+- object probe: `/workspace/tmp/previous-uae2026-object-20260601-125759`, `rc=0`, `object_size=441168`
+
 ## Next steps
 
 1. Keep `./tools/uae2026-opcode-harness.sh` green before and after every RAM/MMU change.

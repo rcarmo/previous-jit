@@ -30,8 +30,8 @@ prelude, without linking it into `Previous` yet.
 
 ## Current status
 
-- syntax probe: **passing**
-- object compile probe: **passing**
+- syntax probe: **passing** (`/workspace/tmp/previous-uae2026-syntax-20260601-125758`, `rc=0`; blocker counters for instruction PC, memory globals, flag NZCV, opcode cflow, and icache conflicts are all zero)
+- object compile probe: **passing** (`/workspace/tmp/previous-uae2026-object-20260601-125759`, `rc=0`, `object_size=441168`)
 - emulator/runtime integration of vendored compiler entry points: **wired under `ENABLE_EXPERIMENTAL_UAE2026_JIT`**
 - default/ROM translated execution reaches the NEXTSTEP desktop in the latest smoke check (`/workspace/tmp/previous-jit-bsr-metadata-default-20260526-132634`, `desktop_reached=1`)
 - refreshed default opcode vector-set baseline remains clean when split into bounded chunks under the 120s rule (`/workspace/tmp/previous-opcode-harness-20260601-124403`, `/workspace/tmp/previous-opcode-harness-20260601-124502`, `/workspace/tmp/previous-opcode-harness-20260601-124558`; combined `pass=75 fail=0 score=100`).  The unfiltered default opcode harness hit the cap at `/workspace/tmp/previous-opcode-harness-20260601-124112` and is not counted.

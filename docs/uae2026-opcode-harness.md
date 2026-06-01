@@ -127,10 +127,19 @@ Observed default vector-set metrics across the three chunks:
 - combined default non-fault baseline: `total=75`, `interp_ok=75`, `jit_ok=75`,
   `pass=75`, `fail=0`, `infra_fail=0`, `score=100`
 
-Historical fast MMU smoke baseline (not rerun in this tranche):
+Latest RAM-code MMU fast-smoke vector-set baseline (2026-06-01):
 
-- `/workspace/tmp/previous-mmu-fast-smoke-20260526-132114`
-- `total=32`, `interp_ok=32`, `jit_ok=32`, `pass=32`, `fail=0`, `infra_fail=0`, `score=100`
+The unchunked `uae2026-mmu-fast-smoke.sh` wrapper exceeded the 120s cap at
+`/workspace/tmp/previous-mmu-fast-smoke-20260601-125024` before writing
+`result.env`, so it is not counted as validation.  The same 32-vector MMU filter
+was refreshed as two bounded RAM opcode-harness chunks:
+
+- chunk 1 artifact: `/workspace/tmp/previous-opcode-harness-20260601-125250`
+  - `total=16`, `interp_ok=16`, `jit_ok=16`, `pass=16`, `fail=0`, `infra_fail=0`, `score=100`
+- chunk 2 artifact: `/workspace/tmp/previous-opcode-harness-20260601-125405`
+  - `total=16`, `interp_ok=16`, `jit_ok=16`, `pass=16`, `fail=0`, `infra_fail=0`, `score=100`
+- combined RAM-code MMU fast-smoke vector-set baseline: `total=32`,
+  `interp_ok=32`, `jit_ok=32`, `pass=32`, `fail=0`, `infra_fail=0`, `score=100`
 
 Interpretation:
 

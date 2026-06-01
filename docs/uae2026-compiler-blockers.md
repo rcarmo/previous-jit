@@ -40,31 +40,38 @@ prelude, without linking it into `Previous` yet.
 - RAM/MMU dispatch mode is still experimental. The explicit conservative oracle `B2_JIT_RTE_FAULT_HANDOFF=1` boots to a stable desktop in the latest long/no-DC run (`/workspace/tmp/previous-jit-bsr-metadata-ram-handoff-long-20260526-133132`, `desktop_reached=1`, `stable_reached=1`). Native no-handoff remains unfixed after `9441c84`; it now has cleaner fallback BSR transaction metadata but still times out after RTE/low-PC churn in `/workspace/tmp/previous-jit-bsr-metadata-nohandoff-long-20260526-145233`.
 - latest diagnostic audit keeps default `B2_JIT_PCTRACE_WORDS` non-invasive by logging only `PCTOPS` plus executable-shadow `PCTSHADOW`; live addrbank reads are opt-in via `B2_JIT_PCTRACE_LIVE=1` because they can have side effects or fault.
 
-## Remaining blocker classes
+## Historical compile-blocker classes
+
+The direct compiler syntax/object probes now pass under the probe prelude.  The
+classes below are retained as integration-risk categories, not as current
+syntax-probe failures.  Reclassify a category back to an active blocker only if a
+future probe or linked-runtime integration step produces a concrete failure.
 
 ### 1. CPU API mismatch with Previous `newcpu.h`
 
-Examples:
+Previously observed examples:
 - `put_long` / `get_long` not declared in the expected header path
 - `get_wordi` / `get_longi` / `next_iword` mismatch
 - `regs.instruction_pc` missing from Previous `regstruct`
 
-Implication:
-- vendored compiler code expects a newer CPU API surface than the active
-  Previous interpreter/MMU core currently exposes.
+Current status:
+- covered by the probe prelude/shims for direct `compemu_support_arm.cpp`
+  syntax/object compilation.
+- still an integration-risk category for code paths outside the probe surface.
 
 ## 2. Flag-model mismatch
 
-Examples:
+Previously observed examples:
 - `regflags.nzcv` missing
 
-Implication:
-- vendored ARM64 code assumes the BasiliskII/2026 flag storage model, while
-  Previous still exposes the older flag structure.
+Current status:
+- the probe reports `missing_flag_nzcv=0`.
+- keep flag-model separation audited because runtime JIT flag publication still
+  matters for RAM/MMU restart correctness.
 
 ## 3. Memory-layout / host-address globals missing
 
-Examples:
+Previously observed examples:
 - `RAMBaseHost`
 - `RAMSize`
 - `ROMSize`
@@ -73,52 +80,59 @@ Examples:
 - `MEMBaseDiff`
 - `get_real_address()` / `get_virtual_address()` expectations
 
-Implication:
-- vendored compiler code assumes Basilisk-style direct-address memory globals
-  that are not wired into Previous's current runtime state.
+Current status:
+- the probe reports `missing_memory_globals=0` for the current prelude-covered
+  compiler source.
+- runtime data/code translation must still remain explicit; probe globals are not
+  permission to collapse `Uae2026JitMmuXlateData()` and
+  `Uae2026JitMmuXlateCodeHost()`.
 
 ## 4. Opcode metadata mismatch
 
-Examples:
+Previously observed examples:
 - `fl_const_jump`
 - `fl_trap`
 - `table68k[].cflow`
 
-Implication:
-- the vendored compiler expects newer opcode metadata than the active Previous
-  decode tables currently provide.
+Current status:
+- the probe reports `opcode_cflow_mismatch=0`.
+- metadata compatibility is still an integration-risk category when generated
+  tables or additional compiler units are pulled into the build.
 
 ## 5. JIT runtime symbol/signature conflicts
 
-Examples:
+Previously observed examples:
 - `flush_icache` function-vs-function-pointer mismatch
 - compiled op table signature mismatch in some vendored helper hooks
 
-Implication:
-- the active Previous CPU core and vendored 2026 compiler still disagree on
-  some public runtime interface types.
+Current status:
+- the probe reports `flush_icache_conflict=0` for the current compiler source.
+- linked-runtime and additional helper-hook signatures remain future integration
+  checks.
 
 ## 6. Platform/runtime integration gaps
 
-Examples:
+Previously observed examples:
 - `InterruptFlags`
 - `cpu_do_check_ticks`
 - `kickmem_bank` / `rtarea_bank`
 - Mac/Basilisk ROM helper functions (`ReadMacInt8`, `ReadMacInt32`)
 
-Implication:
-- parts of the vendored compiler still assume Basilisk-specific runtime glue
-  and need Previous-specific replacements or compile-time exclusion.
+Current status:
+- direct compiler object compilation is clean, but platform/runtime glue remains
+  a linked-integration and behavior-risk category rather than a syntax blocker.
 
 ## Current strategy
 
 1. keep the working bridge/bootstrap probe in `Previous`
-2. use the compiler prefs shim as the first real vendored component
-3. measure direct compiler compile blockers with the syntax probe
-4. bridge blocker classes in this order:
-   - runtime/public type mismatches
-   - memory/global shim surface
-   - opcode metadata compatibility
+2. keep the compiler prefs shim and probe prelude as guardrails for direct
+   compiler-source compatibility
+3. rerun syntax/object probes after touching vendored compiler glue or public CPU
+   interface shims
+4. bridge linked-runtime integration in this order:
+   - runtime/public type mismatches beyond the probe surface
+   - memory/global shim surface with explicit data/code MMU separation
+   - opcode metadata compatibility for any additional generated tables
    - compiler init path
    - translated dispatch last
 
@@ -126,7 +140,7 @@ Implication:
 
 1. keep the direct compiler probes passing as guardrails while runtime work continues
 2. preserve default/ROM JIT desktop stability while RAM/MMU dispatch changes land
-3. add targeted regressions for the confirmed RAM-mode blockers: return-target MMU faults after `RTS`/`RTR`, RTE return-code fetch after SR/A7 switch, BSR target-fetch faults with producer-side metadata, and the current post-RTE low-PC native-resume sequence
+3. keep the covered targeted RAM-mode regressions green: BSR/JSR target-fetch faults, return-target MMU faults after `RTS`/`RTR`, RTE return-code fetch after SR/A7 switch, trap-frame faults, non-restartable writes, MOVES SFC/DFC faults, and MOVEM continuation faults; add new regressions only for broader shapes before changing policy
 4. continue turning the low-virtual code-fetch/MMU-safe path into semantically complete RAM behavior only when restart state, instruction-fetch faults, successful fetches, later data faults, and post-fault return state match the interpreter path
 5. audit bridge/JIT state materialization before `Exception(2)` and before resuming JIT after an RTE/page-fault seam, especially PC/SR/USP/ISP, published restart flags, fetched opcode state, live D/A register spill, and the continuation/return state after low-PC faults such as `00012052`, `00005030`, `0000a7a8`, and `00004492`
 6. keep RAM/MMU data effective-address translation (`Uae2026JitMmuXlateData`) separate from code/branch/dispatch-PC translation (`Uae2026JitMmuXlateCodeHost`) when adding native paths

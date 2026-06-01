@@ -210,9 +210,9 @@ This injects short M68K opcode vectors into the ROM mirror, runs one interpreter
 and compares the resulting `REGDUMP:` state instead of waiting for a full NeXT boot.
 See `docs/uae2026-opcode-harness.md` for the current vector set and latest results.
 
-Latest translated-execution debug checkpoint (2026-05-26):
-- full opcode harness passes: `total=75`, `jit_ok=75`, `pass=75`, `fail=0`, `infra_fail=0`, `score=100` (`/workspace/tmp/previous-opcode-harness-20260526-132114`)
-- RAM-code MMU fast smoke passes from `B2_TEST_ADDR=0x04008000`: `total=32`, `pass=32`, `fail=0`, `score=100` (`/workspace/tmp/previous-mmu-fast-smoke-20260526-132114`)
+Latest translated-execution debug checkpoint:
+- refreshed default opcode vector-set baseline passes when split into bounded chunks under the 120s rule: combined `total=75`, `jit_ok=75`, `pass=75`, `fail=0`, `infra_fail=0`, `score=100` across `/workspace/tmp/previous-opcode-harness-20260601-124403`, `/workspace/tmp/previous-opcode-harness-20260601-124502`, and `/workspace/tmp/previous-opcode-harness-20260601-124558`.  The unfiltered default opcode harness exceeded the cap at `/workspace/tmp/previous-opcode-harness-20260601-124112` and is not counted.
+- historical RAM-code MMU fast smoke passes from `B2_TEST_ADDR=0x04008000`: `total=32`, `pass=32`, `fail=0`, `score=100` (`/workspace/tmp/previous-mmu-fast-smoke-20260526-132114`)
 - follow-up bounded RAM gates after the forced-fault oracle work pass on 2026-05-31: focused forced-fault tuple gate `total=11`, `pass=11`, `fail=0` (`/workspace/tmp/previous-opcode-harness-20260531-090328`) and non-fault RAM seam/call gate `total=12`, `pass=12`, `fail=0` (`/workspace/tmp/previous-opcode-harness-20260531-090739`).  The unfiltered non-fault RAM opcode harness exceeded the 120s cap at `/workspace/tmp/previous-opcode-harness-20260531-090522` and is not counted as validation.
 - default/ROM JIT smoke reaches the desktop (`/workspace/tmp/previous-jit-bsr-metadata-default-20260526-132634`, `desktop_reached=1`, `harness_rc=0`)
 - RAM translation remains gated by `PREVIOUS_UAE2026_JIT_RAM=1`; true RAM dispatch is counted only for `0x04000000..0x07ffffff` dispatch PCs so bogus zero-PC recovery does not look like RAM progress

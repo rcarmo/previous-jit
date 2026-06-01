@@ -20,15 +20,16 @@ RAM/MMU JIT mode now gets past the historical low-virtual failures (`00003352` a
 A3-restore loop. `PREVIOUS_UAE2026_JIT_RAM=1` preserves the native JIT path instead
 of auto-dropping to the interpreter at the RTE/page-fault seam; set
 `B2_JIT_RTE_FAULT_HANDOFF=1` explicitly to use the conservative desktop-boot oracle.
-The remaining native bug is still incomplete JIT resume after that seam. The current
-bounded comparison no longer stops at `000042f8`: preserving `MMU_SSW_CM` MOVEM
-continuation effective addresses lets no-handoff enter `000042e2` with the oracle
-`A3=0001aa00`; `9441c84` also aligns fallback BSR transaction target metadata so the
-bridge no longer re-decodes BSR extension words through transient `regs.pc_p`. The
-latest low-user JSR transaction checkpoint covers `00008334: JSR (A1) -> 00007f72`,
-letting native no-handoff progress through the former low7f/low8a stack divergence to
-`root on sd@`, but it still times out before desktop in the later `040674d0..04067500`
-kernel loop.
+The remaining native bug is still incomplete JIT resume after that seam: native
+no-handoff has no current desktop-reaching proof.  The older long-run frontier no
+longer owns the acceptance criteria; current work is gated by the bounded contract
+baselines (default opcode `pass=75`, RAM/MMU fast-smoke vector set `pass=32`, and
+focused forced-fault tuple set `pass=11`) plus explicit producer metadata before any
+rollback/native-resume broadening.  Historical diagnostics still show that preserving
+`MMU_SSW_CM` MOVEM continuation effective addresses, aligning BSR metadata, and covering
+low-user JSR transactions moved past earlier stack/code-fetch failures, but broad
+native resume changes must now be justified by ≤120s discriminators rather than by a
+moved boot frontier.
 
 The fixes that moved the frontier all point to the same missing abstraction: translated
 code can perform irreversible architectural side effects before a faultable 68040
@@ -267,8 +268,8 @@ from per-PC frontier chasing to replacing or proving the remaining shims:
 - The generated/native `jit_op_rte()` helper routes through the exact interpreter RTE implementation, avoiding a duplicate hand-coded frame decoder.
 - Zero-PC vector recovery is disabled while the 040 MMU is enabled; in that mode, zero PC is treated as a symptom to diagnose rather than recovered by jumping to vector 2.
 - RAM/MMU mode no longer hands bridge-caught RTE/page-fault seams to the interpreter by default. Validation: `/workspace/tmp/previous-jit-no-auto-handoff-ram-20260522-091833` kept JIT active with `jit_ram_dispatch_seen=1` and no `RTE fault handoff to interpreter` / `JIT_FALLBACK` log entries; it does not yet reach the desktop.
-- The explicit oracle path remains available with `B2_JIT_RTE_FAULT_HANDOFF=1`: `/workspace/tmp/previous-jit-jsr8334-native-ram-handoff-20260527-012754` reached and held the desktop with `desktop_reached=1`, `stable_reached=1`, and `jit_ram_dispatch_seen=1`.
-- The native resume path remains unfixed. After code-shadow, low-user call transaction fixes, MOVEM continuation-EA preservation, fallback BSR metadata alignment, and the generated/fallback `00008334` JSR transaction, the latest long no-handoff run (`/workspace/tmp/previous-jit-jsr8334-native-nohandoff-ram-20260527-014652`) gets past the previous `00007f72/00008a60` stack divergence and OCR reaches `root on sd@`, then times out before desktop around the later `040674d0/040674f6/040674fa/04067500` kernel loop (`jit_last_pc=040674d0`). The earlier `050abffe` / `050ac000` RAM-boundary/code-fetch loop, `050069cc` / `504f2472` dispatch fault, and low-user `00012052/00005030/0000a7a8/00004492` frontiers are no longer the latest completed-run frontier. `B2_JIT_TRACE_LOWPC_RESUME=1` remains the default-off bridge diagnostic for this seam; it logs pre/post-`Exception(2)` low-PC state without changing resume behavior.
+- The explicit oracle path remains available with `B2_JIT_RTE_FAULT_HANDOFF=1`; historical long runs reached and held the desktop with `desktop_reached=1`, `stable_reached=1`, and `jit_ram_dispatch_seen=1`. These long desktop oracles are historical artifacts under the current 120s validation rule.
+- The native resume path remains unfixed. After code-shadow, low-user call transaction fixes, MOVEM continuation-EA preservation, fallback BSR metadata alignment, and the generated/fallback `00008334` JSR transaction, historical no-handoff runs got past the previous `00007f72/00008a60` stack divergence and OCR reached `root on sd@`, then timed out before desktop around the later `040674d0/040674f6/040674fa/04067500` kernel loop. Current acceptance is the bounded opcode/MMU/fault baseline plus a focused discriminator before broad native-resume changes. `B2_JIT_TRACE_LOWPC_RESUME=1` remains the default-off bridge diagnostic for this seam; it logs pre/post-`Exception(2)` low-PC state without changing resume behavior.
 - Follow-up non-mutating diagnostics mapped the `040674d0..04067500` loop in `/workspace/tmp/previous-jit-pcwords-040674-nohandoff-20260527-122700`: `040674d0` loads the scheduler/run-queue table at `040b6d1c`, masks the selected entry with `-8`, and branches into `040674f6..04067504`, which polls longwords at `A4=040c32f8`, `D6=040b7410`, and `D5=040c32e8` until one becomes nonzero. The sampled state (`D3=0`, `D5=040c32e8`, `D6=040b7410`, `A4=040c32f8`, `SR=2004`) makes this high-kernel loop look like an idle/wakeup symptom, not the local root cause.
 - The same diagnostic run shows the key oracle split clearly: explicit handoff (`/workspace/tmp/previous-jit-jsr8334-native-ram-handoff-20260527-012754`) has only the first nine bridge-caught MMU exceptions and then boots via the interpreter; native no-handoff keeps JIT active after the first `04001ae6 -> 00003334` RTE fault and accumulates later user/code faults, with repeated hot fault PCs such as `0000aef4`, `0000b04e`, `0500b6b0`, `050171be`, and `05017336`. The next actionable comparison should target those post-root user faults or the transaction/restart state that allows them, not the kernel idle loop itself.
 - Follow-up default-off bridge fault-window tracing (`B2_JIT_TRACE_FAULT_WORDS_START/END[/LIMIT]`) in `/workspace/tmp/previous-jit-faultwords-0500-nohandoff-20260527-145037` identified the hot `0500b6b0` loop as the same visible byte-store area as the earlier `0500b6ae`: the bridge sees `fault_pc=0500b6b0`, `mmu_opcode=1082` (`MOVE.B D2,(A0)`), `mmu_restart=0`, and sequential fault addresses `00038000..0003800b`. However, a candidate that also advanced `0500b6b0` did not move the frontier (`/workspace/tmp/previous-jit-byte-store-b6b0-nohandoff-20260527-151758`), so it was reverted; `0500b6b0` appears to be the already-advanced visible PC from the existing `0500b6ae` shim rather than a separate missing advance. The correctness contract now requires a forced data-write-fault interpreter `FAULTDUMP` oracle for this exact `MOVE.B D2,(A0)` shape before any further PC advancement change. The fault-window diagnostic now also records the last code-host opcode-fetch words (`JIT_FAULT_CODEHOST_LAST`) so high-user faults with stale live/data-view words can be correlated with the actual code stream that produced `mmu_opcode`.

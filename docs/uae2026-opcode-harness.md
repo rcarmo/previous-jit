@@ -101,45 +101,43 @@ A broader unfiltered non-fault RAM run hit the 120s cap at
 `/workspace/tmp/previous-opcode-harness-20260531-090522` before writing
 `result.env`; it is not counted as validation.
 
-## Latest default run (2026-05-26)
+## Latest default vector-set baseline (2026-06-01)
 
-Commands:
+The unfiltered default harness command exceeded the 120s cap on the current
+Orange Pi host (`/workspace/tmp/previous-opcode-harness-20260601-124112`, no
+`result.env`), so it is not counted as validation.  To keep the ≤120s rule while
+refreshing the current default non-fault baseline, the 75-vector default set was
+split into three ordered chunks with shorter fixed waits:
 
 ```bash
-./tools/uae2026-mmu-fast-smoke.sh
+PREVIOUS_OPCODE_INTERP_WAIT_SEC=0.5 \
+PREVIOUS_OPCODE_JIT_WAIT_SEC=0.3 \
+PREVIOUS_OPCODE_FILTER='<25-vector chunk regex>' \
 ./tools/uae2026-opcode-harness.sh
 ```
 
-Observed fast MMU smoke metrics:
+Observed default vector-set metrics across the three chunks:
 
-- `total=32`
-- `interp_ok=32`
-- `jit_ok=32`
-- `pass=32`
-- `fail=0`
-- `infra_fail=0`
-- `score=100`
+- chunk 1 artifact: `/workspace/tmp/previous-opcode-harness-20260601-124403`
+  - `total=25`, `interp_ok=25`, `jit_ok=25`, `pass=25`, `fail=0`, `infra_fail=0`, `score=100`
+- chunk 2 artifact: `/workspace/tmp/previous-opcode-harness-20260601-124502`
+  - `total=25`, `interp_ok=25`, `jit_ok=25`, `pass=25`, `fail=0`, `infra_fail=0`, `score=100`
+- chunk 3 artifact: `/workspace/tmp/previous-opcode-harness-20260601-124558`
+  - `total=25`, `interp_ok=25`, `jit_ok=25`, `pass=25`, `fail=0`, `infra_fail=0`, `score=100`
+- combined default non-fault baseline: `total=75`, `interp_ok=75`, `jit_ok=75`,
+  `pass=75`, `fail=0`, `infra_fail=0`, `score=100`
 
-Observed full opcode metrics:
-
-- `total=75`
-- `interp_ok=75`
-- `jit_ok=75`
-- `pass=75`
-- `fail=0`
-- `infra_fail=0`
-- `score=100`
-
-Recent artifact examples:
+Historical fast MMU smoke baseline (not rerun in this tranche):
 
 - `/workspace/tmp/previous-mmu-fast-smoke-20260526-132114`
-- `/workspace/tmp/previous-opcode-harness-20260526-132114`
+- `total=32`, `interp_ok=32`, `jit_ok=32`, `pass=32`, `fail=0`, `infra_fail=0`, `score=100`
+
 Interpretation:
 
-- the opcode harness remains a passing regression gate for the current curated vector set
-- `uae2026-mmu-fast-smoke.sh` is the required first gate for RAM/MMU changes before heavier boot smokes; it injects the MMU-sensitive vectors, including relocated seam call-chain vectors, at RAM address `0x04008000` and reports `jit_ram_requested=1` / `rte_handoff_disabled=1`
+- the default opcode vector set remains a passing regression gate when run as bounded chunks
+- `uae2026-mmu-fast-smoke.sh` remains the required first gate for RAM/MMU changes before heavier boot smokes; it injects the MMU-sensitive vectors, including relocated seam call-chain vectors, at RAM address `0x04008000` and reports `jit_ram_requested=1` / `rte_handoff_disabled=1`
 - RAM-mode boot failures are therefore being debugged as MMU/exception/restart state bugs rather than broad opcode-harness regressions
-- new RAM/MMU fixes should keep the fast MMU smoke at `pass=32 fail=0 score=100` and the full opcode harness at `pass=75 fail=0 score=100` before heavier boot smokes are trusted
+- new RAM/MMU fixes should keep the fast MMU smoke at `pass=32 fail=0 score=100` and the default opcode vector set at `pass=75 fail=0 score=100` before heavier boot smokes are trusted
 
 ## Why this matters
 

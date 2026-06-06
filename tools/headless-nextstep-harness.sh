@@ -13,6 +13,12 @@ FSCK_WAIT="${PREVIOUS_FSCK_WAIT:-90}"
 DESKTOP_TIMEOUT="${PREVIOUS_DESKTOP_TIMEOUT:-1200}"
 DESKTOP_POLL="${PREVIOUS_DESKTOP_POLL:-30}"
 STABLE_WAIT="${PREVIOUS_STABLE_WAIT:-0}"
+RTC_CHIP="${PREVIOUS_RTC_CHIP:-MC68HC68T1}"
+case "$RTC_CHIP" in
+  MC68HC68T1|old|OLD|0|false|FALSE) RTC_CHIP_BOOL=FALSE ;;
+  MCCS1850|new|NEW|1|true|TRUE) RTC_CHIP_BOOL=TRUE ;;
+  *) echo "unknown PREVIOUS_RTC_CHIP: $RTC_CHIP" >&2; exit 1 ;;
+esac
 
 pick_display() {
   local n
@@ -105,6 +111,7 @@ nMachineType = 1
 bColor = FALSE
 bTurbo = FALSE
 bNBIC = TRUE
+nRTC = $RTC_CHIP_BOOL
 nCpuLevel = 4
 nCpuFreq = 25
 bCompatibleCpu = TRUE
@@ -169,6 +176,8 @@ set -e
   echo "display=$DISPLAY_NAME"
   echo "vnc_port=$VNC_PORT"
   echo "keep_run_image=$KEEP_RUN_IMAGE"
+  echo "rtc_chip=$RTC_CHIP"
+  echo "rtc_chip_bool=$RTC_CHIP_BOOL"
   if [[ -f "$OUTDIR/result.env" ]]; then
     cat "$OUTDIR/result.env"
   fi

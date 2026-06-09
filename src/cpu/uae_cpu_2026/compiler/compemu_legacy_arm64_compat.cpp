@@ -16,9 +16,18 @@ extern "C" void Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(uae_u32 pc, uae_
 extern "C" void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uae_u32 pc, uae_u32 opcode);
 extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7(uae_u32 pc, uae_u32 opcode, uae_u32 pop_bytes);
 extern "C" void Uae2026JitMmuTxnCommit(void);
+extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 extern "C" bool Uae2026OpcodeTestModeActive(void);
 extern "C" bool Uae2026OpcodeTestModeHandleStopTrailer(void);
 extern uintptr jit_MEMBaseDiff;
+static inline void jit_interpreted_op_check_ticks(void)
+{
+	if (jit_allow_ram_dispatch_env())
+		Uae2026JitCpuCheckTicks(4);
+	else
+		cpu_check_ticks();
+}
+
 extern "C" {
 uae_u32 Uae2026JitLastInstructionPc = 0;
 uae_u32 Uae2026JitLastSr = 0;
@@ -1150,7 +1159,7 @@ void exec_nostats(void)
 			return;
 		}
 		if (legacy_ram_direct_movem_long_predec(before_pc, (uae_u16)opcode)) {
-			cpu_check_ticks();
+			jit_interpreted_op_check_ticks();
 			if (SPCFLAGS_TEST(SPCFLAG_ALL))
 				return;
 			continue;
@@ -1165,7 +1174,7 @@ void exec_nostats(void)
 				 jit_op_rom_rtc_write_byte_callsite(before_pc, retpc)) ||
 				(legacy_rom_rtc_read_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
 				 jit_op_rom_rtc_read_byte_callsite(before_pc, retpc))) {
-				cpu_check_ticks();
+				jit_interpreted_op_check_ticks();
 				if (SPCFLAGS_TEST(SPCFLAG_ALL))
 					return;
 				continue;
@@ -1219,7 +1228,7 @@ void exec_nostats(void)
 				(unsigned)regflags.x);
 			jit_trace_table_log("TRACEWINJTAB", trace_count, after_pc);
 		}
-		cpu_check_ticks();
+		jit_interpreted_op_check_ticks();
 		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL))
 			return;
 	}
@@ -1460,7 +1469,7 @@ void execute_normal(void)
 				return;
 			}
 			if (legacy_ram_direct_movem_long_predec(pc_before_op, (uae_u16)opcode)) {
-				cpu_check_ticks();
+				jit_interpreted_op_check_ticks();
 				total_cycles += 4 * CYCLE_UNIT;
 				return;
 			}
@@ -1479,7 +1488,7 @@ void execute_normal(void)
 				legacy_maybe_begin_return_pop_txn(pc_before_op, (uae_u16)opcode);
 			if (!helper_callsite)
 				(*cpufunctbl[opcode])(opcode);
-			cpu_check_ticks();
+			jit_interpreted_op_check_ticks();
 			total_cycles += 4 * CYCLE_UNIT;
 			int maxrun_limit = MAXRUN;
 			{

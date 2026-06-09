@@ -14,6 +14,10 @@ DESKTOP_TIMEOUT="${PREVIOUS_DESKTOP_TIMEOUT:-1200}"
 DESKTOP_POLL="${PREVIOUS_DESKTOP_POLL:-30}"
 STABLE_WAIT="${PREVIOUS_STABLE_WAIT:-0}"
 RTC_CHIP="${PREVIOUS_RTC_CHIP:-MC68HC68T1}"
+# NeXTSTEP 3.3 treats far-future host dates as a preposterous RTC value.
+# Keep the headless system image in its native 1994 date range unless callers
+# explicitly request a different RTC timestamp.
+RTC_UNIX_TIME="${PREVIOUS_RTC_UNIX_TIME:-0x2ec46472}"
 case "$RTC_CHIP" in
   MC68HC68T1|old|OLD|0|false|FALSE) RTC_CHIP_BOOL=FALSE ;;
   MCCS1850|new|NEW|1|true|TRUE) RTC_CHIP_BOOL=TRUE ;;
@@ -153,7 +157,7 @@ trap cleanup EXIT
 
 Xvfb "$DISPLAY_NAME" -screen 0 1280x900x24 >"$OUTDIR/xvfb.log" 2>&1 & XVFB_PID=$!
 sleep 1
-HOME="$OUTDIR/home" SDL_AUDIODRIVER=dummy PREVIOUS_VNC=1 PREVIOUS_VNC_PORT="$VNC_PORT" DISPLAY="$DISPLAY_NAME" \
+HOME="$OUTDIR/home" SDL_AUDIODRIVER=dummy PREVIOUS_VNC=1 PREVIOUS_VNC_PORT="$VNC_PORT" PREVIOUS_RTC_UNIX_TIME="$RTC_UNIX_TIME" DISPLAY="$DISPLAY_NAME" \
   "$BIN" >"$OUTDIR/previous.log" 2>&1 & EMU_PID=$!
 
 set +e
@@ -178,6 +182,7 @@ set -e
   echo "keep_run_image=$KEEP_RUN_IMAGE"
   echo "rtc_chip=$RTC_CHIP"
   echo "rtc_chip_bool=$RTC_CHIP_BOOL"
+  echo "rtc_unix_time=$RTC_UNIX_TIME"
   if [[ -f "$OUTDIR/result.env" ]]; then
     cat "$OUTDIR/result.env"
   fi

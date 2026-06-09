@@ -17,6 +17,7 @@
 #include "sysReg.h"
 #include "rtcnvram.h"
 
+#include <stdlib.h>
 #include <time.h>
 
 
@@ -244,21 +245,46 @@ int oldrtc_interface_io(Uint8 rtdatabit) {
     return rtdatabit;
 }
 
+static time_t rtc_host_unix_time(void) {
+    static int initialized = 0;
+    static int fixed = 0;
+    static time_t fixed_time = 0;
+
+    if (!initialized) {
+        const char *env = getenv("PREVIOUS_RTC_UNIX_TIME");
+        if (env && *env) {
+            char *end = NULL;
+            unsigned long long parsed = strtoull(env, &end, 0);
+            if (end != env) {
+                fixed = 1;
+                fixed_time = (time_t)parsed;
+            }
+        }
+        initialized = 1;
+    }
+
+    return fixed ? fixed_time : host_unix_time();
+}
+
 static Uint8 toBCD(int val) {
     return (((val/10)%10)<<4)|(val%10);
 }
 
-/* Year is supported up to 2050 through overflow of decimal decade */
 static Uint8 toBCDyr(int val) {
-    return (((val/10)&0xF)<<4)|(val%10);
+    return toBCD(val % 100);
 }
 
 static int fromBCD(Uint8 bcd) {
     return ((bcd&0xF0)>>4)*10+(bcd&0xF);
 }
 
+static int fromBCDyr(Uint8 bcd) {
+    int val = fromBCD(bcd);
+    return val < 70 ? val + 100 : val;
+}
+
 static void my_get_rtc_time(void) {
-    time_t tmp = host_unix_time();
+    time_t tmp = rtc_host_unix_time();
     struct tm t =*gmtime(&tmp);
     
     rtc.time.sec   = toBCD(t.tm_sec);
@@ -279,7 +305,7 @@ static void my_set_rtc_time(int which,int val) {
     t.tm_wday = fromBCD(rtc.time.wday) - 1;
     t.tm_mday = fromBCD(rtc.time.mday);
     t.tm_mon  = fromBCD(rtc.time.month) - 1;
-    t.tm_year = fromBCD(rtc.time.year);
+    t.tm_year = fromBCDyr(rtc.time.year);
     
     val = fromBCD(val);
     
@@ -300,7 +326,7 @@ static void my_set_rtc_time(int which,int val) {
             t.tm_mon=val-1;
             break;
         case 5:
-            t.tm_year=val;
+            t.tm_year = val < 70 ? val + 100 : val;
             break;
     }
     
@@ -536,7 +562,7 @@ int newrtc_interface_io(Uint8 rtdatabit) {
 Uint8 newrtc_get_clock(Uint8 addr) {
     Uint8 val = 0x00;
     
-    newrtc.timecntr = host_unix_time();
+    newrtc.timecntr = rtc_host_unix_time();
     
     switch (rtc_addr&RTC_ADDR_MASK) {
         case 0x20:

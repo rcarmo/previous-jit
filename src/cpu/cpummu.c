@@ -132,6 +132,67 @@ void Uae2026JitMmuPutLong(uaecptr addr, uae_u32 value)
     put_long_mmu040(addr, value);
 }
 
+void Uae2026TraceRequestWrite(uaecptr addr, uae_u32 value, int size)
+{
+    /* Diagnostic write tracer. Gated by B2_TRACE_REQUEST_WRITES.
+     *
+     * Default ranges target the NeXTSTEP request-list audit area
+     * (kernel scratch + IO mask register + kernel data slab).  Custom
+     * ranges can be supplied via B2_TRACE_REQUEST_WRITES_RANGES as a
+     * semicolon-separated list of START-END pairs in hex, e.g.:
+     *   B2_TRACE_REQUEST_WRITES_RANGES="04001000-04003000;040e0000-040e1000"
+     */
+    static int enabled = -1;
+    static unsigned long count = 0;
+    static unsigned long limit = 4096;
+    static uae_u32 ranges[16][2];
+    static int range_count = 0;
+    if (enabled < 0) {
+        const char *env = getenv("B2_TRACE_REQUEST_WRITES");
+        const char *limit_env = getenv("B2_TRACE_REQUEST_WRITES_LIMIT");
+        const char *ranges_env = getenv("B2_TRACE_REQUEST_WRITES_RANGES");
+        enabled = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+        limit = (limit_env && *limit_env) ? strtoul(limit_env, NULL, 0) : 4096;
+        if (ranges_env && *ranges_env) {
+            const char *p = ranges_env;
+            while (*p && range_count < 16) {
+                char *e = NULL;
+                uae_u32 start = (uae_u32)strtoul(p, &e, 16);
+                if (!e || *e != '-') break;
+                p = e + 1;
+                uae_u32 end = (uae_u32)strtoul(p, &e, 16);
+                if (!e || end <= start) break;
+                ranges[range_count][0] = start;
+                ranges[range_count][1] = end;
+                range_count++;
+                p = e;
+                if (*p == ';') p++;
+                else if (*p) break;
+            }
+        }
+        if (range_count == 0) {
+            /* Default to the cmd-185 NeXTSTEP request-list audit window. */
+            ranges[0][0] = 0x11152000u; ranges[0][1] = 0x11154080u;
+            ranges[1][0] = 0x040e0000u; ranges[1][1] = 0x040e1000u;
+            ranges[2][0] = 0x10126000u; ranges[2][1] = 0x10128000u;
+            range_count = 3;
+        }
+    }
+    if (!enabled || count >= limit)
+        return;
+    for (int i = 0; i < range_count; i++) {
+        if (addr >= ranges[i][0] && addr < ranges[i][1]) {
+            fprintf(stderr,
+                    "REQ_WRITE[%lu] pc=%08x addr=%08x size=%d value=%08x sr=%04x spc=%08x a3=%08x a5=%08x a6=%08x a7=%08x\n",
+                    ++count, (unsigned)m68k_getpc(), (unsigned)addr, size,
+                    (unsigned)value, (unsigned)regs.sr, (unsigned)regs.spcflags,
+                    (unsigned)regs.regs[11], (unsigned)regs.regs[13],
+                    (unsigned)regs.regs[14], (unsigned)regs.regs[15]);
+            return;
+        }
+    }
+}
+
 uae_u32 Uae2026JitMmuFetchOpcode(uaecptr pc)
 {
     /* Mirror the interpreter's pre-op publication before an instruction fetch

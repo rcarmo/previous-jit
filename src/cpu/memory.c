@@ -36,6 +36,60 @@ const char Memory_fileid[] = "Previous memory.c : " __DATE__ " " __TIME__;
 
 #define illegal_trace(s) {static int count=0; if (count++<50) { s; }}
 
+static inline void mem_trace_cdb_write(uaecptr offset, uae_u32 value, int size)
+{
+	/* Diagnostic write tracer for the kernel CDB / IO ring area.
+	 * Gated by B2_TRACE_CDB_WRITES; default ranges target the cmd-185
+	 * SCSI CDB scratch window.  Ranges are RAM-relative (offsets within
+	 * the 64MiB RAM bank0), supplied via
+	 * B2_TRACE_CDB_WRITES_RANGES="START-END;..." as 32-bit hex offsets. */
+	static int enabled = -1;
+	static unsigned long count = 0;
+	static unsigned long limit = 4096;
+	static uae_u32 ranges[16][2];
+	static int range_count = 0;
+	if (enabled < 0) {
+		const char *env = getenv("B2_TRACE_CDB_WRITES");
+		const char *limit_env = getenv("B2_TRACE_CDB_WRITES_LIMIT");
+		const char *ranges_env = getenv("B2_TRACE_CDB_WRITES_RANGES");
+		enabled = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+		limit = (limit_env && *limit_env) ? strtoul(limit_env, NULL, 0) : 4096;
+		if (ranges_env && *ranges_env) {
+			const char *p = ranges_env;
+			while (*p && range_count < 16) {
+				char *e = NULL;
+				uae_u32 start = (uae_u32)strtoul(p, &e, 16);
+				if (!e || *e != '-') break;
+				p = e + 1;
+				uae_u32 end = (uae_u32)strtoul(p, &e, 16);
+				if (!e || end <= start) break;
+				ranges[range_count][0] = start;
+				ranges[range_count][1] = end;
+				range_count++;
+				p = e;
+				if (*p == ';') p++;
+				else if (*p) break;
+			}
+		}
+		if (range_count == 0) {
+			ranges[0][0] = 0x000c6cb0u; ranges[0][1] = 0x000c6cc0u;
+			ranges[1][0] = 0x000c6f00u; ranges[1][1] = 0x000c6f40u;
+			range_count = 2;
+		}
+	}
+	if (!enabled || count >= limit)
+		return;
+	offset &= 0x03ffffff;
+	for (int i = 0; i < range_count; i++) {
+		if (offset >= ranges[i][0] && offset < ranges[i][1]) {
+			fprintf(stderr, "CDB_WRITE[%lu] pc=%08x addr=%08x size=%d value=%08x sr=%04x spc=%08x\n",
+				++count, (unsigned)m68k_getpc(), (unsigned)(0x04000000u | offset),
+				size, (unsigned)value, (unsigned)regs.sr, (unsigned)regs.spcflags);
+			return;
+		}
+	}
+}
+
 /*
  * NeXT memory map (example for 68030 NeXT Computer)
  *
@@ -394,6 +448,7 @@ static uae_u32 mem_ram_bank0_bget(uaecptr addr)
 static void mem_ram_bank0_lput(uaecptr addr, uae_u32 l)
 {
 	addr &= NEXT_ram_bank0_mask;
+	mem_trace_cdb_write(addr, l, 4);
 	do_put_mem_long(NEXTRam + addr, l);
 	mem_ram_jit_sync(addr, 4);
 }
@@ -401,6 +456,7 @@ static void mem_ram_bank0_lput(uaecptr addr, uae_u32 l)
 static void mem_ram_bank0_wput(uaecptr addr, uae_u32 w)
 {
 	addr &= NEXT_ram_bank0_mask;
+	mem_trace_cdb_write(addr, w, 2);
 	do_put_mem_word(NEXTRam + addr, w);
 	mem_ram_jit_sync(addr, 2);
 }
@@ -408,6 +464,7 @@ static void mem_ram_bank0_wput(uaecptr addr, uae_u32 w)
 static void mem_ram_bank0_bput(uaecptr addr, uae_u32 b)
 {
 	addr &= NEXT_ram_bank0_mask;
+	mem_trace_cdb_write(addr, b, 1);
 	NEXTRam[addr] = b;
 	mem_ram_jit_sync(addr, 1);
 }

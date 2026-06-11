@@ -521,17 +521,30 @@ static ALWAYS_INLINE void uae_mmu_put_move16(uaecptr addr, uae_u32 *val)
 	mmu_put_move16(addr, val, 16);
 }
 
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+void Uae2026TraceRequestWrite(uaecptr addr, uae_u32 value, int size);
+#endif
+
 // normal 040
 STATIC_INLINE void put_byte_mmu040 (uaecptr addr, uae_u32 v)
 {
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+    Uae2026TraceRequestWrite(addr, v, 1);
+#endif
     uae_mmu040_put_byte (addr, v);
 }
 STATIC_INLINE void put_word_mmu040 (uaecptr addr, uae_u32 v)
 {
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+    Uae2026TraceRequestWrite(addr, v, 2);
+#endif
     uae_mmu040_put_word (addr, v);
 }
 STATIC_INLINE void put_long_mmu040 (uaecptr addr, uae_u32 v)
 {
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+    Uae2026TraceRequestWrite(addr, v, 4);
+#endif
     uae_mmu040_put_long (addr, v);
 }
 STATIC_INLINE uae_u32 get_byte_mmu040 (uaecptr addr)

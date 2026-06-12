@@ -235,6 +235,9 @@ static const char *host_arch()
 #endif
 }
 
+extern "C" unsigned long Uae2026JitInterpResumeCountdown;
+extern "C" void Uae2026CompilerFlushCacheHard(void);
+
 static bool env_truthy(const char *name, bool fallback)
 {
     const char *value = getenv(name);
@@ -1139,6 +1142,20 @@ extern "C" bool Uae2026JitBridgeIsActive(void)
     return jit_active && UseJIT;
 }
 
+extern "C" void Uae2026JitBridgeResumeFromHandoff(void)
+{
+    /* Called by the interpreter dispatch loop after a one-shot RTE-fault
+     * handoff window has elapsed; restore the bridge's internal active
+     * flag so subsequent fault handling treats JIT as live again.
+     * Flush the compiled-block cache first so any blocks compiled
+     * pre-handoff are recompiled against the post-fault kernel state. */
+    /* Flush the compiled-block cache so any blocks compiled pre-handoff
+     * are recompiled against the post-fault kernel state. */
+    Uae2026CompilerFlushCacheHard();
+    jit_active = true;
+    UseJIT = true;
+}
+
 extern "C" void Uae2026JitBridgeRequestBlockExit(unsigned int source)
 {
     if (!jit_active || !env_truthy("PREVIOUS_UAE2026_JIT_RAM", false))
@@ -1417,10 +1434,30 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                             "UAE2026 bridge: RTE fault handoff DEFERRED count=%ld skip=%ld pc=%08x\n",
                             handoff_count, handoff_skip_n, (unsigned)handled_pc);
                 } else {
-                    fprintf(stderr,
-                            "UAE2026 bridge: RTE fault handoff to interpreter count=%ld pc=%08x sr=%04x isp=%08x\n",
-                            handoff_count, (unsigned)handled_pc, (unsigned)regs.sr,
-                            (unsigned)regs.isp);
+                    /* Per-event handoff (B2_JIT_RTE_FAULT_HANDOFF_RESUME_INSNS=N):
+                     * disable the JIT only for the next N interpreter
+                     * instructions, then re-enable it so steady-state work
+                     * keeps running native.  Setting N=0 (the default)
+                     * preserves the historical permanent handoff used as the
+                     * canonical boot recipe. */
+                    static long resume_insns = -1;
+                    if (resume_insns < 0) {
+                        const char *env = getenv("B2_JIT_RTE_FAULT_HANDOFF_RESUME_INSNS");
+                        resume_insns = (env && *env) ? strtol(env, NULL, 0) : 0;
+                        if (resume_insns < 0) resume_insns = 0;
+                    }
+                    if (resume_insns > 0) {
+                        Uae2026JitInterpResumeCountdown = (unsigned long)resume_insns;
+                        fprintf(stderr,
+                                "UAE2026 bridge: RTE fault handoff oneshot count=%ld pc=%08x sr=%04x isp=%08x resume_after=%ld\n",
+                                handoff_count, (unsigned)handled_pc, (unsigned)regs.sr,
+                                (unsigned)regs.isp, resume_insns);
+                    } else {
+                        fprintf(stderr,
+                                "UAE2026 bridge: RTE fault handoff to interpreter count=%ld pc=%08x sr=%04x isp=%08x\n",
+                                handoff_count, (unsigned)handled_pc, (unsigned)regs.sr,
+                                (unsigned)regs.isp);
+                    }
                     UseJIT = false;
                     jit_active = false;
                 }

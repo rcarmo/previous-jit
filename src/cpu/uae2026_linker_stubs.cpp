@@ -653,3 +653,5 @@ int32_t PrefsFindInt32(const char *name)
 }
 
 #endif /* ENABLE_EXPERIMENTAL_UAE2026_JIT */
+// added for one-shot RTE handoff resume
+extern "C" unsigned long Uae2026JitInterpResumeCountdown = 0;

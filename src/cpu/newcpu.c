@@ -1522,10 +1522,23 @@ static void m68k_run_mmu040 (void)
     int intr = 0;
     int lastintr = 0;
 	unsigned long interp_lowpc_trace_count = 0;
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+	extern unsigned long Uae2026JitInterpResumeCountdown;
+	extern void Uae2026JitBridgeResumeFromHandoff(void);
+#endif
 	
 	for (;;) {
 	TRY (prb) {
 		for (;;) {
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+			if (Uae2026JitInterpResumeCountdown) {
+				if (--Uae2026JitInterpResumeCountdown == 0) {
+					Uae2026JitBridgeResumeFromHandoff();
+					fprintf(stderr, "UAE2026 bridge: JIT resumed after one-shot interpreter handoff\n");
+					return;
+				}
+			}
+#endif
 			if (Uae2026OpcodeTestModeHandleStopTrailer())
 				return;
 			f.cznv = regflags.cznv;

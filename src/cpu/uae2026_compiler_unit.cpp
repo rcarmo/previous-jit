@@ -106,4 +106,19 @@ static struct _addrbank_stub rtarea_bank  = { nullptr, 0 };
  * ------------------------------------------------------------------ */
 #include "uae_cpu_2026/compiler/compstbl_arm.cpp"
 
+/* ------------------------------------------------------------------ *
+ * C ABI wrapper so the bridge can hard-flush the JIT translation     *
+ * cache from outside this translation unit (e.g. when resuming JIT   *
+ * after a one-shot interpreter handoff). flush_icache_hard() itself  *
+ * is static inside compemu_support.cpp and collides with a no-op     *
+ * macro in Previous's newcpu.h, so we expose it under a fresh name.  *
+ * ------------------------------------------------------------------ */
+#ifdef flush_icache_hard
+#undef flush_icache_hard
+#endif
+extern "C" void Uae2026CompilerFlushCacheHard(void)
+{
+    flush_icache_hard(3);
+}
+
 #endif /* ENABLE_EXPERIMENTAL_UAE2026_JIT */

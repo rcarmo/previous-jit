@@ -28,6 +28,17 @@ const char Keymap_fileid[] = "Hatari keymap.c : " __DATE__ " " __TIME__;
 Uint8 modifiers = 0;
 bool capslock = false;
 
+/* Must match VNC_KEYSYM_SOURCE_MAGIC in src/vnc_server.c.  When the value
+ * appears in SDL_Keysym.unused the key event was synthesized by the VNC
+ * server, in which case the host-UI shortcut interception (F10/F11/F12 etc.)
+ * must be skipped so the keypress reaches the NeXT guest. */
+#define KEYMAP_VNC_SOURCE_MAGIC 0x564E4350u
+
+static inline bool keymap_event_is_from_vnc(const SDL_Keysym *sdlkey)
+{
+    return sdlkey != NULL && sdlkey->unused == KEYMAP_VNC_SOURCE_MAGIC;
+}
+
 
 void Keymap_Init(void) {
 
@@ -431,8 +442,9 @@ void Keymap_MouseWheel(SDL_MouseWheelEvent* event) {
 void Keymap_KeyDown(SDL_Keysym *sdlkey)
 {
     Uint8 next_mod, next_key;
+    const bool from_vnc = keymap_event_is_from_vnc(sdlkey);
 
-    if (ShortCut_CheckKeys(sdlkey->mod, sdlkey->sym, 1)) { // Check if we pressed a shortcut
+    if (!from_vnc && ShortCut_CheckKeys(sdlkey->mod, sdlkey->sym, 1)) { // Check if we pressed a shortcut
         ShortCut_ActKey();
         return;
     }
@@ -457,8 +469,9 @@ void Keymap_KeyDown(SDL_Keysym *sdlkey)
  */
 void Keymap_KeyUp(SDL_Keysym *sdlkey) {
     Uint8 next_mod, next_key;
+    const bool from_vnc = keymap_event_is_from_vnc(sdlkey);
 
-    if (ShortCut_CheckKeys(sdlkey->mod, sdlkey->sym, 0))
+    if (!from_vnc && ShortCut_CheckKeys(sdlkey->mod, sdlkey->sym, 0))
 		return;
     
     if (ConfigureParams.Keyboard.nKeymapType==KEYMAP_SYMBOLIC) {

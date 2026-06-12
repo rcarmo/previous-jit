@@ -21,6 +21,11 @@ static bool vnc_enabled = false;
 static int vnc_port = 5900;
 static bool vnc_warned_unavailable = false;
 
+/* Tag value written into SDL_Keysym.unused so the Previous keymap layer can
+ * distinguish key events that originated from the VNC server from local SDL
+ * keypresses, and skip host-UI shortcut interception on the former. */
+#define VNC_KEYSYM_SOURCE_MAGIC 0x564E4350u /* 'V''N''C''P' */
+
 #ifdef HAVE_LIBVNCSERVER
 static rfbScreenInfoPtr vnc_server = NULL;
 static SDL_Thread *vnc_thread = NULL;
@@ -37,6 +42,7 @@ static int vnc_pointer_x = 0;
 static int vnc_pointer_y = 0;
 static int vnc_pointer_buttons = 0;
 static SDL_Keymod vnc_mod_state = KMOD_NONE;
+static int vnc_synth_shift_count = 0;
 #endif
 
 static bool env_truthy(const char *name)
@@ -86,6 +92,20 @@ static SDL_Keycode vnc_keysym_to_sdl(rfbKeySym key)
         case XK_Right: return SDLK_RIGHT;
         case XK_Up: return SDLK_UP;
         case XK_Down: return SDLK_DOWN;
+        case XK_Insert: return SDLK_INSERT;
+        case XK_Menu: return SDLK_MENU;
+        case XK_Print: return SDLK_PRINTSCREEN;
+        case XK_Pause: return SDLK_PAUSE;
+        case XK_Break: return SDLK_PAUSE;
+        case XK_Scroll_Lock: return SDLK_SCROLLLOCK;
+        case XK_Sys_Req: return SDLK_SYSREQ;
+        case XK_Mode_switch: return SDLK_MODE;
+#ifdef XK_ISO_Level3_Shift
+        case XK_ISO_Level3_Shift: return SDLK_MODE;
+#endif
+#ifdef XK_ISO_Left_Tab
+        case XK_ISO_Left_Tab: return SDLK_TAB;
+#endif
         case XK_F1: return SDLK_F1;
         case XK_F2: return SDLK_F2;
         case XK_F3: return SDLK_F3;
@@ -98,6 +118,11 @@ static SDL_Keycode vnc_keysym_to_sdl(rfbKeySym key)
         case XK_F10: return SDLK_F10;
         case XK_F11: return SDLK_F11;
         case XK_F12: return SDLK_F12;
+#ifdef XK_F13
+        case XK_F13: return SDLK_F13;
+        case XK_F14: return SDLK_F14;
+        case XK_F15: return SDLK_F15;
+#endif
         case XK_Shift_L: return SDLK_LSHIFT;
         case XK_Shift_R: return SDLK_RSHIFT;
         case XK_Control_L: return SDLK_LCTRL;
@@ -127,8 +152,60 @@ static SDL_Keycode vnc_keysym_to_sdl(rfbKeySym key)
         case XK_KP_Divide: return SDLK_KP_DIVIDE;
         case XK_KP_Enter: return SDLK_KP_ENTER;
         case XK_KP_Equal: return SDLK_KP_EQUALS;
+        case XK_KP_Insert: return SDLK_INSERT;
+        case XK_KP_Delete: return SDLK_DELETE;
+        case XK_KP_Home: return SDLK_HOME;
+        case XK_KP_End: return SDLK_END;
+        case XK_KP_Page_Up: return SDLK_PAGEUP;
+        case XK_KP_Page_Down: return SDLK_PAGEDOWN;
+        case XK_KP_Left: return SDLK_LEFT;
+        case XK_KP_Right: return SDLK_RIGHT;
+        case XK_KP_Up: return SDLK_UP;
+        case XK_KP_Down: return SDLK_DOWN;
         default: return SDLK_UNKNOWN;
     }
+}
+
+/* If `keysym` is a US-ASCII printable that requires Shift on a standard US
+ * layout, write the unshifted base keysym to *out_base and return true.  Some
+ * VNC clients (notably iOS Screen Sharing, on-screen keyboards in browser
+ * noVNC builds) send only the shifted keysym without a paired Shift_L event;
+ * detecting this lets us synthesize the missing Shift wrapper. */
+static bool vnc_keysym_shifted_to_base(rfbKeySym keysym, rfbKeySym *out_base)
+{
+    rfbKeySym base;
+    switch (keysym) {
+        case '!': base = '1'; break;
+        case '@': base = '2'; break;
+        case '#': base = '3'; break;
+        case '$': base = '4'; break;
+        case '%': base = '5'; break;
+        case '^': base = '6'; break;
+        case '&': base = '7'; break;
+        case '*': base = '8'; break;
+        case '(': base = '9'; break;
+        case ')': base = '0'; break;
+        case '_': base = '-'; break;
+        case '+': base = '='; break;
+        case '{': base = '['; break;
+        case '}': base = ']'; break;
+        case '|': base = '\\'; break;
+        case ':': base = ';'; break;
+        case '"': base = '\''; break;
+        case '<': base = ','; break;
+        case '>': base = '.'; break;
+        case '?': base = '/'; break;
+        case '~': base = '`'; break;
+        default:
+            if (keysym >= 'A' && keysym <= 'Z') {
+                base = (rfbKeySym)(keysym + ('a' - 'A'));
+            } else {
+                return false;
+            }
+            break;
+    }
+    if (out_base) *out_base = base;
+    return true;
 }
 
 static void vnc_update_mod_state(SDL_Keycode key, bool down)
@@ -148,7 +225,8 @@ static void vnc_update_mod_state(SDL_Keycode key, bool down)
         vnc_mod_state = (SDL_Keymod)(vnc_mod_state & ~bit);
 }
 
-static void vnc_push_key_event(bool down, SDL_Keycode key)
+static void vnc_push_key_event_full(bool down, SDL_Keycode key,
+                                    SDL_Scancode scan, SDL_Keymod mod)
 {
     if (key == SDLK_UNKNOWN)
         return;
@@ -158,8 +236,12 @@ static void vnc_push_key_event(bool down, SDL_Keycode key)
     ev.type = down ? SDL_KEYDOWN : SDL_KEYUP;
     ev.key.state = down ? SDL_PRESSED : SDL_RELEASED;
     ev.key.repeat = 0;
+    ev.key.keysym.scancode = scan;
     ev.key.keysym.sym = key;
-    ev.key.keysym.mod = (Uint16)vnc_mod_state;
+    ev.key.keysym.mod = (Uint16)mod;
+    /* Tag the event so the Previous keymap layer can recognise it as a VNC-
+     * originated keypress and skip host-UI shortcut interception. */
+    ev.key.keysym.unused = VNC_KEYSYM_SOURCE_MAGIC;
     SDL_PushEvent(&ev);
 }
 
@@ -190,22 +272,60 @@ static void vnc_push_pointer_motion(int x, int y)
     vnc_pointer_y = y;
 }
 
-static void vnc_push_wheel(int y)
+static void vnc_push_wheel_xy(int x, int y)
 {
     SDL_Event ev;
     memset(&ev, 0, sizeof(ev));
     ev.type = SDL_MOUSEWHEEL;
-    ev.wheel.x = 0;
+    ev.wheel.x = x;
     ev.wheel.y = y;
     SDL_PushEvent(&ev);
 }
 
-static void vnc_keyboard_callback(rfbBool down, rfbKeySym key, rfbClientPtr client)
+static void vnc_keyboard_callback(rfbBool down_in, rfbKeySym key, rfbClientPtr client)
 {
     (void)client;
-    SDL_Keycode sdl_key = vnc_keysym_to_sdl(key);
-    vnc_update_mod_state(sdl_key, down != 0);
-    vnc_push_key_event(down != 0, sdl_key);
+    bool down = down_in != 0;
+
+    /* If the keysym is a shifted ASCII printable and the client did not send a
+     * paired Shift modifier, synthesize a Shift_L wrapper around the key event
+     * so NeXT sees the right base scancode + shift state.  Use a refcount so
+     * overlapping shifted keys (e.g. `!` down, `@` down, `!` up, `@` up) keep
+     * Shift_L held for as long as any synthesized-shifted key is still pressed. */
+    rfbKeySym base_keysym = key;
+    bool needs_synth_shift = false;
+    if (!(vnc_mod_state & KMOD_SHIFT)) {
+        if (vnc_keysym_shifted_to_base(key, &base_keysym))
+            needs_synth_shift = true;
+    }
+
+    SDL_Keycode sdl_key = vnc_keysym_to_sdl(base_keysym);
+    SDL_Scancode sdl_scan = SDL_GetScancodeFromKey(sdl_key);
+
+    if (sdl_key == SDLK_UNKNOWN)
+        return;
+
+    if (needs_synth_shift && down) {
+        if (vnc_synth_shift_count == 0)
+            vnc_push_key_event_full(true, SDLK_LSHIFT,
+                SDL_GetScancodeFromKey(SDLK_LSHIFT), vnc_mod_state);
+        vnc_synth_shift_count++;
+    }
+
+    vnc_update_mod_state(sdl_key, down);
+
+    SDL_Keymod effective_mod = vnc_mod_state;
+    if (needs_synth_shift)
+        effective_mod = (SDL_Keymod)(effective_mod | KMOD_SHIFT);
+    vnc_push_key_event_full(down, sdl_key, sdl_scan, effective_mod);
+
+    if (needs_synth_shift && !down) {
+        if (vnc_synth_shift_count > 0)
+            vnc_synth_shift_count--;
+        if (vnc_synth_shift_count == 0)
+            vnc_push_key_event_full(false, SDLK_LSHIFT,
+                SDL_GetScancodeFromKey(SDLK_LSHIFT), vnc_mod_state);
+    }
 }
 
 static void vnc_pointer_callback(int button_mask, int x, int y, rfbClientPtr client)
@@ -225,10 +345,23 @@ static void vnc_pointer_callback(int button_mask, int x, int y, rfbClientPtr cli
             vnc_push_pointer_button(mapped[i], now_down, x, y);
     }
 
+    /* RFB scroll-wheel button mapping:
+     *   bit 8  = button 4 (vertical scroll up)
+     *   bit 16 = button 5 (vertical scroll down)
+     *   bit 32 = button 6 (horizontal scroll left)
+     *   bit 64 = button 7 (horizontal scroll right)
+     * Trigger on rising edges only; clients that hold the bit emit repeated
+     * mask updates with the bit set, which the rising-edge filter discards.
+     * That matches noVNC / libvncserver behaviour where each tick of the wheel
+     * is a fresh press+release of the corresponding button. */
     if ((button_mask & 8) && !(previous & 8))
-        vnc_push_wheel(1);
+        vnc_push_wheel_xy(0, 1);
     if ((button_mask & 16) && !(previous & 16))
-        vnc_push_wheel(-1);
+        vnc_push_wheel_xy(0, -1);
+    if ((button_mask & 32) && !(previous & 32))
+        vnc_push_wheel_xy(-1, 0);
+    if ((button_mask & 64) && !(previous & 64))
+        vnc_push_wheel_xy(1, 0);
 }
 
 static int vnc_thread_func(void *unused)
@@ -341,6 +474,7 @@ static bool vnc_ensure_server(int width, int height)
     vnc_pointer_y = 0;
     vnc_pointer_buttons = 0;
     vnc_mod_state = KMOD_NONE;
+    vnc_synth_shift_count = 0;
     vnc_thread = SDL_CreateThread(vnc_thread_func, "[Previous] VNC", NULL);
     if (!vnc_thread) {
         fprintf(stderr, "WARNING: failed to create VNC thread: %s\n", SDL_GetError());

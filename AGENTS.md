@@ -111,6 +111,33 @@ Full audit at `/workspace/notes/macemu-jit-cmd185-audit.md` (838 lines).
 The handoff workaround is the canonical recipe; native no-handoff
 `JIT_RAM=1` was declared exhausted as a productive target.
 
+### Compiler-correctness ratchet
+
+After the `cpu_model=68000` silent-noop bug was fixed (commit `2779c47`),
+the JIT actually emits native code and surfaces opcode-handler bugs the
+old silent path masked.  The fixes so far:
+
+* `1d57829` — **VREGS 22 → 32**.  `compemu_arm.h` capped virtual
+  registers at 22 (D0..D7 + A0..A7 + PC_P + FLAGX + FLAGTMP + S1..S3)
+  but the legacy `compemu.cpp` opcode handlers `scratchie++` from S1
+  upwards, and 391 of them allocate ≥4 scratch slots (max 6 in
+  `op_83b_0_comp_ff`).  Slots past S3 overflowed `live.state[]` and
+  tripped `set_status invalid vreg N` in compile_block; in practice
+  the first hit was `op_51c8_0_comp_ff` (DBcc) at PC=0x01002c70 in
+  Previous's ROM init.  Same commit adds a backtrace + m68k-context
+  dump in `set_status()` before `jit_abort()` so future out-of-range
+  vregs print the offending opcode handler.
+
+Open items (real JIT can compile + run code, but boot still diverges):
+
+* JIT-emitted code for the CRC/checksum loop at PC=0x01002c76–0x01002c7e
+  (`lsl.l #1,d0` / `roxr.b #1,d4` / `roxr.l #1,d1` / `eor.b d1,d4`)
+  appears to produce divergent register state and ultimately a bus
+  error pushing an exception frame to `sp=0` (`[NextBus] Bus error
+  lput at FFFFFFFC` + fatal double MMU exception).  Pinning down
+  which opcode codegen is wrong needs an opcode-by-opcode oracle
+  comparison against the interpreter.
+
 ### Why the JIT looks slow today
 
 **Fixed in commit `2779c47`.**  Before that fix, the JIT was secretly a

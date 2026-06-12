@@ -13,6 +13,8 @@ FSCK_WAIT="${PREVIOUS_FSCK_WAIT:-90}"
 DESKTOP_TIMEOUT="${PREVIOUS_DESKTOP_TIMEOUT:-1200}"
 DESKTOP_POLL="${PREVIOUS_DESKTOP_POLL:-30}"
 STABLE_WAIT="${PREVIOUS_STABLE_WAIT:-0}"
+SHOW_STATUSBAR="${PREVIOUS_SHOW_STATUSBAR:-TRUE}"
+SHOW_DRIVE_LED="${PREVIOUS_SHOW_DRIVE_LED:-TRUE}"
 RTC_CHIP="${PREVIOUS_RTC_CHIP:-MC68HC68T1}"
 # NeXTSTEP 3.3 treats far-future host dates as a preposterous RTC value.
 # Keep the headless system image in its native 1994 date range unless callers
@@ -72,8 +74,8 @@ bShowConfigDialogAtStartup = FALSE
 
 [Screen]
 bFullScreen = FALSE
-bShowStatusbar = TRUE
-bShowDriveLed = TRUE
+bShowStatusbar = $SHOW_STATUSBAR
+bShowDriveLed = $SHOW_DRIVE_LED
 
 [Keyboard]
 bSwapCmdAlt = FALSE

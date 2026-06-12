@@ -16,6 +16,34 @@ codebase recognizable.
 
 This is still **experimental bring-up work**, not a finished high-performance JIT release.
 
+As it stands today, headless NeXTSTEP boots cleanly to the Workspace desktop on AArch64 under the conservative RTE-fault interpreter handoff oracle:
+
+![NeXTSTEP Workspace desktop reached headlessly on AArch64](docs/desktop-headless-boot.png)
+
+Reproducible via `tools/headless-nextstep-harness.sh` with:
+
+```bash
+PREVIOUS_UAE2026_JIT=1 \
+PREVIOUS_UAE2026_JIT_RAM=1 \
+B2_JIT_RTE_FAULT_HANDOFF=1 \
+PREVIOUS_RTC_CHIP=MCCS1850 \
+PREVIOUS_DESKTOP_TIMEOUT=300 \
+PREVIOUS_STABLE_WAIT=60 \
+PREVIOUS_SHOW_STATUSBAR=FALSE \
+PREVIOUS_SHOW_DRIVE_LED=FALSE \
+./tools/headless-nextstep-harness.sh
+```
+
+The harness reports `desktop_reached=1` and `stable_reached=1`, and OCR confirms `Workspace` plus `File Viewer` on the captured screen.
+
+What is rather more delicate:
+
+* the fully native RAM/MMU dispatch path with the interpreter handoff *disabled* (`B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`) still stalls partway through boot. Investigation is documented at length in the audit notes; the bisection localises the failure to the 7th JIT-handled RTE-target-fetch fault, and the symptom is the kernel re-entering a magneto-optical probe path that the interpreter side correctly skips.
+* a broader opcode-family parity sweep with the BasiliskII/macemu JIT work is still outstanding.
+* a small focused regression for the remaining native RTE-resume failure has not yet been distilled into the opcode harness.
+
+In short: with the handoff oracle on, the fork is perfectly serviceable for booting NeXTSTEP under JIT; without it, the native path is still being chased. The diagnostic and bisection tooling needed to continue that chase is in tree (`B2_JIT_RTE_FAULT_HANDOFF_SKIP_N`, `B2_TRACE_REQUEST_WRITES`, `B2_TRACE_CDB_WRITES`).
+
 What is already in tree:
 
 - vendored `uae_cpu_2026` JIT/compiler subtree under `src/cpu/uae_cpu_2026/`

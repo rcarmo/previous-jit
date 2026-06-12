@@ -13,8 +13,18 @@ FSCK_WAIT="${PREVIOUS_FSCK_WAIT:-90}"
 DESKTOP_TIMEOUT="${PREVIOUS_DESKTOP_TIMEOUT:-1200}"
 DESKTOP_POLL="${PREVIOUS_DESKTOP_POLL:-30}"
 STABLE_WAIT="${PREVIOUS_STABLE_WAIT:-0}"
-SHOW_STATUSBAR="${PREVIOUS_SHOW_STATUSBAR:-TRUE}"
-SHOW_DRIVE_LED="${PREVIOUS_SHOW_DRIVE_LED:-TRUE}"
+SHOW_STATUSBAR="${PREVIOUS_SHOW_STATUSBAR:-FALSE}"
+SHOW_DRIVE_LED="${PREVIOUS_SHOW_DRIVE_LED:-FALSE}"
+
+# JIT defaults: enable the AArch64 JIT bridge with the RAM/MMU dispatch and
+# the conservative RTE-fault interpreter handoff oracle, since that is the
+# combination known to boot NeXTSTEP cleanly to the Workspace desktop today.
+# Override with PREVIOUS_UAE2026_JIT=0 etc. for interpreter baselines.
+export PREVIOUS_UAE2026_JIT="${PREVIOUS_UAE2026_JIT:-1}"
+export PREVIOUS_UAE2026_JIT_RAM="${PREVIOUS_UAE2026_JIT_RAM:-1}"
+if [[ -z "${B2_JIT_RTE_FAULT_HANDOFF_DISABLE:-}" ]]; then
+  export B2_JIT_RTE_FAULT_HANDOFF="${B2_JIT_RTE_FAULT_HANDOFF:-1}"
+fi
 RTC_CHIP="${PREVIOUS_RTC_CHIP:-MC68HC68T1}"
 # NeXTSTEP 3.3 treats far-future host dates as a preposterous RTC value.
 # Keep the headless system image in its native 1994 date range unless callers

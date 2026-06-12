@@ -45,6 +45,16 @@ static SDL_Keymod vnc_mod_state = KMOD_NONE;
 static int vnc_synth_shift_count = 0;
 #endif
 
+/* Tile size for dirty-region tracking inside VNCServerUpdateRGBA().  Smaller
+ * tiles localise small updates better at the cost of more bookkeeping; 32 is
+ * a good middle ground that aligns with libvncserver's own internal block
+ * size and Hextile's 16x16 cells. */
+#define VNC_DIRTY_TILE 32
+
+#ifdef HAVE_LIBVNCSERVER
+static enum rfbNewClientAction vnc_new_client_hook(rfbClientPtr cl);
+#endif
+
 static bool env_truthy(const char *name)
 {
     const char *value = getenv(name);
@@ -369,6 +379,7 @@ static int vnc_thread_func(void *unused)
     (void)unused;
     while (!SDL_AtomicGet(&vnc_thread_quit)) {
         bool have_frame = false;
+        int dirty_x = 0, dirty_y = 0, dirty_w = 0, dirty_h = 0;
         SDL_LockMutex(vnc_mutex);
         if (!vnc_pending_frame && !SDL_AtomicGet(&vnc_thread_quit))
             SDL_CondWaitTimeout(vnc_cond, vnc_mutex, 16);
@@ -377,14 +388,60 @@ static int vnc_thread_func(void *unused)
             break;
         }
         if (vnc_pending_frame) {
-            memcpy(vnc_framebuffer, vnc_snapshot, (size_t)vnc_pitch * (size_t)vnc_height);
+            /* Compute the tile-aligned bounding box of pixels that actually
+             * differ between the new snapshot and the live framebuffer
+             * libvncserver already holds, so we only mark and re-encode the
+             * rect that changed.  Marking the full screen on every frame
+             * (the old behaviour) forced libvncserver to re-encode the
+             * entire framebuffer even if only the mouse cursor moved,
+             * which dominated VNC CPU/bandwidth use during idle. */
+            int min_x = vnc_width, min_y = vnc_height;
+            int max_x = -1, max_y = -1;
+            const int tile = VNC_DIRTY_TILE;
+            for (int ty = 0; ty < vnc_height; ty += tile) {
+                int th = (ty + tile <= vnc_height) ? tile : (vnc_height - ty);
+                for (int tx = 0; tx < vnc_width; tx += tile) {
+                    int tw = (tx + tile <= vnc_width) ? tile : (vnc_width - tx);
+                    bool changed = false;
+                    for (int row = 0; row < th && !changed; row++) {
+                        size_t off = (size_t)(ty + row) * (size_t)vnc_pitch +
+                                     (size_t)tx * 4u;
+                        if (memcmp(vnc_framebuffer + off,
+                                   vnc_snapshot + off,
+                                   (size_t)tw * 4u) != 0)
+                            changed = true;
+                    }
+                    if (changed) {
+                        if (tx < min_x) min_x = tx;
+                        if (ty < min_y) min_y = ty;
+                        if (tx + tw > max_x) max_x = tx + tw;
+                        if (ty + th > max_y) max_y = ty + th;
+                    }
+                }
+            }
+            if (max_x > 0 && max_y > 0) {
+                dirty_x = min_x;
+                dirty_y = min_y;
+                dirty_w = max_x - min_x;
+                dirty_h = max_y - min_y;
+                /* Copy only the dirty rect from snapshot into the live
+                 * framebuffer that libvncserver renders from. */
+                for (int row = dirty_y; row < dirty_y + dirty_h; row++) {
+                    size_t off = (size_t)row * (size_t)vnc_pitch +
+                                 (size_t)dirty_x * 4u;
+                    memcpy(vnc_framebuffer + off,
+                           vnc_snapshot + off,
+                           (size_t)dirty_w * 4u);
+                }
+                have_frame = true;
+            }
             vnc_pending_frame = false;
-            have_frame = true;
         }
         SDL_UnlockMutex(vnc_mutex);
 
         if (have_frame && vnc_server)
-            rfbMarkRectAsModified(vnc_server, 0, 0, vnc_width, vnc_height);
+            rfbMarkRectAsModified(vnc_server, dirty_x, dirty_y,
+                                  dirty_x + dirty_w, dirty_y + dirty_h);
         if (vnc_server)
             rfbProcessEvents(vnc_server, 0);
     }
@@ -463,6 +520,10 @@ static bool vnc_ensure_server(int width, int height)
     vnc_server->frameBuffer = (char *)vnc_framebuffer;
     vnc_server->kbdAddEvent = vnc_keyboard_callback;
     vnc_server->ptrAddEvent = vnc_pointer_callback;
+    vnc_server->newClientHook = vnc_new_client_hook;
+    /* Use the dispatch loop in vnc_thread_func() rather than libvncserver's
+     * background thread; we already serialise framebuffer access on vnc_mutex. */
+    vnc_server->deferUpdateTime = 0;
 
     rfbInitServer(vnc_server);
 
@@ -536,3 +597,28 @@ void VNCServerUpdateRGBA(const uint8_t *pixels, int pitch, int width, int height
     (void)pixels; (void)pitch; (void)width; (void)height;
 #endif
 }
+
+#ifdef HAVE_LIBVNCSERVER
+static enum rfbNewClientAction vnc_new_client_hook(rfbClientPtr cl)
+{
+    if (!cl)
+        return RFB_CLIENT_ACCEPT;
+    /* Set sensible Tight encoding quality defaults if the client selects
+     * Tight.  libvncserver's bare defaults produce blurry output for
+     * emulator-style screens with lots of solid panels and crisp text.
+     * Pick high quality + moderate compression for a desktop workload. */
+#if defined(LIBVNCSERVER_HAVE_LIBJPEG) || defined(LIBVNCSERVER_HAVE_LIBPNG)
+    cl->tightQualityLevel = 9;      /* highest non-lossless quality */
+    cl->tightCompressLevel = 4;     /* moderate zlib compression */
+#ifdef LIBVNCSERVER_HAVE_LIBJPEG
+    cl->turboQualityLevel = 95;     /* libjpeg-turbo quality (1-100) */
+    cl->turboSubsampLevel = 0;      /* TURBO_SUBSAMP_1X: no chroma subsampling */
+#endif
+#endif
+    /* useCopyRect is reset by every SetEncodings; enable it pre-emptively so
+     * clients that advertise CopyRect get the scroll/window-move
+     * optimisation from the first frame. */
+    cl->useCopyRect = TRUE;
+    return RFB_CLIENT_ACCEPT;
+}
+#endif

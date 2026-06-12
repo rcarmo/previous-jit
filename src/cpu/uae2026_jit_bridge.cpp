@@ -1359,10 +1359,30 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
             const bool explicit_rte_handoff = env_truthy("B2_JIT_RTE_FAULT_HANDOFF", false) &&
                 !env_truthy("B2_JIT_RTE_FAULT_HANDOFF_DISABLE", false);
             if (bridge_rte_fault && explicit_rte_handoff) {
-                fprintf(stderr, "UAE2026 bridge: RTE fault handoff to interpreter pc=%08x sr=%04x isp=%08x\n",
-                        (unsigned)handled_pc, (unsigned)regs.sr, (unsigned)regs.isp);
-                UseJIT = false;
-                jit_active = false;
+                /* Bisection helper: B2_JIT_RTE_FAULT_HANDOFF_SKIP_N defers the
+                 * handoff to the Nth RTE fault.  Used to find the latest RTE
+                 * fault count where pure-JIT execution still produces
+                 * interpreter-equivalent kernel state. */
+                static long handoff_skip_n = -1;
+                static long handoff_count = 0;
+                if (handoff_skip_n < 0) {
+                    const char *env = getenv("B2_JIT_RTE_FAULT_HANDOFF_SKIP_N");
+                    handoff_skip_n = (env && *env) ? strtol(env, NULL, 0) : 0;
+                    if (handoff_skip_n < 0) handoff_skip_n = 0;
+                }
+                handoff_count++;
+                if (handoff_count <= handoff_skip_n) {
+                    fprintf(stderr,
+                            "UAE2026 bridge: RTE fault handoff DEFERRED count=%ld skip=%ld pc=%08x\n",
+                            handoff_count, handoff_skip_n, (unsigned)handled_pc);
+                } else {
+                    fprintf(stderr,
+                            "UAE2026 bridge: RTE fault handoff to interpreter count=%ld pc=%08x sr=%04x isp=%08x\n",
+                            handoff_count, (unsigned)handled_pc, (unsigned)regs.sr,
+                            (unsigned)regs.isp);
+                    UseJIT = false;
+                    jit_active = false;
+                }
             }
         } else {
             __exvalue = prb2;

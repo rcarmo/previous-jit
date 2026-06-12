@@ -34,14 +34,20 @@ static int env_int(const char *name, int fallback)
 
 static int current_cpu_pref(void)
 {
-    switch (::currprefs.cpu_model) {
-    case 68000: return 0;
-    case 68010: return 1;
-    case 68020: return 2;
-    case 68030: return 3;
-    case 68040: return 4;
-    default: return ::currprefs.cpu_level >= 4 ? 4 : 3;
+    /* Previous always emulates 68040.  If something hasn't initialised our
+     * view of ::currprefs yet (early init order), default to 68040 rather
+     * than 0 so the JIT compiler doesn't see "68000" and refuse to emit
+     * native code in compile_block (which requires >= 68020). */
+    if (::currprefs.cpu_model >= 68020 && ::currprefs.cpu_model <= 68060) {
+        switch (::currprefs.cpu_model) {
+        case 68020: return 2;
+        case 68030: return 3;
+        case 68040: return 4;
+        case 68060: return 4;
+        default: break;
+        }
     }
+    return 4; /* default to 68040, matching NeXT cube */
 }
 
 bool PrefsFindBool(const char *name)

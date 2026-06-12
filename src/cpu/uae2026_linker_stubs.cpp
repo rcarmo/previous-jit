@@ -649,6 +649,12 @@ int32_t PrefsFindInt32(const char *name)
     if (__builtin_strcmp(name, "jit_size")       == 0) return Uae2026CompilerPrefsCacheSizeKB();
     if (__builtin_strcmp(name, "jit_cache_size") == 0) return Uae2026CompilerPrefsCacheSizeKB();
     if (__builtin_strcmp(name, "special_mem")    == 0) return Uae2026CompilerPrefsSpecialMemDefault();
+    /* "cpu" was previously unhandled and returned 0, which sync_jit_prefs
+     * fed through pref_cpu_to_model(0) -> 68000.  That made compile_block's
+     * `currprefs.cpu_model >= 68020` gate fail unconditionally and the JIT
+     * silently fell back to interpreter dispatch on every single block.
+     * Default to 68040 (the NeXT cube model) so the compiler runs. */
+    if (__builtin_strcmp(name, "cpu")            == 0) return 4; /* 68040 */
     return 0;
 }
 

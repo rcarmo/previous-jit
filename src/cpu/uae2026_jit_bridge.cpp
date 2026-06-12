@@ -84,6 +84,47 @@ extern struct flag_struct regflags;
 struct jit_flag_struct { uae_u32 nzcv; uae_u32 x; };
 extern struct jit_flag_struct jit_regflags;
 
+/* Bit-position conversion between Previous's legacy flag layout and the
+ * vendored UAE2026 JIT layout.  Both structs name the field `cznv` but
+ * they store the N/Z/C/V bits at different positions:
+ *
+ *   Previous legacy (src/cpu/newcpu.h):       N=15  Z=14  C=8   V=0
+ *   UAE2026 JIT     (src/cpu/uae_cpu_2026/m68k.h): N=7   Z=6   C=0   V=11
+ *
+ * The bridge previously did a raw u32 copy across the boundary, which
+ * silently shuffled the meaning of every set CCR bit and caused the JIT
+ * to evaluate Bcc / Scc / addx-style condition tests using stale or
+ * mis-positioned flags after every interpreter handler call.  Use the
+ * helpers below at every JIT<->legacy flag-state boundary so the JIT
+ * sees the same CCR the legacy handler just left. */
+static inline uae_u32 bridge_cznv_legacy_to_jit(uae_u32 legacy)
+{
+    /* Legacy Previous (src/cpu/newcpu.h) stores CCR in cznv with
+     *   N=15  Z=14  C=8   V=0
+     * AArch64 JIT (src/cpu/uae_cpu_2026/m68k.h) stores NZCV with
+     *   N=31  Z=30  C=29  V=28
+     * (matching the host ARM64 NZCV system register). */
+    uae_u32 jit = 0;
+    if (legacy & (1u << 15)) jit |= (1u << 31); /* N */
+    if (legacy & (1u << 14)) jit |= (1u << 30); /* Z */
+    if (legacy & (1u << 8))  jit |= (1u << 29); /* C */
+    if (legacy & (1u << 0))  jit |= (1u << 28); /* V */
+    return jit;
+}
+
+static inline uae_u32 bridge_cznv_jit_to_legacy(uae_u32 jit)
+{
+    uae_u32 legacy = 0;
+    if (jit & (1u << 31)) legacy |= (1u << 15); /* N */
+    if (jit & (1u << 30)) legacy |= (1u << 14); /* Z */
+    if (jit & (1u << 29)) legacy |= (1u << 8);  /* C */
+    if (jit & (1u << 28)) legacy |= (1u << 0);  /* V */
+    return legacy;
+}
+
+extern "C" uae_u32 Uae2026BridgeCznvLegacyToJit(uae_u32 v) { return bridge_cznv_legacy_to_jit(v); }
+extern "C" uae_u32 Uae2026BridgeCznvJitToLegacy(uae_u32 v) { return bridge_cznv_jit_to_legacy(v); }
+
 namespace {
 static bool bridge_logged = false;
 static char bridge_summary[768];
@@ -1117,7 +1158,7 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
     /* Since regs is now the shared symbol with JIT fields at correct
      * offsets (via newcpu.h restructure), no register sync is needed.
      * Sync the flag struct between Previous's cznv layout and JIT's nzcv. */
-    jit_regflags.nzcv = regflags.cznv;
+    jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
     jit_regflags.x    = regflags.x;
 
     /* Update shadow ROM/VRAM/RAM before JIT dispatch so direct reads see current state. */
@@ -1397,10 +1438,10 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
      * Exception() and the interpreter-side path have already updated
      * regflags; do not overwrite them with stale JIT-entry flags. */
     if (handled_mmu_exception) {
-        jit_regflags.nzcv = regflags.cznv;
+        jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
         jit_regflags.x    = regflags.x;
     } else {
-        regflags.cznv = jit_regflags.nzcv;
+        regflags.cznv = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);
         regflags.x    = jit_regflags.x;
     }
 

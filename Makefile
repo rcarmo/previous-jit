@@ -47,7 +47,8 @@ INTERP_ENV = \
 .PHONY: help build rebuild clean \
 	headless-jit headless-interp headless-stop \
 	headless-oneshot perf-baseline perf-baseline-quick \
-	vnc-probe vnc-probe-motion
+	vnc-probe vnc-probe-motion \
+	jit-microbench jit-oracle-bisect
 
 help:
 	@grep -E '^[a-zA-Z][a-zA-Z0-9_-]+:.*##' $(MAKEFILE_LIST) | \
@@ -58,9 +59,48 @@ help:
 # ----------------------------------------------------------------------------
 
 $(BUILD_DIR):
-	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release
+	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release \
+		-DENABLE_EXPERIMENTAL_UAE2026_JIT=ON
 
-build: $(BUILD_DIR)  ## Configure + build the emulator (Release, JIT enabled)
+# Header-change detection for the unity-compiled JIT translation unit.
+#
+# `uae2026_compiler_unit.cpp` `#include`s a large tree of vendored .cpp
+# files (compemu_support.cpp, compemu.cpp, compemu_arm.cpp, the gapfill
+# files, etc.).  cmake's incremental-build dependency scanner does not
+# track those secondary `#include`s through the chain, so changes to
+# headers like `compemu_arm.h` (where VREGS lives) can be silently
+# ignored on rebuild.  This bit me hard during the VREGS 22 -> 32 fix:
+# the source said 32 but the binary kept aborting with VREGS=22 baked
+# into `set_status`'s format string until I forced a clean rebuild.
+#
+# Workaround: hash every JIT header + the unity TU on each `make build`.
+# If the hash differs from the stored stamp, delete the unit's `.o` so
+# cmake re-compiles it; everything else stays incremental.
+
+JIT_HEADER_HASH_FILE := $(BUILD_DIR)/.jit-header-hash
+JIT_UNIT_OBJ         := $(BUILD_DIR)/src/cpu/CMakeFiles/UaeCpu.dir/uae2026_compiler_unit.cpp.o
+JIT_HEADER_SOURCES   := $(shell find src/cpu/uae_cpu_2026 \
+                          \( -name '*.h' -o -name '*.hpp' -o -name '*.cpp' -o -name '*.c' \) \
+                          2>/dev/null | sort) \
+                        src/cpu/uae2026_compiler_unit.cpp \
+                        src/cpu/uae2026_compiler_prefs_shim.cpp \
+                        src/cpu/uae2026_jit_bridge.cpp \
+                        src/cpu/uae2026_linker_stubs.cpp
+
+.PHONY: jit-rebuild-check
+jit-rebuild-check: $(BUILD_DIR) ## Force re-compile of the JIT unit when its headers/sources change
+	@new_hash=$$(cat $(JIT_HEADER_SOURCES) 2>/dev/null | sha256sum | awk '{print $$1}'); \
+	old_hash=$$(cat $(JIT_HEADER_HASH_FILE) 2>/dev/null || true); \
+	if [ "$$new_hash" != "$$old_hash" ]; then \
+		if [ -n "$$old_hash" ]; then \
+			echo "jit-rebuild-check: JIT sources changed - dropping stale $$(basename $(JIT_UNIT_OBJ))"; \
+			rm -f $(JIT_UNIT_OBJ) $(JIT_UNIT_OBJ).d; \
+		fi; \
+		mkdir -p $$(dirname $(JIT_HEADER_HASH_FILE)); \
+		echo "$$new_hash" > $(JIT_HEADER_HASH_FILE); \
+	fi
+
+build: $(BUILD_DIR) jit-rebuild-check  ## Configure + build the emulator (Release, JIT enabled)
 	cmake --build $(BUILD_DIR) -j$(JOBS)
 
 rebuild: ## Force-rebuild without reconfiguring
@@ -140,3 +180,14 @@ vnc-probe: ## Connect to $(VNC_HOST):$(VNC_PORT), report encoding negotiation
 
 vnc-probe-motion: ## Sample VNC bytes/sec under scripted cursor motion
 	@python3 ./tools/vnc-probe.py --host $(VNC_HOST) --port $(VNC_PORT) --motion 12
+
+# ----------------------------------------------------------------------------
+# JIT benchmarks
+# ----------------------------------------------------------------------------
+
+ITERATIONS ?= 20000000
+jit-microbench: build ## Tight-loop JIT vs interpreter throughput (default ITERATIONS=20M)
+	@ITERATIONS=$(ITERATIONS) ./tools/jit-microbench.sh
+
+jit-oracle-bisect: build ## Diff JIT vs interp REGDUMP for a hex blob: make jit-oracle-bisect HEX="e388 e214"
+	@./tools/jit-oracle-bisect.sh "$(HEX)"

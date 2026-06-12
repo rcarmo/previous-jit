@@ -61,21 +61,36 @@ env_args=(
 )
 case "$MODE" in
   jit)
-    # Canonical pure-JIT recipe.  Real JIT drives the full NeXTSTEP boot
-    # all the way to the File Viewer desktop, with zero RTE-fault
-    # handoffs to the interpreter.  Working after:
-    #   2779c47  PrefsFindInt32("cpu") fix (JIT compiles native code)
-    #   1d57829  VREGS 22 -> 32       (opcode handlers fit live.state)
-    # The B2_JIT_RTE_FAULT_HANDOFF=1 env is intentionally NOT set;
-    # leaving it off means we never disable the JIT mid-boot.
+    # Canonical headless recipe.  Pure JIT (with JIT_RAM=1) currently
+    # hits a non-deterministic codegen-correctness crash at PC=0x01002c70
+    # in Previous's ROM init (bus error pushing exception frame to sp=0).
+    # Even handoff+JIT exhibits the same instability across runs.  Until
+    # that's properly bisected, the canonical recipe runs on the
+    # interpreter — same behaviour the recipe has had in practice for
+    # this entire iteration of work.  The JIT bridge is still bootstrapped
+    # so the bridge logging and structures stay consistent.
+    #
+    # To exercise real JIT for benchmarks / experiments:
+    #   make jit-microbench          — isolated CPU-throughput numbers
+    #   make headless-oneshot         — JIT with per-event handoff
+    #   PREVIOUS_UAE2026_JIT=1 make headless-jit ...    — force pure JIT
+    #
+    # FPU/cache opt-ins (apply when JIT is actually on):
+    #   PREVIOUS_UAE2026_JIT_FPU=1            — native FPU compilation
+    #   PREVIOUS_UAE2026_JIT_CACHE_KB=65536   — 64 MB JIT cache
     env_args+=(
-        --setenv=PREVIOUS_UAE2026_JIT=1
-        --setenv=PREVIOUS_UAE2026_JIT_RAM=1
+        --setenv=PREVIOUS_UAE2026_JIT="${PREVIOUS_UAE2026_JIT:-0}"
+        --setenv=PREVIOUS_UAE2026_JIT_RAM="${PREVIOUS_UAE2026_JIT_RAM:-0}"
+        --setenv=PREVIOUS_UAE2026_JIT_FPU="${PREVIOUS_UAE2026_JIT_FPU:-1}"
+        --setenv=PREVIOUS_UAE2026_JIT_CACHE_KB="${PREVIOUS_UAE2026_JIT_CACHE_KB:-65536}"
+        --setenv=B2_JIT_RTE_FAULT_HANDOFF="${B2_JIT_RTE_FAULT_HANDOFF:-1}"
     );;
   oneshot)
     env_args+=(
         --setenv=PREVIOUS_UAE2026_JIT=1
         --setenv=PREVIOUS_UAE2026_JIT_RAM=1
+        --setenv=PREVIOUS_UAE2026_JIT_FPU="${PREVIOUS_UAE2026_JIT_FPU:-1}"
+        --setenv=PREVIOUS_UAE2026_JIT_CACHE_KB="${PREVIOUS_UAE2026_JIT_CACHE_KB:-65536}"
         --setenv=B2_JIT_RTE_FAULT_HANDOFF=1
         --setenv=B2_JIT_RTE_FAULT_HANDOFF_RESUME_INSNS="$RESUME_INSNS"
     );;

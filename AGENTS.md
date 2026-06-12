@@ -98,22 +98,28 @@ Viewer in ~3-4 minutes on the Orange Pi 6 host.
 
 ### The cmd-185 stall
 
-**Resolved** as of commits `2779c47` + `1d57829` (cpu_model + VREGS
-fixes).  Pure JIT — no `B2_JIT_RTE_FAULT_HANDOFF`, no
-`RESUME_INSNS` — now boots NeXTSTEP all the way to the File Viewer
-desktop with zero RTE-fault handoffs and zero bridge events.
-The canonical `make headless-jit` recipe enables real JIT.
+**Partially resolved.**  The Compiler-correctness ratchet below cleared
+several major bugs (notably the `cpu_model=68000` silent no-op and the
+`VREGS=22` scratch overflow), but pure JIT with `PREVIOUS_UAE2026_JIT_RAM=1`
+still hits a non-deterministic codegen-correctness crash at PC=0x01002c70 in
+Previous's ROM init: `[NextBus] Bus error lput at FFFFFFFC` followed by a
+fatal double MMU exception 2 while pushing an exception frame to `sp=0`.
+The canonical `make headless-jit` recipe therefore stays on the
+interpreter (`PREVIOUS_UAE2026_JIT=0`) with `B2_JIT_RTE_FAULT_HANDOFF=1`
+as a belt-and-braces fallback if anyone explicitly turns the JIT back on.
+This matches the behaviour the recipe had in practice for this entire
+iteration of work.
 
-Historical context: with the silent-no-op JIT (pre-2779c47), pure JIT
-stalled during early SCSI boot at the `MO_IntStatus` polling loop
-(`PC=0x0400fd04`, polling `0x02112004`).  Bisection via
-`B2_JIT_RTE_FAULT_HANDOFF_SKIP_N` showed `SKIP_N=6` boots vs
-`SKIP_N=7` stalls.  That bisection was tracking the symptom of the
-cpu_model=68000 + VREGS=22 root causes; once those landed and the
-binary was *cleanly rebuilt* (cmake's incremental build can miss
-header changes inside the unity-compiled JIT TU), the stall went
-away.  The `B2_JIT_RTE_FAULT_HANDOFF_*` knobs and the audit at
-`/workspace/notes/macemu-jit-cmd185-audit.md` are kept for reference.
+The `B2_JIT_RTE_FAULT_HANDOFF_*` knobs and the audit at
+`/workspace/notes/macemu-jit-cmd185-audit.md` are kept for reference; the
+recipe escape hatch is:
+
+```
+PREVIOUS_UAE2026_JIT=1 PREVIOUS_UAE2026_JIT_RAM=1 make headless-jit ...
+```
+
+to force-enable the real JIT for an experiment.  Use
+`make headless-oneshot` for per-event handoff testing instead.
 
 ### Compiler-correctness ratchet
 
@@ -132,10 +138,17 @@ old silent path masked.  The fixes so far:
   dump in `set_status()` before `jit_abort()` so future out-of-range
   vregs print the offending opcode handler.
 
-With both `2779c47` (cpu_model) and `1d57829` (VREGS) landed *and*
-after a clean rebuild, pure JIT drives the full NeXTSTEP boot to the
-File Viewer desktop.  No further compiler-correctness fixes are open
-at this point.
+Open items:
+
+* **Pure JIT bus error in ROM init** at PC=0x01002c70 (CRC/checksum
+  loop with lsl.l/roxr.b/roxr.l/eor.b + a DBF that loops back into
+  MOVE.B (A1)+).  When JIT_RAM=1 the emulator runs a chunk of
+  compiled code, eventually triggers an MMU exception 2, and the
+  kernel pushes the exception frame to `sp=0` because SP isn't
+  initialised this early — the wrap to 0xFFFFFFFC lands in NeXTBus
+  space and bus-errors recursively into a fatal double fault.  The
+  trigger is intermittent across rebuilds; needs an opcode-by-opcode
+  oracle bisection via `tools/jit-oracle-bisect.sh`.
 
 ### Why the JIT looks slow today
 

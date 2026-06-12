@@ -98,18 +98,22 @@ Viewer in ~3-4 minutes on the Orange Pi 6 host.
 
 ### The cmd-185 stall
 
-Pure JIT without handoff stalls during early SCSI boot at the
-`MO_IntStatus` polling loop (`PC=0x0400fd04`, polling `0x02112004`).
-Bisection (`B2_JIT_RTE_FAULT_HANDOFF_SKIP_N`) showed:
+**Resolved** as of commits `2779c47` + `1d57829` (cpu_model + VREGS
+fixes).  Pure JIT — no `B2_JIT_RTE_FAULT_HANDOFF`, no
+`RESUME_INSNS` — now boots NeXTSTEP all the way to the File Viewer
+desktop with zero RTE-fault handoffs and zero bridge events.
+The canonical `make headless-jit` recipe enables real JIT.
 
-* `SKIP_N=6` — boots: JIT handles the first 6 RTE faults natively, then
-  hands off forever.
-* `SKIP_N=7` — stalls: JIT's handling of fault #7 puts kernel state into
-  a divergent path the polling loop cannot escape.
-
-Full audit at `/workspace/notes/macemu-jit-cmd185-audit.md` (838 lines).
-The handoff workaround is the canonical recipe; native no-handoff
-`JIT_RAM=1` was declared exhausted as a productive target.
+Historical context: with the silent-no-op JIT (pre-2779c47), pure JIT
+stalled during early SCSI boot at the `MO_IntStatus` polling loop
+(`PC=0x0400fd04`, polling `0x02112004`).  Bisection via
+`B2_JIT_RTE_FAULT_HANDOFF_SKIP_N` showed `SKIP_N=6` boots vs
+`SKIP_N=7` stalls.  That bisection was tracking the symptom of the
+cpu_model=68000 + VREGS=22 root causes; once those landed and the
+binary was *cleanly rebuilt* (cmake's incremental build can miss
+header changes inside the unity-compiled JIT TU), the stall went
+away.  The `B2_JIT_RTE_FAULT_HANDOFF_*` knobs and the audit at
+`/workspace/notes/macemu-jit-cmd185-audit.md` are kept for reference.
 
 ### Compiler-correctness ratchet
 
@@ -128,50 +132,50 @@ old silent path masked.  The fixes so far:
   dump in `set_status()` before `jit_abort()` so future out-of-range
   vregs print the offending opcode handler.
 
-Open items (real JIT can compile + run code, but boot still diverges):
-
-* JIT-emitted code for the CRC/checksum loop at PC=0x01002c76–0x01002c7e
-  (`lsl.l #1,d0` / `roxr.b #1,d4` / `roxr.l #1,d1` / `eor.b d1,d4`)
-  appears to produce divergent register state and ultimately a bus
-  error pushing an exception frame to `sp=0` (`[NextBus] Bus error
-  lput at FFFFFFFC` + fatal double MMU exception).  Pinning down
-  which opcode codegen is wrong needs an opcode-by-opcode oracle
-  comparison against the interpreter.
+With both `2779c47` (cpu_model) and `1d57829` (VREGS) landed *and*
+after a clean rebuild, pure JIT drives the full NeXTSTEP boot to the
+File Viewer desktop.  No further compiler-correctness fixes are open
+at this point.
 
 ### Why the JIT looks slow today
 
-**Fixed in commit `2779c47`.**  Before that fix, the JIT was secretly a
-no-op for every workload: the global `PrefsFindInt32` stub returned 0
-for the "cpu" key, which made `currprefs.cpu_model = 68000` inside the
-UAE-2026 compiler, which made `compile_block`'s
-`cpu_model >= 68020` gate fail on every call.  Native code was never
-emitted; every dispatch dropped back into `execute_normal` and
-re-interpreted the block.
+**Fixed.**  Two compounding bugs:
 
-After the fix, on `tools/jit-microbench.sh` (a 40 M m68k-insn tight loop):
+1. Commit `2779c47` — the global `PrefsFindInt32` stub returned 0 for
+   the "cpu" key, so the JIT compiler thought `cpu_model = 68000` and
+   `compile_block`'s `cpu_model >= 68020` gate failed unconditionally.
+   No native code was emitted.
+2. Commit `1d57829` — `VREGS=22` left only S1..S3 of scratch slots,
+   but 391 of the legacy `compemu.cpp` opcode handlers allocate ≥4
+   slots (max 6).  Slots past S3 overflowed `live.state[]` and tripped
+   `set_status invalid vreg N` in compile_block, killing the JIT every
+   time it tried to compile DBcc, BTST, BCHG, etc.
+
+With both fixed, on `tools/jit-microbench.sh` (40 M m68k-insn tight loop):
 
 | Configuration               | Throughput            |
 |----------------------------|----------------------:|
-| Interpreter                | 11.63 M m68k-insn/s   |
-| JIT (pre-fix, silent no-op)|  4.13 M m68k-insn/s   |
-| JIT (post-fix)             | 99.26 M m68k-insn/s   |
+| Interpreter                | 11.59 M m68k-insn/s   |
+| JIT (post-fix)             | 99.75 M m68k-insn/s   |
 
 At 200 M m68k insns the JIT settles at **473.93 M m68k-insn/s** (38.6×
-faster than the interpreter); the difference is amortisation of the
-one-time bridge/compile cost.
+faster than the interpreter).
 
-**Caveat**: actually-running JIT now exposes latent UAE 2026 compiler
-bugs that were previously masked.  In particular, Previous's ROM init
-blocks trip a `jit_abort("set_status invalid vreg 22")` inside the
-compiler.  Until that's debugged, the `make headless-jit` recipe keeps
-`PREVIOUS_UAE2026_JIT=0` so the canonical NeXTSTEP boot stays on the
-interpreter — same behaviour the recipe had in practice before the fix,
-just now honest about it.
+**Pure JIT now drives the full NeXTSTEP boot to the File Viewer
+desktop**, with no `B2_JIT_RTE_FAULT_HANDOFF` and no
+`RESUME_INSNS`.  Bridge handoff machinery (`51a7f8a`) and the
+silent-no-op safety fallback in `headless-launch.sh` are no longer
+needed for the canonical recipe, though they remain available for
+bisecting any new JIT regressions.
 
-`B2_JIT_RTE_FAULT_HANDOFF_RESUME_INSNS=N` (commit `51a7f8a`) is the
-in-progress per-event handoff that lets the JIT survive past a single
-RTE fault.  Combined with the cpu_model fix, this is the path to a JIT-
-driven boot once the remaining compiler bugs are cleared.
+**Build caveat**: cmake's incremental build does not always pick up
+header changes inside the unity-compiled JIT translation unit
+(`uae2026_compiler_unit.cpp` `#include`s a wide tree of vendored .cpp
+files).  If you change `compemu_arm.h`, `compemu.h`, or anything
+included from `compemu_support.cpp`, run `make rebuild` (or
+`rm -rf build-vnc && make build`) to force a clean rebuild.  Stale
+binaries will silently keep the old `VREGS=22` definition and abort
+in `set_status` even though the source shows 32.
 
 ## VNC server cheat-sheet
 

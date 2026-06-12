@@ -61,19 +61,16 @@ env_args=(
 )
 case "$MODE" in
   jit)
-    # IMPORTANT: With the cpu_model=68000 fix (commit 2779c47), the JIT
-    # actually emits native blocks now, which exposes latent UAE-2026
-    # compiler bugs in Previous's ROM/kernel code (e.g. "set_status
-    # invalid vreg 22").  Until those are debugged, keep the canonical
-    # NeXTSTEP boot recipe on the interpreter: bootstrap the JIT cache
-    # (needed for the bridge to wire up correctly) but disable runtime
-    # JIT dispatch so we don't crash mid-boot.  This matches the
-    # behaviour the recipe had *in practice* before the fix, because
-    # the JIT was silently a no-op.
+    # Canonical pure-JIT recipe.  Real JIT drives the full NeXTSTEP boot
+    # all the way to the File Viewer desktop, with zero RTE-fault
+    # handoffs to the interpreter.  Working after:
+    #   2779c47  PrefsFindInt32("cpu") fix (JIT compiles native code)
+    #   1d57829  VREGS 22 -> 32       (opcode handlers fit live.state)
+    # The B2_JIT_RTE_FAULT_HANDOFF=1 env is intentionally NOT set;
+    # leaving it off means we never disable the JIT mid-boot.
     env_args+=(
-        --setenv=PREVIOUS_UAE2026_JIT=0
-        --setenv=PREVIOUS_UAE2026_JIT_RAM=0
-        --setenv=B2_JIT_RTE_FAULT_HANDOFF=1
+        --setenv=PREVIOUS_UAE2026_JIT=1
+        --setenv=PREVIOUS_UAE2026_JIT_RAM=1
     );;
   oneshot)
     env_args+=(

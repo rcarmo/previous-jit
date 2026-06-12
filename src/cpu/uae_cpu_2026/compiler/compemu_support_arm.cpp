@@ -3117,8 +3117,24 @@ static inline void log_dump(void)
 
 static inline void set_status(int r, int status)
 {
-    if ((unsigned)r >= VREGS)
+    if ((unsigned)r >= VREGS) {
+        /* Print a backtrace + the m68k context that triggered the bad vreg
+         * before aborting, so we can find which opcode handler is asking
+         * for an out-of-range slot. */
+        fprintf(stderr,
+            "set_status invalid vreg %d (VREGS=%d) m68k_pc=%08x start_pc=%08x compile_p=%p\n",
+            r, VREGS, (unsigned)m68k_getpc(), (unsigned)start_pc,
+            (void*)current_compile_p);
+        {
+            void *bt[24];
+            int n = ::backtrace(bt, 24);
+            char **syms = ::backtrace_symbols(bt, n);
+            for (int i = 0; i < n; i++)
+                fprintf(stderr, "  BT[%d] %s\n", i, syms ? syms[i] : "(no syms)");
+            free(syms);
+        }
         jit_abort("set_status invalid vreg %d", r);
+    }
     if (status == ISCONST)
         log_clobberreg(r);
     live.state[r].status = status;

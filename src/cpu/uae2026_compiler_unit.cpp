@@ -17,6 +17,9 @@
 
 #if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
 
+/* Pulled in early so set_status()'s diagnostic abort can dump a backtrace. */
+#include <execinfo.h>
+
 /* Rename vendored globals to avoid collisions with Previous-native globals. */
 #define regflags      jit_regflags
 #define MEMBaseDiff   jit_MEMBaseDiff
@@ -105,6 +108,7 @@ static struct _addrbank_stub rtarea_bank  = { nullptr, 0 };
  * compstbl_arm.cpp — op_smalltbl_0_comp_ff/nf dispatch tables         *
  * ------------------------------------------------------------------ */
 #include "uae_cpu_2026/compiler/compstbl_arm.cpp"
+
 
 /* ------------------------------------------------------------------ *
  * C ABI wrapper so the bridge can hard-flush the JIT translation     *

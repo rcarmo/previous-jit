@@ -199,7 +199,15 @@ extern uae_u32 needed_flags;
 extern uae_u8* comp_pc_p;
 extern void* pushall_call_handler;
 
-#define VREGS 22
+/* VREGS: virtual register count.  Slots 0..15 hold M68K Dn/An, then
+ * PC_P=16, FLAGX=17, FLAGTMP=18, S1=19, S2=20, S3=21, and S4..S13 (22..31)
+ * are extra scratch slots needed by the legacy compemu.cpp opcode
+ * handlers (e.g. DBcc emits up to 6 `scratchie++` allocations from S1
+ * upwards).  Was 22 here, matching only S1..S3, which silently overflowed
+ * `live.state[]` and tripped `set_status invalid vreg 22` in compile_block
+ * for any handler that needed more than 3 scratch slots.  Match the
+ * legacy compemu.h convention (32) so all handlers fit. */
+#define VREGS 32
 #define VFREGS 10
 
 #define INMEM 1

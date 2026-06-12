@@ -28,6 +28,8 @@ exception-frame conventions that are easy to break.
   `make vnc-probe`
 * **Probe VNC bytes/sec under scripted cursor motion (12 s window):**
   `make vnc-probe-motion`
+* **Measure raw JIT vs interpreter throughput on a tight M68K loop:**
+  `./tools/jit-microbench.sh` (or with `ITERATIONS=N`).
 
 Every target accepts overrides on the command line, e.g. `make headless-jit
 VNC_PORT=5910 DISPLAY_NAME=:210 RUNDIR=/workspace/tmp/previous-alt`.
@@ -111,17 +113,38 @@ The handoff workaround is the canonical recipe; native no-handoff
 
 ### Why the JIT looks slow today
 
-`B2_JIT_RTE_FAULT_HANDOFF=1` permanently disables the JIT on the **first**
-RTE fault (typically within seconds of cold boot).  So our default
-"JIT+handoff" benchmark is really "JIT setup + ~11 compiled blocks +
-interpreter for the rest of boot".  The interpreter alone boots faster
-(~180 s) than JIT+handoff (~220 s) because it doesn't pay JIT setup
-overhead.
+**Fixed in commit `2779c47`.**  Before that fix, the JIT was secretly a
+no-op for every workload: the global `PrefsFindInt32` stub returned 0
+for the "cpu" key, which made `currprefs.cpu_model = 68000` inside the
+UAE-2026 compiler, which made `compile_block`'s
+`cpu_model >= 68020` gate fail on every call.  Native code was never
+emitted; every dispatch dropped back into `execute_normal` and
+re-interpreted the block.
 
-The `B2_JIT_RTE_FAULT_HANDOFF_RESUME_INSNS` knob is the in-progress
-attempt to make handoff per-event: interpreter handles the offending
-fault, then JIT resumes.  If it survives without re-stalling, JIT covers
-the bulk of boot and steady-state for the first time.
+After the fix, on `tools/jit-microbench.sh` (a 40 M m68k-insn tight loop):
+
+| Configuration               | Throughput            |
+|----------------------------|----------------------:|
+| Interpreter                | 11.63 M m68k-insn/s   |
+| JIT (pre-fix, silent no-op)|  4.13 M m68k-insn/s   |
+| JIT (post-fix)             | 99.26 M m68k-insn/s   |
+
+At 200 M m68k insns the JIT settles at **473.93 M m68k-insn/s** (38.6×
+faster than the interpreter); the difference is amortisation of the
+one-time bridge/compile cost.
+
+**Caveat**: actually-running JIT now exposes latent UAE 2026 compiler
+bugs that were previously masked.  In particular, Previous's ROM init
+blocks trip a `jit_abort("set_status invalid vreg 22")` inside the
+compiler.  Until that's debugged, the `make headless-jit` recipe keeps
+`PREVIOUS_UAE2026_JIT=0` so the canonical NeXTSTEP boot stays on the
+interpreter — same behaviour the recipe had in practice before the fix,
+just now honest about it.
+
+`B2_JIT_RTE_FAULT_HANDOFF_RESUME_INSNS=N` (commit `51a7f8a`) is the
+in-progress per-event handoff that lets the JIT survive past a single
+RTE fault.  Combined with the cpu_model fix, this is the path to a JIT-
+driven boot once the remaining compiler bugs are cleared.
 
 ## VNC server cheat-sheet
 

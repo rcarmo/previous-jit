@@ -180,10 +180,16 @@ Open items:
   to `sp=0`.  Isolated opcode oracles for `move.b (a1)+`, `subq.l
   #1,d3`, and `subq.l+bne` pass, so the remaining issue is not a
   single arithmetic opcode; it is branch/block state around the native
-  CRC block.  `B2_JIT_END_BLOCK_ON_FALLBACK=1` does not fix it.
-  Forcing the whole early CRC/compare ranges to `B2_JIT_EXACT_EXEC_PCS`
-  avoids the first double-fault but enters a pathological
-  `flush_icache_hard(n=7)` loop, so do not use that as a workaround.
+  CRC block.  Tested and rejected workarounds:
+
+  * `B2_JIT_END_BLOCK_ON_FALLBACK=1` — no effect.
+  * Forcing the whole early CRC/compare ranges to `B2_JIT_EXACT_EXEC_PCS`
+    avoids the first double-fault but enters a pathological
+    `flush_icache_hard(n=7)` loop; do not use it.
+  * Forcing all Bcc/DBcc opcodes to the plain interpreter fallback avoids
+    the immediate crash but spins silently in ROM init for 10+ minutes
+    (362-line log stuck at the CRC loop); not viable.
+
   Next audit target: `compemu_support_arm.cpp` branch-endblock state
   emission (`next_pc_p` / `taken_pc_p` / `branch_cc` / `flush(1)`), not
   the fallback call itself.

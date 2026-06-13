@@ -1505,7 +1505,9 @@ void execute_normal(void)
 			 * branch-loop correctness. */
 			const bool current_is_bcc = ((opcode & 0xf000u) == 0x6000u && opcode != 0x6000u);
 			const bool current_is_dbcc = ((opcode & 0xf0f8u) == 0x50c8u);
-			if (current_is_bcc || current_is_dbcc)
+			const bool current_is_stack_pop_move = (opcode == 0x241fu);
+			const bool current_is_return = (opcode == 0x4e73u || opcode == 0x4e74u || opcode == 0x4e75u || opcode == 0x4e76u || opcode == 0x4e77u);
+			if (current_is_bcc || current_is_dbcc || current_is_stack_pop_move || current_is_return)
 				return;
 			int maxrun_limit = MAXRUN;
 			{

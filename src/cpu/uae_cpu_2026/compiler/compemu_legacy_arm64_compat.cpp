@@ -1496,6 +1496,17 @@ void execute_normal(void)
 				(*cpufunctbl[opcode])(opcode);
 			jit_interpreted_op_check_ticks();
 			total_cycles += 4 * CYCLE_UNIT;
+			/* ARM64 correctness barrier: branch-controlled loops still expose
+			 * endblock/direct-chain state bugs (Bcc/DBcc can stop early or fall
+			 * through into extension words after a few compiled iterations).  If
+			 * the trace builder encounters such a branch, keep this whole trace in
+			 * the interpreter for now.  This is conservative but lets the JIT
+			 * continue compiling straight-line code elsewhere while preserving
+			 * branch-loop correctness. */
+			const bool current_is_bcc = ((opcode & 0xf000u) == 0x6000u && opcode != 0x6000u);
+			const bool current_is_dbcc = ((opcode & 0xf0f8u) == 0x50c8u);
+			if (current_is_bcc || current_is_dbcc)
+				return;
 			int maxrun_limit = MAXRUN;
 			{
 				static int env_maxrun = -1;

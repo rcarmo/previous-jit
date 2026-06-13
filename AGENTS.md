@@ -179,27 +179,25 @@ Open items:
   * `be3d961` accepts the low ROM mirror in ARM64 bad-PC guards, removing
     the `bad_pc_p` / `flush_icache_hard(n=7)` loop at `0x0000ff02`.
 
-  Current blocker: after the NextBus probe exceptions are handled, pure JIT
-  reaches `PC=0x01007054`, `op=241f` (`MOVE.L (A7)+,D2`) immediately
-  before `RTS` at `0x01007056`.  Isolated opcode tests for `op=241f`
-  pass, but in full boot the fallback/continuation path segfaults in
-  generated code shortly after `JIT_FALLBACK op=241f`.  A temporary trace
-  showed the interpreter fallback itself updates `D2`, `A7`, and m68k PC
-  correctly (`m68kpc=01007056`, `a7=0b03f7b0`), so the remaining issue is
-  native continuation/direct-chain state after stack postincrement and
-  before/around `RTS`.
+  Current blocker: pure-JIT boot now reaches later kernel/SCSI work.  The
+  active failure is in a kernel exception handler around `PC=0x04001e48`:
+  `op=0828` (`BTST.B #4,(A0,...)`) faults because `A0` has become
+  `0x4e71f4d8` before the bit test.  Focused trace shows the handler enters
+  near `0x04001e1e` with `A0=0x040003f8`, then by `0x04001e48` A0 is the
+  bogus `0x4e71f4d8`.  The local code words are:
 
-  Tested and rejected so far:
+  ```
+  04001e1e: 7004 4ef9 0400 1e3a ...
+  04001e3a: 2540 0000 2279 040b 62c4 2069 0028 0828 0004 ...
+  ```
 
-  * hard trace-builder boundaries for `op=241f` + return-family opcodes —
-    under gdb it progressed farther, but normal-speed boot still segfaulted
-    or spun.
-  * exact-execing `0x01007054-0x01007056` — still segfaults immediately
-    after the exact `op=241f` path.
-
-  Next audit target: the generated continuation after fallback stack-pop,
-  especially PC triple canonicalisation, A7/D2 writeback, and the return
-  target consumed by `RTS`/direct chaining.
+  `2279 040b62c4` loads A1 from a kernel global, then `2069 0028` loads
+  A0 from `(A1+0x28)`.  The bogus value therefore looks like stale/corrupt
+  RAM shadow data at that kernel global/structure, not a single bad BTST
+  opcode.  `PREVIOUS_JIT_FULL_RAM_TO_SHADOW=1` did **not** fix it, so the
+  next target is RAM shadow coherence/direct RAM writes around that kernel
+  structure and/or the MOVEM/predecrement handler that sets up the exception
+  frame before this path.
 
 ### Why the JIT looks slow today
 

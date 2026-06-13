@@ -49,8 +49,7 @@ bEnableSCSITest = FALSE
 bVerbose = FALSE
 [HardDisk]
 szImageName0 = ${SOURCE_IMAGE}
-bDiskInserted0 = TRUE
-bWriteProtected0 = TRUE
+bDiskInserted0 = FALSE
 [Floppy]
 bDriveConnected0 = FALSE
 [System]

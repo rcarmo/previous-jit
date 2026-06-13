@@ -138,17 +138,40 @@ old silent path masked.  The fixes so far:
   dump in `set_status()` before `jit_abort()` so future out-of-range
   vregs print the offending opcode handler.
 
+* `0d07d3c` — **DBF codegen + 64-bit branch math**.  Two latent bugs
+  in the gencpu'd `compemu.cpp` branch handlers, exposed once the JIT
+  actually emitted native code:
+
+  1. `op_51c8_0_comp_{ff,nf}` DBF used
+     `test_w_rr(tmp1, tmp2)` with `tmp1==tmp2==src` (which always sets
+     C=0) followed by `register_branch(v1, v2, 5)` (CS = branch if
+     carry set), so the branch was *never* taken.  DBF effectively
+     became "decrement and always fall through", silently breaking
+     every kernel ROM loop that uses dbf (CRC tables, delay loops,
+     polling, etc.).  Replaced with the same `sub_w_ri + register_branch(3)`
+     pattern `compemu_arm.cpp` uses.
+
+  2. `add_l_ri(offs, m68k_pc_offset)` truncated the 64-bit host
+     pointer in `offs` to 32 bits.  Earlier in every Bcc/DBcc/JMP/JSR
+     handler the gencpu'd code does
+     `arm_ADD_l_ri(offs, (uintptr)comp_pc_p); add_l_ri(offs, m68k_pc_offset);`
+     and `add_l_ri`'s ARM64 implementation only handles PC_P in
+     64-bit; for any other vreg it routes to a 32-bit `jnf_ADD_l_imm`,
+     zeroing the high half of the host pointer in `offs`, so
+     `register_branch` ended up with a garbage target.  28 call sites
+     (all 14 DBcc + all 14 Bcc handlers) bulk-rewritten to use
+     `arm_ADD_l_ri` to match `compemu_arm.cpp`.
+
 Open items:
 
-* **Pure JIT bus error in ROM init** at PC=0x01002c70 (CRC/checksum
-  loop with lsl.l/roxr.b/roxr.l/eor.b + a DBF that loops back into
-  MOVE.B (A1)+).  When JIT_RAM=1 the emulator runs a chunk of
-  compiled code, eventually triggers an MMU exception 2, and the
-  kernel pushes the exception frame to `sp=0` because SP isn't
-  initialised this early — the wrap to 0xFFFFFFFC lands in NeXTBus
-  space and bus-errors recursively into a fatal double fault.  The
-  trigger is intermittent across rebuilds; needs an opcode-by-opcode
-  oracle bisection via `tools/jit-oracle-bisect.sh`.
+* **Pure JIT bus error in ROM init** at PC=0x01002c72 (the CRC/
+  checksum outer loop's `move.b (a1)+, d1` after a few dozen
+  iterations).  With the DBF fix above, A1 advances correctly per
+  iteration (verified via PCTRACE) and the outer loop runs, but
+  the boot eventually faults with `addr=0x00020000`, `a2=0x00020000`
+  and a fatal double MMU exception.  A2 acquires `0x00020000` from
+  some earlier mis-compiled block; that's the next codegen bug to
+  bisect via `make jit-oracle-bisect`.
 
 ### Why the JIT looks slow today
 

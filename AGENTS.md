@@ -164,44 +164,42 @@ old silent path masked.  The fixes so far:
 
 Open items:
 
-* **CRC outer-loop D3/branch state after mixed fallback**.  Commit
-  `9256730` fixed the concrete fallback-call bug that made
-  `op_1219` (`move.b (a1)+,d1`) decode its register bits from the m68k
-  PC instead of the opcode; A1 now advances correctly after each
-  fallback (validated with temporary `FALLBACK_AFTER_1219` trace:
-  `a1=01000025`, `01000026`, ...).  With DBF + branch target fixes
-  from `0d07d3c`, the ROM CRC loop now runs much further.
+* **Stack-pop + return continuation after ROM exception probes**.  The
+  earlier CRC-loop blockers are now cleared far enough to reach the next
+  concrete failure:
 
-  Remaining blocker: the CRC outer counter D3 decrements for the first
-  two outer iterations (`0x1ffe2 → 0x1ffe1`) then freezes at
-  `0x0001ffe1` while A1 continues advancing until ROM end
-  (`0x01020000`).  The next `move.b (a1)+,d1` faults at ROM end before
-  SP/VBR are initialised and double-faults pushing an exception frame
-  to `sp=0`.  Isolated opcode oracles for `move.b (a1)+`, `subq.l
-  #1,d3`, and `subq.l+bne` pass, so the remaining issue is not a
-  single arithmetic opcode; it is branch/block state around the native
-  CRC block.  Tested and rejected workarounds:
+  * `9256730` fixed the `op_1219` fallback-call bug (`move.b (a1)+,d1`
+    was called with the m68k PC instead of the opcode and therefore used
+    A2 instead of A1).
+  * `0d07d3c` fixed DBF never-branching plus 64-bit target-pointer
+    truncation in Bcc/DBcc handlers.
+  * `0b8c472` keeps Bcc/DBcc branch-controlled traces in the interpreter
+    path.  Tiny branch-loop oracles now pass: `SUBQ.W+BNE`,
+    `CMP.W+BNE`, and `DBF`.
+  * `be3d961` accepts the low ROM mirror in ARM64 bad-PC guards, removing
+    the `bad_pc_p` / `flush_icache_hard(n=7)` loop at `0x0000ff02`.
 
-  * `B2_JIT_END_BLOCK_ON_FALLBACK=1` — no effect.
-  * Forcing the whole early CRC/compare ranges to `B2_JIT_EXACT_EXEC_PCS`
-    avoids the first double-fault but enters a pathological
-    `flush_icache_hard(n=7)` loop; do not use it.
-  * Forcing all Bcc/DBcc opcodes to the plain interpreter fallback avoids
-    the immediate crash but spins silently in ROM init for 10+ minutes
-    (362-line log stuck at the CRC loop); not viable.
+  Current blocker: after the NextBus probe exceptions are handled, pure JIT
+  reaches `PC=0x01007054`, `op=241f` (`MOVE.L (A7)+,D2`) immediately
+  before `RTS` at `0x01007056`.  Isolated opcode tests for `op=241f`
+  pass, but in full boot the fallback/continuation path segfaults in
+  generated code shortly after `JIT_FALLBACK op=241f`.  A temporary trace
+  showed the interpreter fallback itself updates `D2`, `A7`, and m68k PC
+  correctly (`m68kpc=01007056`, `a7=0b03f7b0`), so the remaining issue is
+  native continuation/direct-chain state after stack postincrement and
+  before/around `RTS`.
 
-  Additional ratchet result: `be3d961` fixed the next exact-island blocker
-  by accepting the low ROM mirror (`ROMBaseHost - ROMBaseMac`) in ARM64
-  bad-PC guards.  That removed the `bad_pc_p` / `flush_icache_hard(n=7)`
-  loop when execution reaches low vector PC `0x0000ff02`.
+  Tested and rejected so far:
 
-  Current next blocker after exacting the early ROM CRC/check ranges:
-  MMU exception at `PC=0x0100645a` (`op=3418`, fault `addr=0x0b040000`)
-  is handled to `newpc=0x0000ff02`, then the low-vector code/data at
-  `0x0000ff04` double-faults while pushing an exception frame with an
-  invalid stack (`sp=0x0afffffe`).  Next audit target is now the ROM
-  exception-path/codegen state around `0x0100645a` and the low-vector
-  transition, not the earlier CRC A1/fallback bug.
+  * hard trace-builder boundaries for `op=241f` + return-family opcodes —
+    under gdb it progressed farther, but normal-speed boot still segfaulted
+    or spun.
+  * exact-execing `0x01007054-0x01007056` — still segfaults immediately
+    after the exact `op=241f` path.
+
+  Next audit target: the generated continuation after fallback stack-pop,
+  especially PC triple canonicalisation, A7/D2 writeback, and the return
+  target consumed by `RTS`/direct chaining.
 
 ### Why the JIT looks slow today
 

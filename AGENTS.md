@@ -190,9 +190,18 @@ Open items:
     the immediate crash but spins silently in ROM init for 10+ minutes
     (362-line log stuck at the CRC loop); not viable.
 
-  Next audit target: `compemu_support_arm.cpp` branch-endblock state
-  emission (`next_pc_p` / `taken_pc_p` / `branch_cc` / `flush(1)`), not
-  the fallback call itself.
+  Additional ratchet result: `be3d961` fixed the next exact-island blocker
+  by accepting the low ROM mirror (`ROMBaseHost - ROMBaseMac`) in ARM64
+  bad-PC guards.  That removed the `bad_pc_p` / `flush_icache_hard(n=7)`
+  loop when execution reaches low vector PC `0x0000ff02`.
+
+  Current next blocker after exacting the early ROM CRC/check ranges:
+  MMU exception at `PC=0x0100645a` (`op=3418`, fault `addr=0x0b040000`)
+  is handled to `newpc=0x0000ff02`, then the low-vector code/data at
+  `0x0000ff04` double-faults while pushing an exception frame with an
+  invalid stack (`sp=0x0afffffe`).  Next audit target is now the ROM
+  exception-path/codegen state around `0x0100645a` and the low-vector
+  transition, not the earlier CRC A1/fallback bug.
 
 ### Why the JIT looks slow today
 

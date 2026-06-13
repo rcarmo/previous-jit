@@ -1116,8 +1116,11 @@ void exec_nostats(void)
 		uintptr ram_limit = ram_base + RAMSize;
 		uintptr rom_base = (uintptr)ROMBaseHost;
 		uintptr rom_limit = rom_base + ROMSize;
+		uintptr low_rom_base = rom_base - (uintptr)ROMBaseMac;
+		uintptr low_rom_limit = low_rom_base + ROMSize;
 		bool valid_host_pc = ((pcp >= ram_base && pcp < ram_limit) ||
-		                      (pcp >= rom_base && pcp < rom_limit));
+		                      (pcp >= rom_base && pcp < rom_limit) ||
+		                      (pcp >= low_rom_base && pcp < low_rom_limit));
 		if (!valid_host_pc || (pcp & 1)) {
 			static int bad_count = 0;
 			uae_u32 safe_pc = regs.pc & ~1u;
@@ -1259,8 +1262,11 @@ void execute_normal(void)
 		uintptr ram_limit = ram_base + RAMSize;
 		uintptr rom_base = (uintptr)ROMBaseHost;
 		uintptr rom_limit = rom_base + ROMSize;
+		uintptr low_rom_base = rom_base - (uintptr)ROMBaseMac;
+		uintptr low_rom_limit = low_rom_base + ROMSize;
 		bool valid_host_pc = ((pcp >= ram_base && pcp < ram_limit) ||
-		                      (pcp >= rom_base && pcp < rom_limit));
+		                      (pcp >= rom_base && pcp < rom_limit) ||
+		                      (pcp >= low_rom_base && pcp < low_rom_limit));
 		if (!valid_host_pc || (pcp & 1)) {
 			static int fix_count = 0;
 			uae_u32 safe_pc = regs.pc & ~1u;

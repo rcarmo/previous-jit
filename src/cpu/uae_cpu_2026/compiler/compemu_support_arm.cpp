@@ -5115,8 +5115,16 @@ int check_for_cache_miss(void)
         uintptr ram_limit = ram_base + RAMSize;
         uintptr rom_base = (uintptr)ROMBaseHost;
         uintptr rom_limit = rom_base + ROMSize;
+        /* The JIT shadow maps the ROM twice: at 0x00000000 for the
+         * reset/low-vector mirror and at ROMBaseMac (0x01000000) for
+         * normal ROM execution.  ROMBaseHost points at the high mirror;
+         * accept the low mirror too or a legitimate PC like 0x0000ff02
+         * flush-loops forever as "bad pc_p". */
+        uintptr low_rom_base = rom_base - (uintptr)ROMBaseMac;
+        uintptr low_rom_limit = low_rom_base + ROMSize;
         bool valid_host_pc = ((pcp >= ram_base && pcp < ram_limit) ||
-                              (pcp >= rom_base && pcp < rom_limit));
+                              (pcp >= rom_base && pcp < rom_limit) ||
+                              (pcp >= low_rom_base && pcp < low_rom_limit));
         if (!valid_host_pc || (pcp & 1)) {
             static int bad_count = 0;
             uae_u32 safe_pc = regs.pc & ~1u;
@@ -5135,7 +5143,8 @@ int check_for_cache_miss(void)
                fall back to interpreter rather than flush-looping. */
             pcp = (uintptr)regs.pc_p;
             valid_host_pc = ((pcp >= ram_base && pcp < ram_limit) ||
-                             (pcp >= rom_base && pcp < rom_limit));
+                             (pcp >= rom_base && pcp < rom_limit) ||
+                             (pcp >= low_rom_base && pcp < low_rom_limit));
             if (!valid_host_pc || (pcp & 1))
                 return 1; /* signal caller to use interpreter */
             return 0;

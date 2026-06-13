@@ -1515,7 +1515,13 @@ void execute_normal(void)
 				(opcode == 0x4850u || opcode == 0x4868u || opcode == 0x4870u ||
 				 opcode == 0x4878u || opcode == 0x4879u || opcode == 0x487au || opcode == 0x487bu);
 			const bool current_is_return = (opcode == 0x4e73u || opcode == 0x4e74u || opcode == 0x4e75u || opcode == 0x4e76u || opcode == 0x4e77u);
-			if (current_is_bcc || current_is_dbcc || current_is_stack_pop_move || current_is_stack_push_pea || current_is_return)
+			/* Immediate bit operations (BTST/BCHG/BCLR/BSET, 0x08xx) have
+			 * extension-word + memory side effects that are still unsafe across
+			 * native continuation; keep the trace in the interpreter. */
+			const bool current_is_immediate_bitop = ((opcode & 0xff00u) == 0x0800u);
+			const bool current_is_ethernet_reset_island = (pc_before_op >= 0x010014a0u && pc_before_op <= 0x010014d0u);
+			const bool current_is_jsr_jmp = ((opcode & 0xffc0u) == 0x4e80u || (opcode & 0xffc0u) == 0x4ec0u);
+			if (current_is_bcc || current_is_dbcc || current_is_stack_pop_move || current_is_stack_push_pea || current_is_return || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp)
 				return;
 			int maxrun_limit = MAXRUN;
 			{

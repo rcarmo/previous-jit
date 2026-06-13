@@ -164,14 +164,23 @@ old silent path masked.  The fixes so far:
 
 Open items:
 
-* **Pure JIT bus error in ROM init** at PC=0x01002c72 (the CRC/
-  checksum outer loop's `move.b (a1)+, d1` after a few dozen
-  iterations).  With the DBF fix above, A1 advances correctly per
-  iteration (verified via PCTRACE) and the outer loop runs, but
-  the boot eventually faults with `addr=0x00020000`, `a2=0x00020000`
-  and a fatal double MMU exception.  A2 acquires `0x00020000` from
-  some earlier mis-compiled block; that's the next codegen bug to
-  bisect via `make jit-oracle-bisect`.
+* **JIT register-tracking across interp fallback boundaries**.  With the
+  DBF and 64-bit branch-math fixes above, the JIT actually emits useful
+  native code for the CRC outer loop, A2 advances correctly per
+  iteration (0 → 0x20000 over ~131K PCTRACE entries), and the boot
+  computes the CRC table.  *But*: A1 stays stuck at 0x01000024 across
+  every outer iteration, even though every iteration starts with
+  `move.b (a1)+, d1` (an interp fallback that should advance A1 by 1).
+  After the CRC table loop finishes, control jumps back to early
+  init (PC=0x0100001e) with d3=0x1ffe1 and a2=0x00020000, then the
+  kernel takes a bus error pushing an exception frame to sp=0.  The
+  symptom is consistent with the JIT cache-tagging A1 as a
+  compile-time constant in the surrounding block and never re-reading
+  the post-fallback value of regs.regs[9] from memory.  Needs a
+  read-modify-write audit of `flush(1)` + `init_comp()` + `cputbl` call
+  in `compemu_support_arm.cpp` around line 6635 (the fallback emit
+  site), specifically: does the next-opcode compile cache the old
+  const-propagated A1 value across the call?
 
 ### Why the JIT looks slow today
 

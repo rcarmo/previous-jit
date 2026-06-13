@@ -6712,6 +6712,17 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         compemu_raw_mov_l_ri(REG_PAR2, (2u << 16) | (opcode & 0xffff));
                         compemu_raw_call((uintptr)jit_trace_pc_hit);
                     }
+                    /* The interpreter handler expects the original 16-bit
+                     * opcode in REG_PAR1/w0.  The calls above reuse REG_PAR1
+                     * for helper arguments (notably
+                     * Uae2026JitPublishFallbackState(pc, opcode)), leaving the
+                     * m68k PC in w0.  Exact addressing-mode handlers decode
+                     * register fields from the opcode argument, so calling
+                     * op_1219 with 0x01002c72 made it use A2 instead of A1:
+                     * move.b (a1)+,d1 faulted at A2=0x00020000 and left A1
+                     * unchanged.  Restore w0 before invoking the interpreter
+                     * fallback. */
+                    compemu_raw_mov_l_ri(REG_PAR1, opcode & 0xffff);
                     compemu_raw_call((uintptr)cputbl[cft_map(opcode)]);
                     if (fallback_call_push_txn)
                         jit_emit_fallback_call_push_txn_commit((uae_u16)opcode);

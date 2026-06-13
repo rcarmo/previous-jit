@@ -164,23 +164,29 @@ old silent path masked.  The fixes so far:
 
 Open items:
 
-* **JIT register-tracking across interp fallback boundaries**.  With the
-  DBF and 64-bit branch-math fixes above, the JIT actually emits useful
-  native code for the CRC outer loop, A2 advances correctly per
-  iteration (0 → 0x20000 over ~131K PCTRACE entries), and the boot
-  computes the CRC table.  *But*: A1 stays stuck at 0x01000024 across
-  every outer iteration, even though every iteration starts with
-  `move.b (a1)+, d1` (an interp fallback that should advance A1 by 1).
-  After the CRC table loop finishes, control jumps back to early
-  init (PC=0x0100001e) with d3=0x1ffe1 and a2=0x00020000, then the
-  kernel takes a bus error pushing an exception frame to sp=0.  The
-  symptom is consistent with the JIT cache-tagging A1 as a
-  compile-time constant in the surrounding block and never re-reading
-  the post-fallback value of regs.regs[9] from memory.  Needs a
-  read-modify-write audit of `flush(1)` + `init_comp()` + `cputbl` call
-  in `compemu_support_arm.cpp` around line 6635 (the fallback emit
-  site), specifically: does the next-opcode compile cache the old
-  const-propagated A1 value across the call?
+* **CRC outer-loop D3/branch state after mixed fallback**.  Commit
+  `9256730` fixed the concrete fallback-call bug that made
+  `op_1219` (`move.b (a1)+,d1`) decode its register bits from the m68k
+  PC instead of the opcode; A1 now advances correctly after each
+  fallback (validated with temporary `FALLBACK_AFTER_1219` trace:
+  `a1=01000025`, `01000026`, ...).  With DBF + branch target fixes
+  from `0d07d3c`, the ROM CRC loop now runs much further.
+
+  Remaining blocker: the CRC outer counter D3 decrements for the first
+  two outer iterations (`0x1ffe2 → 0x1ffe1`) then freezes at
+  `0x0001ffe1` while A1 continues advancing until ROM end
+  (`0x01020000`).  The next `move.b (a1)+,d1` faults at ROM end before
+  SP/VBR are initialised and double-faults pushing an exception frame
+  to `sp=0`.  Isolated opcode oracles for `move.b (a1)+`, `subq.l
+  #1,d3`, and `subq.l+bne` pass, so the remaining issue is not a
+  single arithmetic opcode; it is branch/block state around the native
+  CRC block.  `B2_JIT_END_BLOCK_ON_FALLBACK=1` does not fix it.
+  Forcing the whole early CRC/compare ranges to `B2_JIT_EXACT_EXEC_PCS`
+  avoids the first double-fault but enters a pathological
+  `flush_icache_hard(n=7)` loop, so do not use that as a workaround.
+  Next audit target: `compemu_support_arm.cpp` branch-endblock state
+  emission (`next_pc_p` / `taken_pc_p` / `branch_cc` / `flush(1)`), not
+  the fallback call itself.
 
 ### Why the JIT looks slow today
 

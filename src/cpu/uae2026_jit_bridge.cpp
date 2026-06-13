@@ -1211,6 +1211,13 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
         __exvalue = prb;
         if (__is_catched())
             __poptry();
+        /* Defensive supervisor-stack repair: some native/fallback paths can
+         * arrive at the bridge with SR.S set but the active A7 register still
+         * zero/stale while ISP holds the real supervisor stack.  If we build a
+         * 68040 exception frame with A7=0, the frame push wraps into
+         * 0xfffffffc and immediately double-faults. */
+        if (regs.s && m68k_areg(regs, 7) == 0 && regs.isp >= 0x1000)
+            bridge_set_active_a7(regs.isp);
         if (mmu_restart) {
             regflags = Uae2026JitLastFlags;
             const uae_u32 restart_pc = regs.fault_pc ? regs.fault_pc :

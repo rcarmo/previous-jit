@@ -48,6 +48,8 @@ uae_u32 Uae2026JitCodeHostRingSr[64] = { 0 };
 struct flag_struct Uae2026JitLastFlags = { 0, 0 };
 }
 
+extern "C" void Uae2026JitCanonicalizePcAfterFallback(void);
+
 extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode)
 {
 	regs.fault_pc = pc;
@@ -1209,6 +1211,7 @@ void exec_nostats(void)
 			jit_trace_table_log("TRACEWINJTAB", trace_count + 1, before_pc);
 		}
 		(*cpufunctbl[opcode])(opcode);
+		Uae2026JitCanonicalizePcAfterFallback();
 		if (trace_this) {
 			uae_u32 after_pc = m68k_getpc();
 			trace_count++;
@@ -1492,8 +1495,10 @@ void execute_normal(void)
 				legacy_maybe_begin_call_push_txn(pc_before_op, (uae_u16)opcode);
 			else if (!helper_callsite)
 				legacy_maybe_begin_return_pop_txn(pc_before_op, (uae_u16)opcode);
-			if (!helper_callsite)
+			if (!helper_callsite) {
 				(*cpufunctbl[opcode])(opcode);
+				Uae2026JitCanonicalizePcAfterFallback();
+			}
 			jit_interpreted_op_check_ticks();
 			total_cycles += 4 * CYCLE_UNIT;
 			/* ARM64 correctness barrier: branch-controlled loops still expose
@@ -1506,8 +1511,11 @@ void execute_normal(void)
 			const bool current_is_bcc = ((opcode & 0xf000u) == 0x6000u && opcode != 0x6000u);
 			const bool current_is_dbcc = ((opcode & 0xf0f8u) == 0x50c8u);
 			const bool current_is_stack_pop_move = (opcode == 0x241fu);
+			const bool current_is_stack_push_pea =
+				(opcode == 0x4850u || opcode == 0x4868u || opcode == 0x4870u ||
+				 opcode == 0x4878u || opcode == 0x4879u || opcode == 0x487au || opcode == 0x487bu);
 			const bool current_is_return = (opcode == 0x4e73u || opcode == 0x4e74u || opcode == 0x4e75u || opcode == 0x4e76u || opcode == 0x4e77u);
-			if (current_is_bcc || current_is_dbcc || current_is_stack_pop_move || current_is_return)
+			if (current_is_bcc || current_is_dbcc || current_is_stack_pop_move || current_is_stack_push_pea || current_is_return)
 				return;
 			int maxrun_limit = MAXRUN;
 			{

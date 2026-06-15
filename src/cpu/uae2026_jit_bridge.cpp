@@ -187,103 +187,13 @@ static bool bridge_mmio_addr(uae_u32 addr)
     return addr >= 0x02000000u && addr < 0x02200000u;
 }
 
-static bool bridge_hardclock_csr_addr(uae_u32 addr)
-{
-    return addr >= 0x02116000u && addr <= 0x02116004u;
-}
-
-static bool bridge_finish_mmio_byte_op(uae_u8 result, uae_u32 next_pc)
-{
-    Uae2026JitLivePutByte(regs.mmu_fault_addr, result);
-    SET_ZFLG(result == 0);
-    SET_NFLG((result & 0x80u) != 0);
-    SET_VFLG(0);
-    SET_CFLG(0);
-    m68k_setpc(next_pc);
-    regs.instruction_pc = next_pc;
-    regs.fault_pc = 0;
-    regs.mmu_fault_addr = 0;
-    regs.mmu_effective_addr = 0;
-    return true;
-}
-
 static bool bridge_try_handle_mmio_byte_op(void)
 {
-    const uae_u32 addr = regs.mmu_fault_addr;
-    if (!bridge_mmio_addr(addr))
-        return false;
-    const uae_u16 opcode = (uae_u16)bridge_live_peek_word(regs.fault_pc);
-
-    /* The NeXT hardclock routine writes byte-sized CSR fields through (A0).
-     * JIT direct-memory code faults on these live MMIO stores; execute the
-     * proven byte-store opcodes here using the same live bank side effects as
-     * the interpreter, restricted to the hardclock CSR addresses only. */
-    if (bridge_hardclock_csr_addr(addr) && regs.regs[8] == addr) {
-        if (opcode == 0x4210u) { /* CLR.B (A0) */
-            return bridge_finish_mmio_byte_op(0, regs.fault_pc + 2);
-        }
-        if (opcode == 0x10bcu) { /* MOVE.B #imm,(A0) */
-            const uae_u8 result = (uae_u8)bridge_live_peek_word(regs.fault_pc + 2);
-            return bridge_finish_mmio_byte_op(result, regs.fault_pc + 4);
-        }
-        if ((opcode & 0xfff8u) == 0x1080u) { /* MOVE.B Dn,(A0) */
-            const uae_u8 result = (uae_u8)regs.regs[opcode & 7u];
-            return bridge_finish_mmio_byte_op(result, regs.fault_pc + 2);
-        }
-    }
-
-    if (regs.fault_pc == 0x0401a46eu && opcode == 0x1180u &&
-        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x1800u &&
-        addr == 0x02118004u) { /* MOVE.B D0,(0,A0,D1.L) */
-        return bridge_finish_mmio_byte_op((uae_u8)regs.regs[0], regs.fault_pc + 4);
-    }
-    if (regs.fault_pc == 0x0401a4dcu && opcode == 0x11bcu &&
-        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0005u &&
-        addr == 0x02118001u) { /* MOVE.B #$05,(0,A0,D2.L) */
-        return bridge_finish_mmio_byte_op(0x05, regs.fault_pc + 6);
-    }
-    if (regs.fault_pc == 0x0401a4eeu && opcode == 0x1183u &&
-        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x2800u &&
-        addr == 0x02118001u) { /* MOVE.B D3,(0,A0,D2.L) */
-        return bridge_finish_mmio_byte_op((uae_u8)regs.regs[3], regs.fault_pc + 4);
-    }
-    if (regs.fault_pc == 0x0401a504u && opcode == 0x11bcu &&
-        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0005u &&
-        addr == 0x02118000u) { /* MOVE.B #$05,(0,A0,D2.L) */
-        return bridge_finish_mmio_byte_op(0x05, regs.fault_pc + 6);
-    }
-    if (regs.fault_pc == 0x0401a516u && opcode == 0x1183u &&
-        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x2800u &&
-        addr == 0x02118000u) { /* MOVE.B D3,(0,A0,D2.L) */
-        return bridge_finish_mmio_byte_op((uae_u8)regs.regs[3], regs.fault_pc + 4);
-    }
-    if ((regs.fault_pc == 0x04081bf8u || regs.fault_pc == 0x04081c16u) &&
-        opcode == 0x1140u &&
-        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0008u &&
-        addr == 0x02114108u) { /* MOVE.B D0,(8,A0) */
-        return bridge_finish_mmio_byte_op((uae_u8)regs.regs[0], regs.fault_pc + 4);
-    }
-    if (regs.fault_pc == 0x04019904u && opcode == 0x4228u &&
-        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0008u &&
-        addr == 0x02114108u) { /* CLR.B (8,A0) */
-        return bridge_finish_mmio_byte_op(0, regs.fault_pc + 4);
-    }
-    if (regs.fault_pc == 0x04019a02u && opcode == 0x18bcu &&
-        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0004u &&
-        addr == 0x02114102u) { /* MOVE.B #$04,(A4) */
-        return bridge_finish_mmio_byte_op(0x04, regs.fault_pc + 4);
-    }
-    if (regs.fault_pc == 0x04019a16u && opcode == 0x1741u &&
-        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0002u &&
-        addr == 0x02114102u) { /* MOVE.B D1,(2,A3) */
-        return bridge_finish_mmio_byte_op((uae_u8)regs.regs[1], regs.fault_pc + 4);
-    }
-    if (regs.fault_pc == 0x040819b0u && opcode == 0x422au &&
-        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0002u &&
-        addr == 0x02114102u) { /* CLR.B (2,A2) */
-        return bridge_finish_mmio_byte_op(0, regs.fault_pc + 4);
-    }
-
+    /* MMIO byte/word/long accesses are routed generically by the native bank
+     * dispatch path (Uae2026JitBankRead/WriteByOffset -> Uae2026JitLiveGet/Put*).
+     * Do not emulate individual faulting instructions here; a remaining MMIO
+     * fault means a generated path bypassed the generic bank dispatcher and must
+     * be fixed there rather than with another PC-specific bridge handler. */
     return false;
 }
 

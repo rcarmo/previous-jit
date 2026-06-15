@@ -147,6 +147,12 @@ static inline void jit_poll_interrupt_pins_for_dispatch(void)
 extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value);
 extern "C" void Uae2026JitLivePutLong(uae_u32 addr, uae_u32 value);
+extern "C" uae_u32 Uae2026JitBankGetByteExport(uaecptr addr);
+extern "C" uae_u32 Uae2026JitBankGetWordExport(uaecptr addr);
+extern "C" uae_u32 Uae2026JitBankGetLongExport(uaecptr addr);
+extern "C" void Uae2026JitBankPutByteExport(uaecptr addr, uae_u32 value);
+extern "C" void Uae2026JitBankPutWordExport(uaecptr addr, uae_u32 value);
+extern "C" void Uae2026JitBankPutLongExport(uaecptr addr, uae_u32 value);
 extern "C" void Uae2026JitFastClearLongs(uae_u32 addr, uae_u32 count);
 extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count);
 extern "C" uae_u8 Uae2026JitRtcReadByte(uae_u32 addr);
@@ -4731,12 +4737,12 @@ static inline void writemem(int address, int source, int offset, int size, int t
 {
 	int f=tmp;
 
-	mov_l_rr(f,address);
-	shrl_l_ri(f,16);   /* The index into the mem bank table */
-	mov_l_rm_indexed(f,uae_p32(mem_banks),f,SIZEOF_VOID_P); /* FIXME: is SIZEOF_VOID_P correct? */
-	/* Now f holds a pointer to the actual membank */
-	mov_l_rR(f,f,offset);
-	/* Now f holds the address of the b/w/lput function */
+	switch (offset) {
+	case 3 * SIZEOF_VOID_P: mov_l_ri(f, (uintptr)Uae2026JitBankPutLongExport); break;
+	case 4 * SIZEOF_VOID_P: mov_l_ri(f, (uintptr)Uae2026JitBankPutWordExport); break;
+	case 5 * SIZEOF_VOID_P: mov_l_ri(f, (uintptr)Uae2026JitBankPutByteExport); break;
+	default: mov_l_ri(f, (uintptr)Uae2026JitBankPutByteExport); break;
+	}
 	call_r_02(f,address,source,4,size);
 	forget_about(tmp);
 }
@@ -4745,7 +4751,7 @@ static inline void writemem(int address, int source, int offset, int size, int t
 void writebyte(int address, int source, int tmp)
 {
 #ifdef UAE
-	if ((special_mem & S_WRITE) || distrust_byte())
+	if (true || (special_mem & S_WRITE) || distrust_byte())
 		writemem_special(address, source, 5 * SIZEOF_VOID_P, 1, tmp);
 	else
 #endif
@@ -4756,7 +4762,7 @@ static inline void writeword_general(int address, int source, int tmp,
 	int clobber)
 {
 #ifdef UAE
-	if ((special_mem & S_WRITE) || distrust_word())
+	if (true || (special_mem & S_WRITE) || distrust_word())
 		writemem_special(address, source, 4 * SIZEOF_VOID_P, 2, tmp);
 	else
 #endif
@@ -4777,7 +4783,7 @@ static inline void writelong_general(int address, int source, int tmp,
 	int clobber)
 {
 #ifdef UAE
-	if ((special_mem & S_WRITE) || distrust_long())
+	if (true || (special_mem & S_WRITE) || distrust_long())
 		writemem_special(address, source, 3 * SIZEOF_VOID_P, 4, tmp);
 	else
 #endif
@@ -4842,12 +4848,24 @@ static inline void readmem(int address, int dest, int offset, int size, int tmp)
 {
 	int f=tmp;
 
+	if (offset != 6 * SIZEOF_VOID_P) {
+		switch (offset) {
+		case 0 * SIZEOF_VOID_P: mov_l_ri(f, (uintptr)Uae2026JitBankGetLongExport); break;
+		case 1 * SIZEOF_VOID_P: mov_l_ri(f, (uintptr)Uae2026JitBankGetWordExport); break;
+		case 2 * SIZEOF_VOID_P: mov_l_ri(f, (uintptr)Uae2026JitBankGetByteExport); break;
+		default: mov_l_ri(f, (uintptr)Uae2026JitBankGetByteExport); break;
+		}
+		call_r_11(dest,f,address,size,4);
+		forget_about(tmp);
+		return;
+	}
+
 	mov_l_rr(f,address);
 	shrl_l_ri(f,16);   /* The index into the mem bank table */
 	mov_l_rm_indexed(f,uae_p32(mem_banks),f,SIZEOF_VOID_P); /* FIXME: is SIZEOF_VOID_P correct? */
 	/* Now f holds a pointer to the actual membank */
 	mov_l_rR(f,f,offset);
-	/* Now f holds the address of the b/w/lget function */
+	/* Now f holds the address of the xlateaddr function */
 	call_r_11(dest,f,address,size,4);
 	forget_about(tmp);
 }
@@ -4856,7 +4874,7 @@ static inline void readmem(int address, int dest, int offset, int size, int tmp)
 void readbyte(int address, int dest, int tmp)
 {
 #ifdef UAE
-	if ((special_mem & S_READ) || distrust_byte())
+	if (true || (special_mem & S_READ) || distrust_byte())
 		readmem_special(address, dest, 2 * SIZEOF_VOID_P, 1, tmp);
 	else
 #endif
@@ -4866,7 +4884,7 @@ void readbyte(int address, int dest, int tmp)
 void readword(int address, int dest, int tmp)
 {
 #ifdef UAE
-	if ((special_mem & S_READ) || distrust_word())
+	if (true || (special_mem & S_READ) || distrust_word())
 		readmem_special(address, dest, 1 * SIZEOF_VOID_P, 2, tmp);
 	else
 #endif
@@ -4876,7 +4894,7 @@ void readword(int address, int dest, int tmp)
 void readlong(int address, int dest, int tmp)
 {
 #ifdef UAE
-	if ((special_mem & S_READ) || distrust_long())
+	if (true || (special_mem & S_READ) || distrust_long())
 		readmem_special(address, dest, 0 * SIZEOF_VOID_P, 4, tmp);
 	else
 #endif

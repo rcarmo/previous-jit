@@ -31,6 +31,9 @@
  *
  */
 
+extern "C" uae_u32 Uae2026JitBankReadByOffset(uaecptr addr, uae_u32 offset);
+extern "C" void Uae2026JitBankWriteByOffset(uaecptr addr, uae_u32 value, uae_u32 offset);
+
 extern const uae_u32 ARM_CCR_MAP[] = { 0, ARM_C_FLAG, // 1 C
                                 ARM_V_FLAG, // 2 V
                                 ARM_C_FLAG | ARM_V_FLAG, // 3 VC
@@ -8271,17 +8274,18 @@ MIDFUNC(3,jnf_MEM_READMEMBANK,(W4 dest, RR4 adr, IM8 offset))
 	unlock2(adr);
 	prepare_for_call_2();
 
-	uintptr idx = (uintptr)(&regs.mem_banks) - (uintptr)(&regs);
-	LDR_xXi(REG_WORK2, R_REGSTRUCT, idx);
-	LSR_wwi(REG_WORK1, adr, 16);
-	LDR_xXxLSLi(REG_WORK3, REG_WORK2, REG_WORK1, 1); // 1 means shift by 3
-	LDR_xXi(REG_WORK3, REG_WORK3, offset);
-
-	compemu_raw_call_r(REG_WORK3);
-	// Most bank callbacks return 32-bit values and need upper-bit cleanup.
-	// xlateaddr callback (offset=6*sizeof(void*)) returns a host pointer.
-	if (offset != SIZEOF_VOID_P * 6)
+	if (offset == SIZEOF_VOID_P * 6) {
+		uintptr idx = (uintptr)(&regs.mem_banks) - (uintptr)(&regs);
+		LDR_xXi(REG_WORK2, R_REGSTRUCT, idx);
+		LSR_wwi(REG_WORK1, adr, 16);
+		LDR_xXxLSLi(REG_WORK3, REG_WORK2, REG_WORK1, 1); // 1 means shift by 3
+		LDR_xXi(REG_WORK3, REG_WORK3, offset);
+		compemu_raw_call_r(REG_WORK3);
+	} else {
+		MOV_wi(REG_PAR2, offset);
+		compemu_raw_call((uintptr)Uae2026JitBankReadByOffset);
 		MOV_ww(REG_RESULT, REG_RESULT);
+	}
 
 	live.nat[REG_RESULT].holds[0] = dest;
 	live.nat[REG_RESULT].nholds = 1;
@@ -8306,13 +8310,8 @@ MIDFUNC(3,jnf_MEM_WRITEMEMBANK,(RR4 adr, RR4 source, IM8 offset))
 	unlock2(source);
 	prepare_for_call_2();
 
-	uintptr idx = (uintptr)(&regs.mem_banks) - (uintptr)(&regs);
-	LDR_xXi(REG_WORK2, R_REGSTRUCT, idx);
-	LSR_wwi(REG_WORK1, adr, 16);
-	LDR_xXxLSLi(REG_WORK3, REG_WORK2, REG_WORK1, 1); // 1 means shift by 3
-	LDR_xXi(REG_WORK3, REG_WORK3, offset);
-
-	compemu_raw_call_r(REG_WORK3);
+	MOV_wi(REG_WORK1, offset);
+	compemu_raw_call((uintptr)Uae2026JitBankWriteByOffset);
 }
 MENDFUNC(3,jnf_MEM_WRITEMEMBANK,(RR4 adr, RR4 source, IM8 offset))
 

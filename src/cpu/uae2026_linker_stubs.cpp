@@ -263,6 +263,41 @@ static void Uae2026JitBankPutLong(uaecptr addr, uae_u32 value)
         Uae2026JitPhysPutLong(addr, value);
 }
 
+extern "C" uae_u32 Uae2026JitBankGetByteExport(uaecptr addr) { return Uae2026JitBankGetByte(addr); }
+extern "C" uae_u32 Uae2026JitBankGetWordExport(uaecptr addr) { return Uae2026JitBankGetWord(addr); }
+extern "C" uae_u32 Uae2026JitBankGetLongExport(uaecptr addr) { return Uae2026JitBankGetLong(addr); }
+extern "C" void Uae2026JitBankPutByteExport(uaecptr addr, uae_u32 value) { Uae2026JitBankPutByte(addr, value); }
+extern "C" void Uae2026JitBankPutWordExport(uaecptr addr, uae_u32 value) { Uae2026JitBankPutWord(addr, value); }
+extern "C" void Uae2026JitBankPutLongExport(uaecptr addr, uae_u32 value) { Uae2026JitBankPutLong(addr, value); }
+
+extern "C" uae_u32 Uae2026JitBankReadByOffset(uaecptr addr, uae_u32 offset)
+{
+    if (offset == 0)
+        return Uae2026JitBankGetLong(addr);
+    if (offset == sizeof(void *))
+        return Uae2026JitBankGetWord(addr);
+    if (offset == 2u * sizeof(void *))
+        return Uae2026JitBankGetByte(addr);
+    return Uae2026JitBankGetByte(addr);
+}
+
+extern "C" void Uae2026JitBankWriteByOffset(uaecptr addr, uae_u32 value, uae_u32 offset)
+{
+    if (offset == 3u * sizeof(void *)) {
+        Uae2026JitBankPutLong(addr, value);
+        return;
+    }
+    if (offset == 4u * sizeof(void *)) {
+        Uae2026JitBankPutWord(addr, value);
+        return;
+    }
+    if (offset == 5u * sizeof(void *)) {
+        Uae2026JitBankPutByte(addr, value);
+        return;
+    }
+    Uae2026JitBankPutByte(addr, value);
+}
+
 /* The vendored ARM64 memory-bank emitter indexes a bank structure by raw
  * pointer offsets: lget,wget,bget,lput,wput,bput,xlate/check...  Previous's
  * addrbank has no xlateaddr slot, so RAM/MMU mode gets a private compatible

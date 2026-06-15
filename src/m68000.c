@@ -449,6 +449,20 @@ bool Uae2026OpcodeTestModeHandleExpectedException(int vector)
 	return true;
 }
 
+void Uae2026JitCpuChargeCyclesNoEvents(int cycles)
+{
+	static int lastintr = 0;
+	M68000_AddCycles(cycles);
+	DSP_Run(cycles);
+	i860_Run(cycles);
+	{
+		int intr = intlev();
+		if (intr > regs.intmask || (intr == 7 && intr > lastintr))
+			M68000_SetSpecial(SPCFLAG_INT);
+		lastintr = intr;
+	}
+}
+
 void Uae2026JitCpuCheckTicks(int cycles)
 {
 	static unsigned long trace_count = 0;
@@ -489,6 +503,15 @@ void Uae2026JitCpuCheckTicks(int cycles)
 	}
 	while (PendingInterrupt.time <= 0 && PendingInterrupt.pFunction &&
 		((regs.spcflags & SPCFLAG_STOP) == 0)) {
+		if (PendingInterrupt.pFunction == Main_EventHandlerInterrupt) {
+			CycInt_AcknowledgeInterrupt();
+			CycInt_AddRelativeInterruptUs((1000*1000)/200, 0, INTERRUPT_EVENT_LOOP);
+			continue;
+		}
+		if (tick_handler_calls >= 32) {
+			M68000_SetSpecial(SPCFLAG_INT);
+			break;
+		}
 		tick_handler_calls++;
 		CALL_VAR(PendingInterrupt.pFunction);
 	}

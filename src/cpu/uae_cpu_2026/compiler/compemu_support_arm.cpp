@@ -1048,7 +1048,15 @@ static inline bool jit_restore_barrier(const char *token)
 
 static inline bool jit_force_exact_exec_nostats_opcode(uae_u16 op)
 {
-	(void)op;
+	/* MOVE <ea>,SR changes supervisor/user stack selection, interrupt mask and
+	   condition-code state together.  The native runtime helper can leave a
+	   compiled trace with stale flag/stack metadata; the NeXT RTC/SCSI boot path
+	   then misbranches out of the SR-save/restore loop and vectors into the early
+	   kernel exception handler before its globals are initialised.  Keep the full
+	   0x46c0-0x46ff MV2SR.W opcode family on the exact restored path while
+	   RAM/MMU dispatch is active. */
+	if (jit_allow_ram_dispatch_env() && (op & 0xffc0u) == 0x46c0u)
+		return true;
 	return false;
 }
 
@@ -1063,6 +1071,16 @@ static inline bool jit_force_exact_exec_nostats_pc(uae_u32 pc)
 	   caller block during RAM-JIT experiments. Its first instruction reads/writes
 	   a stack argument in the 0x0bxxxxxx area. */
 	if (jit_allow_ram_dispatch_env() && rom_pc >= 0x010024ccu && rom_pc <= 0x010024fcu)
+		return true;
+	/* KMS/monitor command helper must run through the runtime helper so writes
+	   to 0x0200e003/0x0200e004 produce the expected live status side effects. */
+	if (jit_allow_ram_dispatch_env() && rom_pc >= 0x01008e4au && rom_pc <= 0x01008e94u)
+		return true;
+	/* Kernel VM/page-table helpers: mixed native/fallback execution can retain
+	   stale address registers, while the interpreter keeps A0/A1 canonical. */
+	if (jit_allow_ram_dispatch_env() && pc >= 0x04077180u && pc <= 0x04077220u)
+		return true;
+	if (jit_allow_ram_dispatch_env() && pc >= 0x04077480u && pc <= 0x040775a0u)
 		return true;
 	return false;
 }
@@ -1175,6 +1193,15 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 		(table68k[op].mnemo == i_TRAP || table68k[op].mnemo == i_TRAPV ||
 		 table68k[op].mnemo == i_TRAPcc || table68k[op].mnemo == i_FTRAPcc ||
 		 table68k[op].mnemo == i_BKPT || table68k[op].mnemo == i_ILLG))
+		return true;
+
+	/* MOVE <ea>,SR changes supervisor/user stack selection, interrupt mask and
+	   condition-code state together.  The native runtime helper can leave a
+	   compiled trace with stale flag/stack metadata; the NeXT RTC/SCSI boot path
+	   then misbranches out of the SR-save/restore loop and vectors into the early
+	   kernel exception handler before its globals are initialised.  Keep MV2SR.W
+	   as an exact restored opcode while RAM/MMU dispatch is active. */
+	if (jit_allow_ram_dispatch_env() && table68k[op].mnemo == i_MV2SR && table68k[op].size == sz_word)
 		return true;
 
 	/* Environment-gated barriers for debugging (B2_JIT_RESTORE_BARRIERS). */
@@ -5583,7 +5610,12 @@ void build_comp(void)
 #endif
 
     regs.raw_cputbl_count = raw_cputbl_count;
-    regs.mem_banks = (uintptr)mem_banks;
+    /* The Previous bridge stamps regs.mem_banks with either the live physical
+       addrbank table or the RAM/MMU-compatible bank table.  Do not overwrite a
+       bridge-provided table with the vendored static table, whose entries are
+       intentionally NULL in this integration and will crash native bank calls. */
+    if (!regs.mem_banks)
+        regs.mem_banks = (uintptr)mem_banks;
     regs.cache_tags = (uintptr)cache_tags;
 
     jit_log("<JIT compiler> : building compiler function tables");
@@ -6179,6 +6211,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             optlev = 1;
         }
 #endif
+        bool forced_interpreter_barrier = false;
         if (optlev == 0) { /* No need to actually translate */
 #if defined(CPU_AARCH64)
           jit_diag_optlev0_blocks++;
@@ -6207,7 +6240,6 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             taken_pc_p = 0;
             branch_cc = 0; // Only to be initialized. Will be set together with next_pc_p
             jit_force_runtime_pc_endblock = false;
-            bool forced_interpreter_barrier = false;
 
             comp_pc_p = (uae_u8*)pc_hist[0].location;
             init_comp();
@@ -7044,11 +7076,13 @@ endblock_done:
 
         compemu_raw_jmp((uintptr)bi->direct_handler);
 
-        /* Structural diagnostic mode: route all successor handoffs through the
-           non-direct wrapper so every chained entry revalidates pc/cache state.
-           This also covers the existing optlev=0 case, where exec_nostats()
-           requires fully canonical in-memory guest state. */
-        if (!was_comp || jit_force_nondirect_handler_env() || jit_force_nondirect_target_env((uintptr)bi->pc_p)) {
+        /* Blocks that stop at an exact/interpreter barrier (notably full-SR
+           writes) must not be entered through the direct handler: direct entry
+           can chain from stale cache-tag state immediately after exec_nostats()
+           returns.  Route them through the non-direct wrapper so the PC/cache
+           state is revalidated before execution. */
+        if (forced_interpreter_barrier || !was_comp ||
+            jit_force_nondirect_handler_env() || jit_force_nondirect_target_env((uintptr)bi->pc_p)) {
             set_dhtu(bi, bi->handler);
         }
 

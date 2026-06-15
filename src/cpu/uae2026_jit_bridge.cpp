@@ -57,6 +57,10 @@ extern "C" uintptr_t Uae2026JitRamMmuBankTable(void);
 extern "C" void Uae2026JitSyncRamToShadow(void);
 extern "C" uae_u32 Uae2026JitMmuXlateData(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
+extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr);
+extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value);
+extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value);
+extern "C" void Uae2026JitLivePutLong(uae_u32 addr, uae_u32 value);
 extern "C" uae_u32 Uae2026JitLastInstructionPc;
 extern "C" uae_u32 Uae2026JitLastSr;
 extern "C" uae_u32 Uae2026JitLastA7;
@@ -171,6 +175,177 @@ static uae_u32 bridge_live_peek_word(uae_u32 addr)
 static uae_u32 bridge_live_peek_long(uae_u32 addr)
 {
     return bridge_live_readable(addr, 4) ? bridge_live_peek_word(addr) << 16 | bridge_live_peek_word(addr + 2) : 0;
+}
+
+static bool bridge_video_alias_addr(uae_u32 addr)
+{
+    return addr >= 0x0b000000u && addr < 0x0b040000u;
+}
+
+static bool bridge_mmio_addr(uae_u32 addr)
+{
+    return addr >= 0x02000000u && addr < 0x02200000u;
+}
+
+static bool bridge_hardclock_csr_addr(uae_u32 addr)
+{
+    return addr >= 0x02116000u && addr <= 0x02116004u;
+}
+
+static bool bridge_finish_mmio_byte_op(uae_u8 result, uae_u32 next_pc)
+{
+    Uae2026JitLivePutByte(regs.mmu_fault_addr, result);
+    SET_ZFLG(result == 0);
+    SET_NFLG((result & 0x80u) != 0);
+    SET_VFLG(0);
+    SET_CFLG(0);
+    m68k_setpc(next_pc);
+    regs.instruction_pc = next_pc;
+    regs.fault_pc = 0;
+    regs.mmu_fault_addr = 0;
+    regs.mmu_effective_addr = 0;
+    return true;
+}
+
+static bool bridge_try_handle_mmio_byte_op(void)
+{
+    const uae_u32 addr = regs.mmu_fault_addr;
+    if (!bridge_mmio_addr(addr))
+        return false;
+    const uae_u16 opcode = (uae_u16)bridge_live_peek_word(regs.fault_pc);
+
+    /* The NeXT hardclock routine writes byte-sized CSR fields through (A0).
+     * JIT direct-memory code faults on these live MMIO stores; execute the
+     * proven byte-store opcodes here using the same live bank side effects as
+     * the interpreter, restricted to the hardclock CSR addresses only. */
+    if (bridge_hardclock_csr_addr(addr) && regs.regs[8] == addr) {
+        if (opcode == 0x4210u) { /* CLR.B (A0) */
+            return bridge_finish_mmio_byte_op(0, regs.fault_pc + 2);
+        }
+        if (opcode == 0x10bcu) { /* MOVE.B #imm,(A0) */
+            const uae_u8 result = (uae_u8)bridge_live_peek_word(regs.fault_pc + 2);
+            return bridge_finish_mmio_byte_op(result, regs.fault_pc + 4);
+        }
+        if ((opcode & 0xfff8u) == 0x1080u) { /* MOVE.B Dn,(A0) */
+            const uae_u8 result = (uae_u8)regs.regs[opcode & 7u];
+            return bridge_finish_mmio_byte_op(result, regs.fault_pc + 2);
+        }
+    }
+
+    if (regs.fault_pc == 0x0401a46eu && opcode == 0x1180u &&
+        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x1800u &&
+        addr == 0x02118004u) { /* MOVE.B D0,(0,A0,D1.L) */
+        return bridge_finish_mmio_byte_op((uae_u8)regs.regs[0], regs.fault_pc + 4);
+    }
+    if (regs.fault_pc == 0x0401a4dcu && opcode == 0x11bcu &&
+        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0005u &&
+        addr == 0x02118001u) { /* MOVE.B #$05,(0,A0,D2.L) */
+        return bridge_finish_mmio_byte_op(0x05, regs.fault_pc + 6);
+    }
+    if (regs.fault_pc == 0x0401a4eeu && opcode == 0x1183u &&
+        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x2800u &&
+        addr == 0x02118001u) { /* MOVE.B D3,(0,A0,D2.L) */
+        return bridge_finish_mmio_byte_op((uae_u8)regs.regs[3], regs.fault_pc + 4);
+    }
+    if (regs.fault_pc == 0x0401a504u && opcode == 0x11bcu &&
+        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0005u &&
+        addr == 0x02118000u) { /* MOVE.B #$05,(0,A0,D2.L) */
+        return bridge_finish_mmio_byte_op(0x05, regs.fault_pc + 6);
+    }
+    if (regs.fault_pc == 0x0401a516u && opcode == 0x1183u &&
+        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x2800u &&
+        addr == 0x02118000u) { /* MOVE.B D3,(0,A0,D2.L) */
+        return bridge_finish_mmio_byte_op((uae_u8)regs.regs[3], regs.fault_pc + 4);
+    }
+    if ((regs.fault_pc == 0x04081bf8u || regs.fault_pc == 0x04081c16u) &&
+        opcode == 0x1140u &&
+        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0008u &&
+        addr == 0x02114108u) { /* MOVE.B D0,(8,A0) */
+        return bridge_finish_mmio_byte_op((uae_u8)regs.regs[0], regs.fault_pc + 4);
+    }
+    if (regs.fault_pc == 0x04019904u && opcode == 0x4228u &&
+        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0008u &&
+        addr == 0x02114108u) { /* CLR.B (8,A0) */
+        return bridge_finish_mmio_byte_op(0, regs.fault_pc + 4);
+    }
+    if (regs.fault_pc == 0x04019a02u && opcode == 0x18bcu &&
+        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0004u &&
+        addr == 0x02114102u) { /* MOVE.B #$04,(A4) */
+        return bridge_finish_mmio_byte_op(0x04, regs.fault_pc + 4);
+    }
+    if (regs.fault_pc == 0x04019a16u && opcode == 0x1741u &&
+        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0002u &&
+        addr == 0x02114102u) { /* MOVE.B D1,(2,A3) */
+        return bridge_finish_mmio_byte_op((uae_u8)regs.regs[1], regs.fault_pc + 4);
+    }
+    if (regs.fault_pc == 0x040819b0u && opcode == 0x422au &&
+        (uae_u16)bridge_live_peek_word(regs.fault_pc + 2) == 0x0002u &&
+        addr == 0x02114102u) { /* CLR.B (2,A2) */
+        return bridge_finish_mmio_byte_op(0, regs.fault_pc + 4);
+    }
+
+    return false;
+}
+
+static bool bridge_finish_video_alias_word_op(uae_u32 result)
+{
+    SET_ZFLG(((uae_u16)result) == 0);
+    SET_NFLG((result & 0x8000u) != 0);
+    SET_VFLG(0);
+    SET_CFLG(0);
+    m68k_setpc(regs.fault_pc + 2);
+    regs.instruction_pc = regs.fault_pc + 2;
+    regs.fault_pc = 0;
+    regs.mmu_fault_addr = 0;
+    regs.mmu_effective_addr = 0;
+    return true;
+}
+
+static bool bridge_finish_video_alias_long_op(uae_u32 result)
+{
+    SET_ZFLG(result == 0);
+    SET_NFLG((result & 0x80000000u) != 0);
+    SET_VFLG(0);
+    SET_CFLG(0);
+    m68k_setpc(regs.fault_pc + 2);
+    regs.instruction_pc = regs.fault_pc + 2;
+    regs.fault_pc = 0;
+    regs.mmu_fault_addr = 0;
+    regs.mmu_effective_addr = 0;
+    return true;
+}
+
+static bool bridge_try_handle_video_alias_word_op(void)
+{
+    const uae_u32 addr = regs.mmu_fault_addr;
+    if (!bridge_video_alias_addr(addr))
+        return false;
+    const uae_u16 opcode = (uae_u16)bridge_live_peek_word(regs.fault_pc);
+    if (regs.fault_pc == 0x04084dcau && opcode == 0x4650u) { /* NOT.W (A0) */
+        const uae_u16 result = (uae_u16)~(uae_u16)Uae2026JitLiveGetWord(addr);
+        Uae2026JitLivePutWord(addr, result);
+        return bridge_finish_video_alias_word_op(result);
+    }
+    if (regs.fault_pc == 0x040846e0u && opcode == 0x3080u) { /* MOVE.W D0,(A0) */
+        const uae_u16 result = (uae_u16)regs.regs[0];
+        Uae2026JitLivePutWord(addr, result);
+        return bridge_finish_video_alias_word_op(result);
+    }
+    if (regs.fault_pc == 0x04086526u && opcode == 0x3283u) { /* MOVE.W D3,(A1) */
+        const uae_u16 result = (uae_u16)regs.regs[3];
+        Uae2026JitLivePutWord(addr, result);
+        return bridge_finish_video_alias_word_op(result);
+    }
+    if (regs.fault_pc >= 0x0408670eu && regs.fault_pc <= 0x04086760u && opcode == 0x24d9u) { /* MOVE.L (A1)+,(A2)+ */
+        if (!bridge_video_alias_addr(regs.regs[9]) || !bridge_video_alias_addr(regs.regs[10]))
+            return false;
+        const uae_u32 result = Uae2026JitLiveGetLong(regs.regs[9]);
+        Uae2026JitLivePutLong(regs.regs[10], result);
+        regs.regs[9] += 4;
+        regs.regs[10] += 4;
+        return bridge_finish_video_alias_long_op(result);
+    }
+    return false;
 }
 
 static bool bridge_shadow_host_readable(const uae_u8 *host, size_t bytes)
@@ -1178,6 +1353,13 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
     jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
     jit_regflags.x    = regflags.x;
 
+    /* Native bank-dispatch helpers dereference regs.mem_banks directly.  Keep
+     * this stamped at every bridge entry because compiler/bootstrap paths can
+     * reset the shared regs fields while rebuilding or invalidating the JIT. */
+    regs.mem_banks = env_truthy("PREVIOUS_UAE2026_JIT_RAM", false)
+        ? Uae2026JitRamMmuBankTable()
+        : (uintptr_t)mem_banks;
+
     /* Update shadow ROM/VRAM/RAM before JIT dispatch so direct reads see current state. */
     Uae2026JitBridgeSyncOpcodeTestShadow();
     sync_shadow_video();
@@ -1304,6 +1486,10 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
             if (m68k_getpc() != regs.fault_pc)
                 m68k_setpc(regs.fault_pc);
         }
+        if (prb == 2 && bridge_try_handle_mmio_byte_op())
+            return;
+        if (prb == 2 && bridge_try_handle_video_alias_word_op())
+            return;
         {
             static unsigned long exc_log_count = 0;
             const uae_u32 pc = m68k_getpc();

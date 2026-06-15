@@ -281,6 +281,38 @@ __inline__ void byteput (uaecptr addr, uae_u32 b)
 }
 #endif
 
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+uae_u32 Uae2026JitLiveBankGetByte(uae_u32 addr)
+{
+	return byteget(addr);
+}
+
+uae_u32 Uae2026JitLiveBankGetWord(uae_u32 addr)
+{
+	return wordget(addr);
+}
+
+uae_u32 Uae2026JitLiveBankGetLong(uae_u32 addr)
+{
+	return longget(addr);
+}
+
+void Uae2026JitLiveBankPutByte(uae_u32 addr, uae_u32 value)
+{
+	byteput(addr, value);
+}
+
+void Uae2026JitLiveBankPutWord(uae_u32 addr, uae_u32 value)
+{
+	wordput(addr, value);
+}
+
+void Uae2026JitLiveBankPutLong(uae_u32 addr, uae_u32 value)
+{
+	longput(addr, value);
+}
+#endif
+
 
 /* Some prototypes: */
 void SDL_Quit(void);

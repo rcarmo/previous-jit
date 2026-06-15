@@ -1154,6 +1154,11 @@ void exec_nostats(void)
 #endif
 	static unsigned long trace_count = 0;
 	for (;;) {
+#if defined(CPU_AARCH64)
+		jit_maybe_apply_runtime_helpers();
+		if (SPCFLAGS_TEST(SPCFLAG_ALL))
+			return;
+#endif
 		uae_u32 before_pc = m68k_getpc();
 		uae_u32 opcode = jit_fetch_opcode_for_current_pc(before_pc);
 		Uae2026JitMmuTxnCommit();
@@ -1400,13 +1405,24 @@ void execute_normal(void)
 					uaecptr a0v = m68k_areg(regs, 0);
 					uaecptr a3v = m68k_areg(regs, 3);
 					fprintf(stderr,
-						"PCTMEM %08x m1e4=%08x m1e8=%08x m20c=%08x m40b0334=%08x m40c31b0=%08x ma0m4=%08x ma3=%08x ma3p4=%08x\n",
+						"PCTMEM %08x m1e4=%08x m1e8=%08x m20c=%08x m40b0334=%08x m40b62c4=%08x m40b62ec=%08x "
+						"vec24=%08x vec25=%08x vec26=%08x vec27=%08x vec28=%08x vec29=%08x vec30=%08x vec31=%08x "
+						"ma0m4=%08x ma3=%08x ma3p4=%08x\n",
 						pc,
 						(unsigned)get_long(0x1e4),
 						(unsigned)get_long(0x1e8),
 						(unsigned)get_long(0x20c),
 						(unsigned)get_long(0x040b0334),
-						(unsigned)get_long(0x040c31b0),
+						(unsigned)get_long(0x040b62c4),
+						(unsigned)get_long(0x040b62ec),
+						(unsigned)get_long(regs.vbr + 4 * 24),
+						(unsigned)get_long(regs.vbr + 4 * 25),
+						(unsigned)get_long(regs.vbr + 4 * 26),
+						(unsigned)get_long(regs.vbr + 4 * 27),
+						(unsigned)get_long(regs.vbr + 4 * 28),
+						(unsigned)get_long(regs.vbr + 4 * 29),
+						(unsigned)get_long(regs.vbr + 4 * 30),
+						(unsigned)get_long(regs.vbr + 4 * 31),
 						(unsigned)get_long(a0v >= 4 ? a0v - 4 : a0v),
 						(unsigned)get_long(a3v),
 						(unsigned)get_long(a3v + 4));

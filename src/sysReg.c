@@ -359,6 +359,14 @@ void IntRegStatRead(void) {
     IoMem_WriteLong(IoAccessCurrentAddress & IO_SEG_MASK, intStat);
 }
 
+Uint32 Uae2026JitReadIntRegStat(void) {
+    return intStat;
+}
+
+void Uae2026JitWriteIntRegStat(Uint32 value) {
+    intStat = value;
+}
+
 void IntRegStatWrite(void) {
     intStat = IoMem_ReadLong(IoAccessCurrentAddress & IO_SEG_MASK);
 }
@@ -412,6 +420,14 @@ int get_interrupt_level(void) {
 
 void IntRegMaskRead(void) {
 	IoMem_WriteLong(IoAccessCurrentAddress & IO_SEG_MASK,intMask);
+}
+
+Uint32 Uae2026JitReadIntRegMask(void) {
+    return intMask;
+}
+
+void Uae2026JitWriteIntRegMask(Uint32 value) {
+    intMask = value;
 }
 
 void IntRegMaskWrite(void) {

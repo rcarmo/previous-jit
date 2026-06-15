@@ -546,7 +546,15 @@ STATIC_INLINE void compemu_raw_jmp_pc_tag(void)
 	idx = (uintptr)&regs.cache_tags - (uintptr)&regs;
 	LDR_xXi(REG_WORK2, R_REGSTRUCT, idx);
 	LDR_xXxLSLi(REG_WORK1, REG_WORK2, REG_WORK1, 3);
-	BR_x(REG_WORK1);
+	{
+		uae_u32 *branch_have_handler = (uae_u32*)get_target();
+		CBNZ_xi(REG_WORK1, 0);
+		uae_u32 *branch_fallback = (uae_u32*)get_target();
+		B_i(0);
+		write_jmp_target(branch_have_handler, (uintptr)get_target());
+		BR_x(REG_WORK1);
+		write_jmp_target(branch_fallback, (uintptr)popall_execute_normal);
+	}
 }
 
 STATIC_INLINE void compemu_raw_maybe_cachemiss(void)
@@ -677,7 +685,15 @@ LOWFUNC(NONE,NONE,2,compemu_raw_endblock_pc_inreg,(RR4 rr_pc, IM32 cycles))
 	uintptr offs = (uintptr)(&regs.cache_tags) - (uintptr)&regs;
 	LDR_xXi(REG_WORK1, R_REGSTRUCT, offs);
 	LDR_xXxLSLi(REG_WORK1, REG_WORK1, rr_pc, 3);
-	BR_x(REG_WORK1);
+	{
+		uae_u32 *branch_have_handler = (uae_u32*)get_target();
+		CBNZ_xi(REG_WORK1, 0);
+		uae_u32 *branch_fallback = (uae_u32*)get_target();
+		B_i(0);
+		write_jmp_target(branch_have_handler, (uintptr)get_target());
+		BR_x(REG_WORK1);
+		write_jmp_target(branch_fallback, (uintptr)popall_execute_normal);
+	}
 }
 LENDFUNC(NONE,NONE,2,compemu_raw_endblock_pc_inreg,(RR4 rr_pc, IM32 cycles))
 

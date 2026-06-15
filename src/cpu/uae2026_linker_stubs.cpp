@@ -31,6 +31,54 @@ extern "C" {
     void    prev_read_table68k(void)                 __asm__("read_table68k");
 }
 
+extern "C" {
+    uae_u32 Uae2026JitLiveBankGetByte(uae_u32 addr);
+    uae_u32 Uae2026JitLiveBankGetLong(uae_u32 addr);
+    void Uae2026JitLiveBankPutByte(uae_u32 addr, uae_u32 value);
+    void Uae2026JitLiveBankPutLong(uae_u32 addr, uae_u32 value);
+}
+
+static uae_u32 uae2026_jit_last_non_boot_vbr = 0;
+static uae_u32 uae2026_jit_last_non_stack_rom_global = 0;
+
+static inline bool uae2026_jit_boot_stack_vbr(uae_u32 vbr)
+{
+    return vbr >= 0x0b000000u && vbr < 0x0b040000u;
+}
+
+static inline bool uae2026_jit_boot_stack_ptr(uae_u32 ptr)
+{
+    return ptr >= 0x0b000000u && ptr < 0x0b040000u;
+}
+
+extern "C" void Uae2026JitRomVbrGlobalRemember(uae_u32 value)
+{
+    if (value && !uae2026_jit_boot_stack_ptr(value))
+        uae2026_jit_last_non_stack_rom_global = value;
+}
+
+extern "C" uae_u32 Uae2026JitRomVbrGlobalCanonicalForReturn(uae_u32 value, uae_u32 retpc)
+{
+    (void)retpc;
+    if (uae2026_jit_boot_stack_ptr(value) && uae2026_jit_last_non_stack_rom_global) {
+        const uae_u32 live_status_ptr = Uae2026JitLiveBankGetLong(value + 0x19cu);
+        if (live_status_ptr < 0x02000000u || live_status_ptr >= 0x02200000u) {
+            const uae_u32 canonical_status_ptr = Uae2026JitLiveBankGetLong(uae2026_jit_last_non_stack_rom_global + 0x19cu);
+            if (canonical_status_ptr >= 0x02000000u && canonical_status_ptr < 0x02200000u)
+                Uae2026JitLiveBankPutLong(value + 0x19cu, canonical_status_ptr);
+        }
+    }
+    Uae2026JitRomVbrGlobalRemember(value);
+    return value;
+}
+
+extern "C" uae_u32 Uae2026JitRomVbrGlobalLookupBase(void)
+{
+    if (uae2026_jit_boot_stack_vbr(regs.vbr) && uae2026_jit_last_non_boot_vbr)
+        return uae2026_jit_last_non_boot_vbr;
+    return regs.vbr;
+}
+
 void MakeSR(void)               { prev_MakeSR(); }
 void MakeFromSR(void)           { prev_MakeFromSR(); }
 void Exception(int nr, uaecptr addr) { (void)addr; prev_Exception_1arg(nr); }
@@ -134,24 +182,58 @@ static inline bool Uae2026JitRuntimeMmuEnabled(void)
     return regs.mmu_enabled != 0;
 }
 
+static bool Uae2026JitVideoAliasRange(uae_u32 addr, uae_u32 bytes, uae_u32 *offset_out, int *mwf_out);
+extern "C" void Uae2026JitSyncVideoRangeToShadow(uae_u32 addr, uae_u32 bytes);
+extern "C" {
+    uae_u32 Uae2026JitLiveBankGetByte(uae_u32 addr);
+    uae_u32 Uae2026JitLiveBankGetWord(uae_u32 addr);
+    uae_u32 Uae2026JitLiveBankGetLong(uae_u32 addr);
+    void Uae2026JitLiveBankPutByte(uae_u32 addr, uae_u32 value);
+    void Uae2026JitLiveBankPutWord(uae_u32 addr, uae_u32 value);
+    void Uae2026JitLiveBankPutLong(uae_u32 addr, uae_u32 value);
+}
+
+static inline bool Uae2026JitVideoReadOffset(uae_u32 addr, uae_u32 bytes, uae_u32 *off)
+{
+    return Uae2026JitVideoAliasRange(addr, bytes, off, nullptr);
+}
+
+static inline bool Uae2026JitMmioLiveRange(uae_u32 addr)
+{
+    return addr >= 0x02000000u && addr < 0x02200000u;
+}
+
 static uae_u32 Uae2026JitBankGetByte(uaecptr addr)
 {
+    uae_u32 off = 0;
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 1, &off))
+        return Uae2026JitLiveBankGetByte(addr);
     return Uae2026JitRuntimeMmuEnabled() ? Uae2026JitMmuGetByte(addr) : Uae2026JitPhysGetByte(addr);
 }
 
 static uae_u32 Uae2026JitBankGetWord(uaecptr addr)
 {
+    uae_u32 off = 0;
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 2, &off))
+        return Uae2026JitLiveBankGetWord(addr);
     return Uae2026JitRuntimeMmuEnabled() ? Uae2026JitMmuGetWord(addr) : Uae2026JitPhysGetWord(addr);
 }
 
 static uae_u32 Uae2026JitBankGetLong(uaecptr addr)
 {
+    uae_u32 off = 0;
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 4, &off))
+        return Uae2026JitLiveBankGetLong(addr);
     return Uae2026JitRuntimeMmuEnabled() ? Uae2026JitMmuGetLong(addr) : Uae2026JitPhysGetLong(addr);
 }
 
 static void Uae2026JitBankPutByte(uaecptr addr, uae_u32 value)
 {
-    if (Uae2026JitRuntimeMmuEnabled())
+    uae_u32 off = 0;
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 1, &off)) {
+        Uae2026JitLiveBankPutByte(addr, value);
+        Uae2026JitSyncVideoRangeToShadow(addr, 1);
+    } else if (Uae2026JitRuntimeMmuEnabled())
         Uae2026JitMmuPutByte(addr, value);
     else
         Uae2026JitPhysPutByte(addr, value);
@@ -159,7 +241,11 @@ static void Uae2026JitBankPutByte(uaecptr addr, uae_u32 value)
 
 static void Uae2026JitBankPutWord(uaecptr addr, uae_u32 value)
 {
-    if (Uae2026JitRuntimeMmuEnabled())
+    uae_u32 off = 0;
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 2, &off)) {
+        Uae2026JitLiveBankPutWord(addr, value);
+        Uae2026JitSyncVideoRangeToShadow(addr, 2);
+    } else if (Uae2026JitRuntimeMmuEnabled())
         Uae2026JitMmuPutWord(addr, value);
     else
         Uae2026JitPhysPutWord(addr, value);
@@ -167,7 +253,11 @@ static void Uae2026JitBankPutWord(uaecptr addr, uae_u32 value)
 
 static void Uae2026JitBankPutLong(uaecptr addr, uae_u32 value)
 {
-    if (Uae2026JitRuntimeMmuEnabled())
+    uae_u32 off = 0;
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 4, &off)) {
+        Uae2026JitLiveBankPutLong(addr, value);
+        Uae2026JitSyncVideoRangeToShadow(addr, 4);
+    } else if (Uae2026JitRuntimeMmuEnabled())
         Uae2026JitMmuPutLong(addr, value);
     else
         Uae2026JitPhysPutLong(addr, value);
@@ -180,6 +270,8 @@ static void Uae2026JitBankPutLong(uaecptr addr, uae_u32 value)
 typedef uae_u32 (*Uae2026JitBankGetFunc)(uaecptr);
 typedef void (*Uae2026JitBankPutFunc)(uaecptr, uae_u32);
 typedef uintptr_t (*Uae2026JitBankXlateFunc)(uaecptr);
+static bool Uae2026JitVideoAliasRange(uae_u32 addr, uae_u32 bytes, uae_u32 *offset_out, int *mwf_out);
+extern "C" void Uae2026JitSyncVideoRangeToShadow(uae_u32 addr, uae_u32 bytes);
 struct Uae2026JitBankCompat {
     Uae2026JitBankGetFunc lget, wget, bget;
     Uae2026JitBankPutFunc lput, wput, bput;
@@ -242,6 +334,11 @@ static uintptr_t Uae2026JitBankXlate(uaecptr addr)
         return 0;
     if (Uae2026JitRuntimeMmuEnabled())
         addr = Uae2026JitMmuXlateData(addr);
+    uae_u32 off = 0;
+    if (Uae2026JitVideoReadOffset(addr, 1, &off)) {
+        extern uae_u8 NEXTVideo[];
+        return (uintptr_t)(NEXTVideo + off);
+    }
     return (uintptr_t)(jit_MEMBaseDiff + addr);
 }
 
@@ -410,38 +507,72 @@ extern "C" void Uae2026JitSyncRamToShadow(void)
     Uae2026JitSyncRamRangeToShadow(0x04000000u, 64u * 1024u * 1024u);
 }
 
+extern "C" {
+    uae_u32 Uae2026JitReadIntRegStat(void);
+    uae_u32 Uae2026JitReadIntRegMask(void);
+    void Uae2026JitWriteIntRegStat(uae_u32 value);
+    void Uae2026JitWriteIntRegMask(uae_u32 value);
+    uae_u32 Uae2026JitLiveBankGetByte(uae_u32 addr);
+    uae_u32 Uae2026JitLiveBankGetWord(uae_u32 addr);
+    uae_u32 Uae2026JitLiveBankGetLong(uae_u32 addr);
+    void Uae2026JitLiveBankPutByte(uae_u32 addr, uae_u32 value);
+    void Uae2026JitLiveBankPutWord(uae_u32 addr, uae_u32 value);
+    void Uae2026JitLiveBankPutLong(uae_u32 addr, uae_u32 value);
+}
+
 extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr)
 {
+    uae_u32 off = 0;
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 1, &off))
+        return Uae2026JitLiveBankGetByte(addr);
     return Uae2026JitPhysGetByte(addr);
 }
 
 extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr)
 {
+    uae_u32 off = 0;
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 2, &off))
+        return Uae2026JitLiveBankGetWord(addr);
     return Uae2026JitPhysGetWord(addr);
 }
 
 extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr)
 {
+    uae_u32 off = 0;
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 4, &off))
+        return Uae2026JitLiveBankGetLong(addr);
     return Uae2026JitPhysGetLong(addr);
 }
 
 extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value)
 {
-    Uae2026JitPhysPutByte(addr, value);
+    uae_u32 off = 0;
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 1, &off))
+        Uae2026JitLiveBankPutByte(addr, value);
+    else
+        Uae2026JitPhysPutByte(addr, value);
     Uae2026JitSyncRamRangeToShadow(addr, 1);
     Uae2026JitSyncVideoRangeToShadow(addr, 1);
 }
 
 extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value)
 {
-    Uae2026JitPhysPutWord(addr, value);
+    uae_u32 off = 0;
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 2, &off))
+        Uae2026JitLiveBankPutWord(addr, value);
+    else
+        Uae2026JitPhysPutWord(addr, value);
     Uae2026JitSyncRamRangeToShadow(addr, 2);
     Uae2026JitSyncVideoRangeToShadow(addr, 2);
 }
 
 extern "C" void Uae2026JitLivePutLong(uae_u32 addr, uae_u32 value)
 {
-    Uae2026JitPhysPutLong(addr, value);
+    uae_u32 off = 0;
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 4, &off))
+        Uae2026JitLiveBankPutLong(addr, value);
+    else
+        Uae2026JitPhysPutLong(addr, value);
     Uae2026JitSyncRamRangeToShadow(addr, 4);
     Uae2026JitSyncVideoRangeToShadow(addr, 4);
 }
@@ -578,7 +709,11 @@ int m68k_move2c(int reg, uae_u32 *val)
     case 7: regs.dtt1 = *val & 0xffffe364u; mmu_tt_modified(); break;
     case 8: break;
     case 0x800: regs.usp = *val; break;
-    case 0x801: regs.vbr = *val; break;
+    case 0x801:
+        regs.vbr = *val;
+        if (*val && !uae2026_jit_boot_stack_vbr(*val))
+            uae2026_jit_last_non_boot_vbr = *val;
+        break;
     case 0x802: regs.caar = *val; break;
     case 0x803: regs.msp = *val; if (regs.m == 1) regs.regs[15] = regs.msp; break;
     case 0x804: regs.isp = *val; if (regs.m == 0) regs.regs[15] = regs.isp; break;

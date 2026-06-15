@@ -99,6 +99,7 @@ extern void jit_one_tick(void);
 extern "C" bool mmu_restart;
 extern "C" uae_u16 mmu_opcode;
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
+extern "C" void Uae2026JitCpuChargeCyclesNoEvents(int cycles);
 extern "C" bool Uae2026OpcodeTestModeActive(void);
 extern "C" uae_u32 Uae2026JitMmuFetchOpcode(uae_u32 pc);
 extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode);
@@ -287,9 +288,29 @@ static inline void jit_charge_rom_delay_ticks(uae_u32 arg)
 	uint64_t ticks64 = (uint64_t)arg * 25u;
 	if (ticks64 < 1u)
 		ticks64 = 1u;
-	if (ticks64 > 10000000u)
-		ticks64 = 10000000u;
-	Uae2026JitCpuCheckTicks((int)ticks64);
+	if (ticks64 > 2500u)
+		ticks64 = 2500u;
+	Uae2026JitCpuChargeCyclesNoEvents((int)ticks64);
+}
+
+extern "C" uae_u32 Uae2026JitRomVbrGlobalLookupBase(void);
+extern "C" void Uae2026JitRomVbrGlobalRemember(uae_u32 value);
+extern "C" uae_u32 Uae2026JitRomVbrGlobalCanonicalForReturn(uae_u32 value, uae_u32 retpc);
+
+static inline bool jit_emulate_rom_vbr_global_setter(uae_u32 pc)
+{
+	if (pc != 0x010003b6)
+		return false;
+	/* ROM helper: MOVEC VBR,A0; MOVE.L 4(SP),4(A0); RTS.  Keep this paired
+	   with the fast lookup helper below so the JIT always sees the canonical
+	   ROM global value even if exception/boot-stack transitions temporarily
+	   overwrite the low vector-table slot. */
+	const uae_u32 vbr = Uae2026JitRomVbrGlobalLookupBase();
+	const uae_u32 value = Uae2026JitLiveGetLong(regs.regs[15] + 4);
+	regs.regs[8] = vbr;
+	Uae2026JitLivePutLong(vbr + 4, value);
+	Uae2026JitRomVbrGlobalRemember(value);
+	return jit_fast_return_from_subroutine();
 }
 
 static inline bool jit_emulate_rom_vbr_global_lookup(uae_u32 pc)
@@ -300,8 +321,11 @@ static inline bool jit_emulate_rom_vbr_global_lookup(uae_u32 pc)
 	   Keep this as a native runtime helper in RAM-JIT mode because the normal
 	   compiled/fallback mixed path can keep stale A0 in the register allocator
 	   after MOVEC2 writes A0 through the canonical regs array. */
-	regs.regs[8] = regs.vbr;
-	regs.regs[0] = Uae2026JitLiveGetLong(regs.vbr + 4);
+	const uae_u32 ret = Uae2026JitLiveGetLong(regs.regs[15]);
+	const uae_u32 vbr = Uae2026JitRomVbrGlobalLookupBase();
+	const uae_u32 value = Uae2026JitRomVbrGlobalCanonicalForReturn(Uae2026JitLiveGetLong(vbr + 4), ret);
+	regs.regs[8] = vbr;
+	regs.regs[0] = value;
 	return jit_fast_return_from_subroutine();
 }
 
@@ -310,9 +334,11 @@ extern "C" bool jit_op_rom_vbr_global_lookup_callsite(uae_u32 pc, uae_u32 retpc)
 	if (!jit_allow_ram_dispatch_env())
 		return false;
 	(void)pc;
-	regs.regs[8] = regs.vbr;
-	regs.regs[0] = Uae2026JitLiveGetLong(regs.vbr + 4);
-	jit_set_guest_pc_fast(retpc ? retpc : (pc + 6));
+	const uae_u32 vbr = Uae2026JitRomVbrGlobalLookupBase();
+	regs.regs[8] = vbr;
+	const uae_u32 dstpc = retpc ? retpc : (pc + 6);
+	regs.regs[0] = Uae2026JitRomVbrGlobalCanonicalForReturn(Uae2026JitLiveGetLong(vbr + 4), dstpc);
+	jit_set_guest_pc_fast(dstpc);
 	return true;
 }
 
@@ -499,7 +525,8 @@ static inline void jit_maybe_apply_runtime_helpers(void)
 		return;
 	uae_u32 pc = m68k_getpc();
 	uae_u16 op = get_iword(0);
-	if (jit_emulate_rom_vbr_global_lookup(pc) ||
+	if (jit_emulate_rom_vbr_global_setter(pc) ||
+		jit_emulate_rom_vbr_global_lookup(pc) ||
 		jit_emulate_rom_rtc_write_byte(pc) ||
 		jit_emulate_rom_rtc_read_byte(pc) ||
 		jit_emulate_rom_delay_call(pc) ||

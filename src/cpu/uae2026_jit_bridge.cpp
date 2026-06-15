@@ -188,19 +188,14 @@ static bool bridge_mmio_addr(uae_u32 addr)
     return addr >= 0x02000000u && addr < 0x02200000u;
 }
 
-static bool bridge_hardclock_page_addr(uae_u32 addr)
-{
-    return addr >= 0x02116000u && addr < 0x02117000u;
-}
-
 static bool bridge_try_handle_mmio_byte_op(void)
 {
     const uae_u32 addr = regs.mmu_fault_addr;
-    if (!bridge_hardclock_page_addr(addr) || regs.fault_pc == 0)
+    if (!bridge_mmio_addr(addr) || regs.fault_pc == 0)
         return false;
 
-    /* Generic hardclock/IO-page model for native paths that still bypass the
-     * JIT bank helpers and fault on direct shadow memory.  Do not hand-decode
+    /* Generic NeXT MMIO model for native paths that still bypass the JIT
+     * bank helpers and fault on direct shadow memory.  Do not hand-decode
      * per-PC instructions here: restore the architectural PC and delegate the
      * single faulting opcode to Previous's normal interpreter function table,
      * whose byte/word/long accesses already go through the live addrbanks. */

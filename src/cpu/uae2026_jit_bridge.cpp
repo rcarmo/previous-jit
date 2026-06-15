@@ -56,6 +56,7 @@ extern uintptr_t jit_MEMBaseDiff;
 extern "C" uintptr_t Uae2026JitRamMmuBankTable(void);
 extern "C" void Uae2026JitSyncRamToShadow(void);
 extern "C" uae_u32 Uae2026JitMmuXlateData(uae_u32 addr);
+extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr);
 extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value);
@@ -187,14 +188,39 @@ static bool bridge_mmio_addr(uae_u32 addr)
     return addr >= 0x02000000u && addr < 0x02200000u;
 }
 
+static bool bridge_hardclock_page_addr(uae_u32 addr)
+{
+    return addr >= 0x02116000u && addr < 0x02117000u;
+}
+
 static bool bridge_try_handle_mmio_byte_op(void)
 {
-    /* MMIO byte/word/long accesses are routed generically by the native bank
-     * dispatch path (Uae2026JitBankRead/WriteByOffset -> Uae2026JitLiveGet/Put*).
-     * Do not emulate individual faulting instructions here; a remaining MMIO
-     * fault means a generated path bypassed the generic bank dispatcher and must
-     * be fixed there rather than with another PC-specific bridge handler. */
-    return false;
+    const uae_u32 addr = regs.mmu_fault_addr;
+    if (!bridge_hardclock_page_addr(addr) || regs.fault_pc == 0)
+        return false;
+
+    /* Generic hardclock/IO-page model for native paths that still bypass the
+     * JIT bank helpers and fault on direct shadow memory.  Do not hand-decode
+     * per-PC instructions here: restore the architectural PC and delegate the
+     * single faulting opcode to Previous's normal interpreter function table,
+     * whose byte/word/long accesses already go through the live addrbanks. */
+    const uae_u32 pc = regs.fault_pc;
+    const uae_u16 opcode = (uae_u16)bridge_live_peek_word(pc);
+    cpuop_func *handler = cpufunctbl[opcode];
+    if (!handler)
+        return false;
+
+    regs.fault_pc = 0;
+    regs.mmu_fault_addr = 0;
+    regs.mmu_effective_addr = 0;
+    regs.instruction_pc = pc;
+    mmu_restart = false;
+    mmu_opcode = 0xffffu;
+    m68k_setpc(pc);
+    handler(opcode);
+    jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
+    jit_regflags.x = regflags.x;
+    return true;
 }
 
 static bool bridge_finish_video_alias_word_op(uae_u32 result)

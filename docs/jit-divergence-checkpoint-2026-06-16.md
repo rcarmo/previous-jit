@@ -70,3 +70,42 @@ These were tested and reverted because they did not fix the ordering divergence 
 The bug is a first control-flow/timing split before `0409b11e`: pure JIT enters an allocator/page-fault path before the interpreter reaches the scheduler/current-thread initializer at `040a2c8e/040a2a96`.
 
 The next useful work is to compare PC/state traces earlier than the `04381222` allocator/global zeroing point and find the first branch/control-flow difference that causes JIT to enter the `0409b11e` path prematurely.
+
+## Additional allocator/free-list comparison (later 2026-06-16)
+
+Persistent traces were collected in `build-vnc/verify-04381222.log` (JIT) and
+`build-vnc/interp-alloc-trace.log` (interpreter).  Normalizing `REQ_WRITE` lines
+from the common `04381222` allocator/global initialization point shows:
+
+- JIT and interpreter allocator/free-list writes match in data for the JIT trace
+  overlap; the first visible difference in that overlap is only `spc`:
+  - JIT: `spc=00000000`
+  - interpreter: `spc=00000008`
+- The interpreter then continues after the overlap and successfully cycles the
+  free list through:
+  - `0409b12a -> 040b3026 = 1071a000`
+  - `0409b130 -> 040b302e = 00000001`
+  - then subsequent pages (`1071a630`, `1071ac60`, ...)
+- The JIT faults on the first store that initializes the page-memory backing the
+  `1071a000` insertion:
+
+```text
+0409b11e: MOVE.L $040b3026,(A0)
+A0 = 1071a000
+```
+
+This means the allocator path itself is not JIT-only: interpreter also reaches
+this allocator/free-list code before current-thread initialization.  The next
+root-cause target is why JIT's MMU/page state faults when initializing
+`1071a000`, while the interpreter can initialize and insert that page into the
+free list and continue.
+
+Rejected after this comparison:
+
+- Broad masked-`SPCFLAG_INT` preservation/serviceability patches: these avoid the
+  old fault path but stall at the early hardware-test banner.
+- Hardcoded/current-thread repair remains invalid and must not be used.
+
+Next useful direction: compare MMU/page-table state at the interpreter's
+successful `1071a000` initialization against JIT's `0409b11e` fault, focusing on
+MMU translation/protection rather than scheduler-current-thread symptoms.

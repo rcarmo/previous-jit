@@ -105,3 +105,23 @@ blocks and need more than a predicate tweak:
 ```
 These require the branch-loop / stack-frame native-continuation correctness work
 (separate, larger specs) and should follow the BTST predicate fix.
+
+---
+
+## VERIFICATION OUTCOME (implemented + tested, then reverted)
+
+Implemented the one-line EA-mode guard and ran the oracle. Result:
+
+- **Correct in isolation:** `op=0800` trace-barrier skips → 0; the BTST now
+  compiles through (block `0409f520` `len 24→25`).
+- **Impact ≠ predicted −3119:** the dominant pattern is `BTST`→`Bcc`, so blocks
+  **rebind** to the trailing `Bcc` barrier (`0409f520`: `op=0800`→`op=6706`) and
+  still fall back. The binding barrier is the `Bcc`, not the `BTST`. Skipped
+  **block count** barely changes.
+- **Oracle unreliable here:** the full-window sweep showed NEW intermittent
+  `mismatch=1` on neighbor MVSR2 blocks (`0409ecbe`, `0409ec70`: D0 differs by
+  the N bit, `2600↔2608`), traced to commit `0990ac8` + the verifier flag-layout
+  seam (below), NOT to the BTST change.
+
+**Decision:** reverted (unvalidatable until the oracle seam is fixed). The fix is
+still correct; re-land it after the oracle fix lands.

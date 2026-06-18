@@ -1539,8 +1539,14 @@ void execute_normal(void)
 			const bool current_is_ethernet_reset_island = (pc_before_op >= 0x010014a0u && pc_before_op <= 0x010014d0u);
 			const bool current_is_jsr_jmp = ((opcode & 0xffc0u) == 0x4e80u || (opcode & 0xffc0u) == 0x4ec0u);
 			const bool trace_barrier_op = current_is_bcc || current_is_dbcc || current_is_stack_pop_move || current_is_stack_push_pea || current_is_return || current_is_link_unlk || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp;
-			if (trace_barrier_op && !verify_this_block)
+			if (trace_barrier_op) {
+				if (verify_this_block) {
+					fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d skipped=trace_barrier pc=%08x op=%04x\n",
+						(unsigned)verify_block_pc, blocklen, (unsigned)pc_before_op, (unsigned)(opcode & 0xffffu));
+					jit_block_verify_entry_reset();
+				}
 				return;
+			}
 			int maxrun_limit = MAXRUN;
 			{
 				static int env_maxrun = -1;
@@ -1550,7 +1556,7 @@ void execute_normal(void)
 				}
 				maxrun_limit = env_maxrun;
 			}
-			bool must_end = (verify_this_block && trace_barrier_op) || helper_callsite || __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
+			bool must_end = helper_callsite || __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
 			if (!must_end && end_block(opcode)) {
 				uintptr new_pcp = (uintptr)regs.pc_p;
 				uintptr blk_start = (uintptr)pc_hist[0].location;

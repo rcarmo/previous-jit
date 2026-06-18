@@ -697,37 +697,43 @@ static void jit_block_verify_entry_capture(uae_u32 block_pc)
 
 static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, const jit_block_verify_snapshot *actual, uae_u32 block_pc, int blocklen)
 {
-    bool mismatch = false;
-    if (memcmp(&expected->regs, &actual->regs, sizeof(regs)) != 0)
-        mismatch = true;
-    if (memcmp(&expected->flags, &actual->flags, sizeof(regflags)) != 0)
-        mismatch = true;
-    if (!mismatch && memcmp(expected->mem, actual->mem, expected->mem_size) != 0)
-        mismatch = true;
+    bool regs_mismatch = memcmp(expected->regs.regs, actual->regs.regs, sizeof(expected->regs.regs)) != 0;
+    bool ctrl_mismatch = expected->regs.pc != actual->regs.pc ||
+        expected->regs.sr != actual->regs.sr || expected->regs.spcflags != actual->regs.spcflags ||
+        expected->regs.usp != actual->regs.usp || expected->regs.isp != actual->regs.isp ||
+        expected->regs.msp != actual->regs.msp || expected->regs.vbr != actual->regs.vbr ||
+        expected->regs.sfc != actual->regs.sfc || expected->regs.dfc != actual->regs.dfc;
+    bool flags_mismatch = expected->flags.nzcv != actual->flags.nzcv || expected->flags.x != actual->flags.x;
+    bool mem_mismatch = memcmp(expected->mem, actual->mem, expected->mem_size) != 0;
+    bool mismatch = regs_mismatch || ctrl_mismatch || flags_mismatch || mem_mismatch;
     if (!mismatch) {
-        if (jit_block_verify_run_count <= 20)
-            fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d mismatch=0\n", (unsigned)block_pc, blocklen);
+        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d mismatch=0\n", (unsigned)block_pc, blocklen);
         return;
     }
-    if (jit_block_verify_log_count >= 20)
-        return;
 
-    fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d mismatch=1\n", (unsigned)block_pc, blocklen);
+    fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d mismatch=1 regs=%d ctrl=%d flags=%d mem=%d\n",
+        (unsigned)block_pc, blocklen, regs_mismatch ? 1 : 0, ctrl_mismatch ? 1 : 0,
+        flags_mismatch ? 1 : 0, mem_mismatch ? 1 : 0);
     for (int i = 0; i < 16; i++) {
         if (expected->regs.regs[i] != actual->regs.regs[i]) {
             fprintf(stderr, "  reg[%d] interp=%08x native=%08x\n", i,
                 (unsigned)expected->regs.regs[i], (unsigned)actual->regs.regs[i]);
         }
     }
-    if (expected->regs.pc != actual->regs.pc || expected->regs.fault_pc != actual->regs.fault_pc ||
-        expected->regs.pc_p != actual->regs.pc_p || expected->regs.pc_oldp != actual->regs.pc_oldp ||
-        expected->regs.sr != actual->regs.sr || expected->regs.spcflags != actual->regs.spcflags) {
+    if (ctrl_mismatch) {
         fprintf(stderr,
-            "  pc interp=%08x/%p/%p native=%08x/%p/%p sr interp=%04x native=%04x spc interp=%08x native=%08x\n",
+            "  pc interp=%08x/%p/%p native=%08x/%p/%p fault_pc interp=%08x native=%08x sr interp=%04x native=%04x spc interp=%08x native=%08x usp interp=%08x native=%08x isp interp=%08x native=%08x msp interp=%08x native=%08x vbr interp=%08x native=%08x sfc interp=%08x native=%08x dfc interp=%08x native=%08x\n",
             (unsigned)expected->regs.pc, (void*)expected->regs.pc_p, (void*)expected->regs.pc_oldp,
             (unsigned)actual->regs.pc, (void*)actual->regs.pc_p, (void*)actual->regs.pc_oldp,
+            (unsigned)expected->regs.fault_pc, (unsigned)actual->regs.fault_pc,
             (unsigned)expected->regs.sr, (unsigned)actual->regs.sr,
-            (unsigned)expected->regs.spcflags, (unsigned)actual->regs.spcflags);
+            (unsigned)expected->regs.spcflags, (unsigned)actual->regs.spcflags,
+            (unsigned)expected->regs.usp, (unsigned)actual->regs.usp,
+            (unsigned)expected->regs.isp, (unsigned)actual->regs.isp,
+            (unsigned)expected->regs.msp, (unsigned)actual->regs.msp,
+            (unsigned)expected->regs.vbr, (unsigned)actual->regs.vbr,
+            (unsigned)expected->regs.sfc, (unsigned)actual->regs.sfc,
+            (unsigned)expected->regs.dfc, (unsigned)actual->regs.dfc);
     }
     if (expected->flags.nzcv != actual->flags.nzcv || expected->flags.x != actual->flags.x) {
         fprintf(stderr, "  flags interp nzcv=%08x x=%08x native nzcv=%08x x=%08x\n",

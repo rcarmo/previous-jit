@@ -1472,7 +1472,7 @@ void execute_normal(void)
 		   traces one instruction; inhibiting here starves the 60Hz timer
 		   and prevents the Mac OS Device Manager from completing async I/O. */
 		/* tick_inhibit = false; — already false from compile_block */
-		uae_u32 verify_block_pc = get_virtual_address((uae_u8*)regs.pc_p);
+		uae_u32 verify_block_pc = m68k_getpc();
 		const bool verify_this_block = !jit_block_verify_reentrant && jit_verify_block_target_pc(verify_block_pc);
 		if (verify_this_block)
 			jit_block_verify_entry_capture(verify_block_pc);
@@ -1538,7 +1538,8 @@ void execute_normal(void)
 			const bool current_is_immediate_bitop = ((opcode & 0xff00u) == 0x0800u);
 			const bool current_is_ethernet_reset_island = (pc_before_op >= 0x010014a0u && pc_before_op <= 0x010014d0u);
 			const bool current_is_jsr_jmp = ((opcode & 0xffc0u) == 0x4e80u || (opcode & 0xffc0u) == 0x4ec0u);
-			if (current_is_bcc || current_is_dbcc || current_is_stack_pop_move || current_is_stack_push_pea || current_is_return || current_is_link_unlk || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp)
+			const bool trace_barrier_op = current_is_bcc || current_is_dbcc || current_is_stack_pop_move || current_is_stack_push_pea || current_is_return || current_is_link_unlk || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp;
+			if (trace_barrier_op && !verify_this_block)
 				return;
 			int maxrun_limit = MAXRUN;
 			{
@@ -1549,7 +1550,7 @@ void execute_normal(void)
 				}
 				maxrun_limit = env_maxrun;
 			}
-			bool must_end = helper_callsite || __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
+			bool must_end = (verify_this_block && trace_barrier_op) || helper_callsite || __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
 			if (!must_end && end_block(opcode)) {
 				uintptr new_pcp = (uintptr)regs.pc_p;
 				uintptr blk_start = (uintptr)pc_hist[0].location;
@@ -1569,7 +1570,7 @@ void execute_normal(void)
 			if (must_end) {
 #if defined(CPU_AARCH64)
 				tick_inhibit = false;
-				uae_u32 block_pc = get_virtual_address((uae_u8*)pc_hist[0].location);
+				uae_u32 block_pc = verify_this_block ? verify_block_pc : get_virtual_address((uae_u8*)pc_hist[0].location);
 				{
 					static int trace_log = 0;
 					if (0 && trace_log++ < 50)

@@ -2077,6 +2077,24 @@ extern "C" void jit_op_mvsr2(void)
     }
 
     MakeSR();
+    /* MakeSR() resolves to the interpreter build that reads the condition
+     * codes from regflags using FLAGBIT_Z=14 (cznv layout).  The JIT writes
+     * its flags into regflags.nzcv using the ARM64 NZCV layout
+     * (N=bit31, Z=bit30, C=bit29, V=bit28; X held in regflags.x at bit29).
+     * When MOVE.W SR,<ea> is reached straight from JIT-set flags, MakeSR()
+     * therefore drops/relocates the CCR bits.  Rebuild the low 5 SR bits
+     * directly from the JIT's own layout so the value matches the
+     * interpreter result. */
+    {
+        const uae_u32 nz = regflags.nzcv;
+        const uae_u16 ccr =
+            (uae_u16)((((regflags.x >> 29) & 1) << 4) | /* X -> SR bit 4 */
+                      (((nz >> 31) & 1) << 3) |         /* N -> SR bit 3 */
+                      (((nz >> 30) & 1) << 2) |         /* Z -> SR bit 2 */
+                      (((nz >> 28) & 1) << 1) |         /* V -> SR bit 1 */
+                      ((nz >> 29) & 1));                /* C -> SR bit 0 */
+        regs.sr = (uae_u16)((regs.sr & ~0x1f) | ccr);
+    }
     value = is_word ? (regs.sr & 0xffff) : (regs.sr & 0x00ff);
 
     if (is_mem) {

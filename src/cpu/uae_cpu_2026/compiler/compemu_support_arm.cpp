@@ -635,6 +635,7 @@ struct jit_block_verify_snapshot {
 static bool jit_block_verify_reentrant = false;
 static bool jit_block_verify_compile_active = false;
 static uae_u32 jit_block_verify_compile_pc = 0xffffffffu;
+static bool jit_block_verify_actual_exact_exec = false;
 static unsigned long jit_block_verify_log_count = 0;
 static unsigned long jit_block_verify_run_count = 0;
 static jit_block_verify_snapshot jit_block_verify_entry_state = {};
@@ -695,7 +696,10 @@ static void jit_block_verify_entry_capture(uae_u32 block_pc)
     jit_block_verify_entry_pc = block_pc;
 }
 
-static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, const jit_block_verify_snapshot *actual, uae_u32 block_pc, int blocklen)
+static inline uae_u16 ccr_from_cznv(uae_u32 cz, uae_u32 xw){return (uae_u16)((((xw>>8)&1)<<4)|(((cz>>15)&1)<<3)|(((cz>>14)&1)<<2)|(((cz>>0)&1)<<1)|((cz>>8)&1));}
+static inline uae_u16 ccr_from_nzcv(uae_u32 nz, uae_u32 xw){return (uae_u16)((((xw>>29)&1)<<4)|(((nz>>31)&1)<<3)|(((nz>>30)&1)<<2)|(((nz>>28)&1)<<1)|((nz>>29)&1));}
+
+static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, const jit_block_verify_snapshot *actual, uae_u32 block_pc, int blocklen, bool actual_is_nzcv)
 {
     bool regs_mismatch = memcmp(expected->regs.regs, actual->regs.regs, sizeof(expected->regs.regs)) != 0;
     bool ctrl_mismatch = expected->regs.pc != actual->regs.pc ||
@@ -703,7 +707,10 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
         expected->regs.usp != actual->regs.usp || expected->regs.isp != actual->regs.isp ||
         expected->regs.msp != actual->regs.msp || expected->regs.vbr != actual->regs.vbr ||
         expected->regs.sfc != actual->regs.sfc || expected->regs.dfc != actual->regs.dfc;
-    bool flags_mismatch = expected->flags.nzcv != actual->flags.nzcv || expected->flags.x != actual->flags.x;
+    uae_u16 exp_ccr = ccr_from_cznv(expected->flags.nzcv, expected->flags.x);
+    uae_u16 act_ccr = actual_is_nzcv ? ccr_from_nzcv(actual->flags.nzcv, actual->flags.x)
+                                     : ccr_from_cznv(actual->flags.nzcv, actual->flags.x);
+    bool flags_mismatch = exp_ccr != act_ccr;
     bool mem_mismatch = memcmp(expected->mem, actual->mem, expected->mem_size) != 0;
     bool mismatch = regs_mismatch || ctrl_mismatch || flags_mismatch || mem_mismatch;
     if (!mismatch) {
@@ -790,11 +797,18 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     jit_block_verify_snapshot_restore(&jit_block_verify_entry_state);
     regs.spcflags = 0;
     InterruptFlags = 0;
+    jit_block_verify_actual_exact_exec = true;   /* safe default: cznv until proven native */
     jit_block_verify_compile_active = true;
     jit_block_verify_compile_pc = block_pc;
     compile_block(pc_hist, blocklen, total_cycles);
     jit_block_verify_compile_active = false;
     jit_block_verify_compile_pc = 0xffffffffu;
+
+    const bool actual_is_nzcv = !jit_block_verify_actual_exact_exec;
+    /* No entry conversion (Fix B dropped): a native block that reads its entry
+       CCR after an interpreter predecessor genuinely mis-reads cznv-as-nzcv in
+       REAL execution too. The verifier must REPORT that, not mask it. Fix A
+       (exec-mode-aware CCR compare) decodes 'actual' per its real layout. */
 
     countdown = -1;
     jit_block_verify_reentrant = true;
@@ -802,7 +816,7 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     jit_block_verify_reentrant = false;
 
     if (jit_block_verify_snapshot_capture(&native)) {
-        jit_block_verify_compare(&interp, &native, block_pc, blocklen);
+        jit_block_verify_compare(&interp, &native, block_pc, blocklen, actual_is_nzcv);
         jit_block_verify_snapshot_free(&native);
     }
 
@@ -7091,6 +7105,8 @@ endblock_done:
             jit_force_nondirect_handler_env() || jit_force_nondirect_target_env((uintptr)bi->pc_p)) {
             set_dhtu(bi, bi->handler);
         }
+        if (jit_block_verify_compile_active && block_m68k_pc == jit_block_verify_compile_pc)
+            jit_block_verify_actual_exact_exec = (optlev == 0) || forced_interpreter_barrier;
 
 
 

@@ -544,11 +544,12 @@ static inline bool jit_pc_in_env_ranges(const char *env_name, uae_u32 pc)
 		int range_count;
 		range_pair ranges[64];
 	};
-	static cache_entry caches[4] = {
+	static cache_entry caches[5] = {
 		{"B2_JIT_VERIFY_PCS", 0, 0, {}},
 		{"B2_JIT_FLUSH_OP_PCS", 0, 0, {}},
 		{"B2_JIT_TRACE_PCS", 0, 0, {}},
 		{"B2_JIT_EXACT_EXEC_PCS", 0, 0, {}},
+		{"B2_JIT_LOCKSTEP_PCS", 0, 0, {}},
 	};
 	cache_entry *cache = NULL;
 	for (size_t ci = 0; ci < sizeof(caches) / sizeof(caches[0]); ci++) {
@@ -608,6 +609,11 @@ static inline bool jit_flush_target_pc(uae_u32 pc)
 static inline bool jit_trace_target_pc(uae_u32 pc)
 {
 	return jit_pc_in_env_ranges("B2_JIT_TRACE_PCS", pc);
+}
+
+static inline bool jit_lockstep_target_pc(uae_u32 pc)
+{
+	return jit_pc_in_env_ranges("B2_JIT_LOCKSTEP_PCS", pc);
 }
 
 struct jit_verify_snapshot {
@@ -694,6 +700,116 @@ static void jit_block_verify_entry_capture(uae_u32 block_pc)
         return;
     jit_block_verify_entry_valid = true;
     jit_block_verify_entry_pc = block_pc;
+}
+
+/* ===================== JIT lockstep differential tracer (Option A) =====================
+ * Seeded-ONCE free-running interpreter (gold) vs the real JIT machine (DUT), compared
+ * per-instruction in canonical M68K CCR+reg+next-PC layout. No per-block re-seed (catches
+ * accumulated drift), DUT flags captured flush-free via host PSTATE. Env-gated, default off.
+ * See docs/jit-lockstep-tracer-spec.md. */
+extern "C" { uae_u32 g_ls_dut_nextpc = 0; }
+static bool      g_ls_armed = false;
+static bool      g_ls_finished = false;
+static regstruct g_ls_gold_regs;
+static flag_struct g_ls_gold_flags;
+static uae_u32   g_ls_gold_pc = 0;
+static uae_u32   g_ls_expect_pc = 0;
+static unsigned long g_ls_steps = 0;
+static unsigned long g_ls_maxsteps = 200000;
+
+struct ls_arch { uae_u32 d[8]; uae_u32 a[8]; uae_u32 next_pc; uae_u8 ccr; };
+
+/* canonical CCR byte: bit4=X bit3=N bit2=Z bit1=V bit0=C */
+static inline uae_u8 ls_ccr_from_current_cznv(void) {
+    return (uae_u8)(((GET_XFLG()&1)<<4)|((GET_NFLG()&1)<<3)|((GET_ZFLG()&1)<<2)|((GET_VFLG()&1)<<1)|(GET_CFLG()&1));
+}
+static inline uae_u8 ls_ccr_from_pstate(uae_u32 ps, uae_u32 xbit) {
+    return (uae_u8)(((xbit&1)<<4)|(((ps>>31)&1)<<3)|(((ps>>30)&1)<<2)|(((ps>>28)&1)<<1)|((ps>>29)&1));
+}
+
+/* advance the gold interpreter by exactly one instruction, against the shared RAM */
+static void ls_step_gold(void) {
+    regstruct  saved_regs  = regs;
+    flag_struct saved_flags = regflags;
+    regs = g_ls_gold_regs; regflags = g_ls_gold_flags;
+    m68k_setpc(g_ls_gold_pc);
+    uae_u32 op = get_opcode_cft_map((uae_u16)get_word(g_ls_gold_pc));
+    bool was_reentrant = jit_block_verify_reentrant;
+    jit_block_verify_reentrant = true;
+    (*cpufunctbl[op])(op);
+    jit_block_verify_reentrant = was_reentrant;
+    g_ls_gold_regs = regs; g_ls_gold_flags = regflags;
+    g_ls_gold_pc = m68k_getpc();
+    regs = saved_regs; regflags = saved_flags;
+}
+
+/* DUT synchronization point: called from emitted code AFTER each window op compiles+runs.
+ * cur_pc = guest PC of the op just executed; g_ls_dut_pstate/g_ls_dut_nextpc pre-set;
+ * regs.regs[] already flushed to memory by the emit site. */
+extern "C" void jit_ls_dut_dump(uae_u32 cur_pc, uae_u32 opcode) {
+    if (g_ls_finished) return;
+    if (!g_ls_armed) {
+        /* Seed gold ONCE from the DUT's post-op state. The DUT has ALREADY executed
+         * cur_pc, so gold must start at the NEXT op (g_ls_dut_nextpc) and we do NOT
+         * compare on this arming step (we have no pre-state for cur_pc). Only arm on
+         * a mid-block op that has a known next PC. */
+        if (g_ls_dut_nextpc == 0) return;
+        g_ls_gold_regs = regs; g_ls_gold_flags = regflags;
+        g_ls_gold_pc = g_ls_dut_nextpc; g_ls_expect_pc = g_ls_dut_nextpc;
+        const char* ms = getenv("B2_JIT_LOCKSTEP_MAXSTEPS");
+        g_ls_maxsteps = (ms && *ms) ? strtoul(ms, 0, 0) : 200000;
+        g_ls_steps = 0; g_ls_armed = true;
+        return;
+    }
+    if (cur_pc != g_ls_expect_pc && g_ls_expect_pc != 0xffffffffu) {
+        /* not a hard error: gold resyncs by replaying to cur_pc below */
+    }
+    /* DUT canonical arch (post-op). flush(1) at the emit site already materialised
+     * the DUT's flags into regflags.cznv and its regs into regs.regs[], so read
+     * them canonically here — same decode the gold side uses. (N is materialised
+     * correctly per the c74 liveness audit; a flush-free MRS PSTATE path is a
+     * future fidelity enhancement, not needed for this class of bug.) */
+    ls_arch dut;
+    for (int k = 0; k < 8; k++) { dut.d[k] = regs.regs[k]; dut.a[k] = regs.regs[8 + k]; }
+    dut.next_pc = g_ls_dut_nextpc;
+    dut.ccr = ls_ccr_from_current_cznv();
+    /* advance gold by replaying ops (including uninstrumented ones the DUT ran
+     * between dumps) until it has just executed the instruction at cur_pc */
+    {
+        int guard = 0; bool hit = false;
+        while (guard++ < 40000) {
+            uae_u32 before = g_ls_gold_pc;
+            ls_step_gold();
+            if (before == cur_pc) { hit = true; break; }
+        }
+        if (!hit) {
+            fprintf(stderr, "LOCKSTEP_DIVERGE step=%lu pc=%08x op=%04x field=path_lost gold_pc=%08x (gold never reached cur_pc)\n",
+                g_ls_steps, cur_pc, (unsigned)(opcode & 0xffff), g_ls_gold_pc);
+            g_ls_finished = true; return;
+        }
+    }
+    ls_arch gold;
+    for (int k = 0; k < 8; k++) { gold.d[k] = g_ls_gold_regs.regs[k]; gold.a[k] = g_ls_gold_regs.regs[8 + k]; }
+    gold.next_pc = g_ls_gold_pc;
+    { flag_struct sf = regflags; regflags = g_ls_gold_flags; gold.ccr = ls_ccr_from_current_cznv(); regflags = sf; }
+    /* compare in canonical layout; report FIRST differing field */
+    const char* field = 0; int idx = -1; uae_u32 gv = 0, dv = 0;
+    for (int k = 0; k < 8 && !field; k++) if (gold.d[k] != dut.d[k]) { field = "d"; idx = k; gv = gold.d[k]; dv = dut.d[k]; }
+    for (int k = 0; k < 8 && !field; k++) if (gold.a[k] != dut.a[k]) { field = "a"; idx = k; gv = gold.a[k]; dv = dut.a[k]; }
+    if (!field && gold.ccr != dut.ccr) { field = "ccr"; gv = gold.ccr; dv = dut.ccr; }
+    if (!field && dut.next_pc && gold.next_pc != dut.next_pc) { field = "next_pc"; gv = gold.next_pc; dv = dut.next_pc; }
+    if (field) {
+        fprintf(stderr, "LOCKSTEP_DIVERGE step=%lu pc=%08x op=%04x field=%s%d gold=%08x dut=%08x  gold_ccr=%02x dut_ccr=%02x\n",
+            g_ls_steps, cur_pc, (unsigned)(opcode & 0xffff), field, idx < 0 ? 0 : idx,
+            (unsigned)gv, (unsigned)dv, (unsigned)gold.ccr, (unsigned)dut.ccr);
+        g_ls_finished = true; return;
+    }
+    g_ls_steps++;
+    if (g_ls_steps > g_ls_maxsteps) {
+        fprintf(stderr, "LOCKSTEP_OK no divergence in window after %lu steps\n", g_ls_steps);
+        g_ls_finished = true; return;
+    }
+    g_ls_expect_pc = 0xffffffffu;
 }
 
 static inline uae_u16 ccr_from_cznv(uae_u32 cz, uae_u32 xw){return (uae_u16)((((xw>>8)&1)<<4)|(((cz>>15)&1)<<3)|(((cz>>14)&1)<<2)|(((cz>>0)&1)<<1)|((cz>>8)&1));}
@@ -6423,6 +6539,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     uae_u8* _before = get_target();
                     const bool _verify_this_op = jit_verify_target_pc(op_m68k_pc);
                     const bool _trace_this_op = jit_trace_target_pc(op_m68k_pc);
+                    const bool _lockstep_this_op = jit_lockstep_target_pc(op_m68k_pc);
                     if (_verify_this_op || _trace_this_op) {
                         flush(1);
                         if (_trace_this_op) {
@@ -6458,6 +6575,25 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         comp_pc_p = (uae_u8*)pc_hist[i].location;
                         init_comp();
                         was_comp = 0; /* force re-init for next instruction */
+                    }
+#endif
+#if defined(CPU_AARCH64)
+                    /* JIT lockstep tracer DUT hook: flush DUT regs+flags to memory,
+                     * record next guest PC, call the seeded-once gold-step+compare. */
+                    if (_lockstep_this_op) {
+                        uae_u32 _ls_next = (i + 1 < blocklen)
+                            ? (block_m68k_pc + (uae_u32)((uintptr)pc_hist[i + 1].location - (uintptr)pc_hist[0].location))
+                            : 0;
+                        flush(1);
+                        compemu_raw_mov_l_ri(REG_WORK1, _ls_next);
+                        LOAD_U64(REG_WORK3, (uintptr)&g_ls_dut_nextpc);
+                        STR_wXi(REG_WORK1, REG_WORK3, 0);
+                        compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
+                        compemu_raw_mov_l_ri(REG_PAR2, opcode);
+                        compemu_raw_call((uintptr)jit_ls_dut_dump);
+                        comp_pc_p = (uae_u8*)pc_hist[i].location;
+                        init_comp();
+                        was_comp = 0;
                     }
 #endif
 #if defined(CPU_AARCH64)

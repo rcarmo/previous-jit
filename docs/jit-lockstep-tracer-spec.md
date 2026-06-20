@@ -384,3 +384,42 @@ Build once, capture `JIT_CODEGEN` block boundaries / emitted sizes for the
 `0x01002400-0x01002700` window with the tracer env UNSET vs SET. The two must be
 identical (the dump is MRS + non-freeing STR only). A boundary shift means the
 instrumentation moved liveness and the result is void — fix per R1 before use.
+
+---
+
+## 12. IMPLEMENTATION STATUS (built, env-gated, default-off) — checkpoint
+
+Implemented in `compemu_support_arm.cpp` (env gate + `jit_lockstep_target_pc`,
+the `ls_arch` canonical vector, `ls_step_gold`, `jit_ls_dut_dump`, and the
+compile-loop DUT emit hook). Default-OFF (no `B2_JIT_LOCKSTEP_PCS` ⇒ inert; a
+normal boot is unperturbed, `LOCKSTEP` lines = 0, no new oracle mismatch).
+
+**Works:** arms once, fires, emits canonical `LOCKSTEP_DIVERGE pc=.. op=.. field=..
+gold=.. dut=..`. The self-test caught and I fixed TWO real tracer bugs:
+1. **Arming double-execution** — seeding gold at `cur_pc` (already executed by the
+   DUT) made gold re-run that op. Fix: seed gold at `g_ls_dut_nextpc`, no compare
+   on the arming step.
+2. **Single-step desync** — only *compiled* ops are instrumented, but the DUT also
+   interprets the gaps (e.g. c80 `eori`, c86 `dbf`), so stepping gold once per
+   dump desynced. Fix: gold **replays all ops** (incl. uninstrumented) until it
+   re-executes `cur_pc`, then compares (`field=path_lost` if gold can't reach it).
+
+**BLOCKER (spec R3, confirmed):** `ls_step_gold` runs `cpufunctbl[]`
+**reentrantly** from inside live JIT block execution against **shared RAM/MMU**.
+When the gold replay reaches an I/O / memory op (the CRC region borders DMA /
+NextBus setup) it faults reentrantly → `UAE2026 bridge: fatal double MMU
+exception` + runaway. The shared-RAM single-RAM gold (§4.4a) is NOT safe for a
+window whose replay touches device memory or can fault.
+
+**Remaining work = the gold execution context (§4.4b escalation, brought
+forward):** the gold step must run in an **isolated, fault-guarded context**:
+- wrap `ls_step_gold` in `setjmp`/the bridge's fault buffer so a gold MMU/bus
+  fault is contained (and itself counts as a divergence vs the DUT), AND/OR
+- give gold its own RAM/IO bank (dual-RAM) or restrict arming windows to
+  pure-register straight-line regions that never fault (the CRC ALU ops do not
+  fault; the desync replay dragging in c86/c80 + neighbours is what reaches I/O).
+A cheaper interim: shrink the window to the pure-ALU sub-range and replay-guard so
+gold never executes a memory/IO op; if it must, treat it as `field=gold_fault`.
+
+Status: infrastructure committed; gold-context isolation is the next build step
+before the tracer can pin the `0100254e` first-divergence.

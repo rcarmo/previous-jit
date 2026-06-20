@@ -653,3 +653,49 @@ slot, the GREEN gate is —
 2. re-run c74: the dead N/Z/C of ROR.B/LSL.L are masked; if a `ccrLIVE` surfaces
    on the EOR-N / BPL path it is the real blocker; if c74 stays clean, redirect to
    the wrong-branch block reaching 0100254e.
+
+---
+
+## 16. MASK VALIDATED + FIRST REAL DIVERGENCE — JIT LSL.L X-flag (c74 is NOT cleared)
+
+Ran the architectural mask on the c74 window. It SURFACED a real, reproducible,
+trustworthy divergence (40x, capped), all identical:
+
+```
+pc=01002c76 op=e388 (LSL.L #1,D0) field=ccrLIVE bit=10(X) gold=1 dut=0
+   consumed_at=01002c78 consumer=e214 (ROXR.B)
+```
+
+**The JIT's LSL.L computes the X flag = 0 where the interpreter computes X = 1,
+and the very next op ROXR.B CONSUMES X (rotate-through-extend).** The mask's
+architectural liveness (prop[].use_flags of ROXR includes X) marks it LIVE and
+surfaces it — exactly the JIT-dropped-but-architecturally-live flag the auditor
+warned about.
+
+### This CORRECTS the earlier "c74 cleared" misread
+The pre-mask enumeration reported the full CCR and I wrongly read X as matching.
+The per-op straight-line re-seed HID the register propagation (gold adopts the
+DUT's wrong X each step, so d4 after ROXR matched). Only the architectural mask,
+comparing the producer's flag against a downstream consumer, caught it. **c74 IS
+the blocker** (or on the blocking path): wrong X -> wrong ROXR -> wrong CRC.
+
+### Trustworthiness checks
+- X decode is layout-CONSISTENT: AArch64 build (m68k.h line 742) uses
+  `FLAGBIT_X = FLAGBIT_C` for BOTH the JIT and its interpreter, so gold and DUT
+  decode X from the same bit. The divergence is NOT a decode artifact.
+- Mask bit-mapping correct: active `FLAG_X = 0x10` == canonical ccr bit4.
+- Known-good gate `0x01002400-0x01002700`: `LOCKSTEP_OK` after 301 steps (mask
+  does not falsely suppress), with 3 minor residual divergences (block-boundary
+  seed fidelity — a low-priority tracer follow-up, does not affect the c74 X pin).
+
+### Root-cause candidate + fix direction (next slot)
+`jff_LSL_l_imm` sets C and X (= C) from `d bit31` and looks correct in isolation,
+BUT `DUPLICACTE_CARRY` (compemu_midfunc_arm64_2.cpp:55) only sets X when
+`needed_flags & FLAG_X`. PRIME suspect: the JIT's per-op liveness drops X at the
+LSL.L (needed_flags excludes FLAG_X) because the block's flag-liveness fails to
+propagate ROXR.B's X-USE back to the LSL.L producer -> X never materialised ->
+ROXR consumes the stale X. (Secondary: an X flush/materialisation bug from the
+FLAGX vreg.) Next: re-confirm `needed_flags` for the LSL.L at c76 with NOBCC; if
+FLAG_X is absent, fix the liveness so ROXR's X-use reaches LSL (architectural,
+mirrors the BPL-N JOIN logic), rebuild, and gate on the mask going `ccrLIVE`-free
+on c74 + boot advancing past 0100254e + regression green.

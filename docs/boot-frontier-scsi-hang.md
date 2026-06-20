@@ -146,3 +146,45 @@ disk load completes. No JIT divergence exists on the ROM-driver boot path. To
 exercise/validate the JIT (and surface any real divergence), the boot must finish
 the disk load and start running the RAM-resident kernel. Current gate = THROUGHPUT
 (slow interp ROM driver streaming thousands of blocks), not a JIT correctness bug.
+
+---
+
+## CORRECTION 3 (auditor fallback-counter ask) — it IS ~100% interpreter, NOT throughput
+
+The auditor asked the right question: is the ~100x slowdown overhead, or silent
+interp fallbacks? **B2_JIT_DIAG=1 over the 260s default boot (RTE_FAULT_HANDOFF=0):**
+
+```
+JIT_DIAG t=260s dispatch=8099987 exec_normal=8098912 compile=13
+  (fresh=13 opt0=13) recompile_block=1068 cache_miss=1 pc=0x04382e22
+```
+
+- **exec_normal / dispatch = 8,098,912 / 8,099,987 = 99.99% INTERPRETER.**
+- **compile_block called only 13 times in 260s** — the JIT compiled 13 tiny opt0
+  blocks total and ran everything else in the interpreter.
+- So the slowdown is NOT verbose-logging overhead — **the JIT is barely engaging.**
+
+### Address-map error in CONFIRMATION 2 — corrected
+CONFIRMATION 2 claimed `0x04387xxx` is ROM and "RAM-JIT runs ROM in interp." WRONG.
+`uae2026_jit_bridge.cpp:1775`: **RAM = 0x04000000..0x08000000**, ROM =
+0x01000000..0x01020000. So `0x04387xxx` (the SCSI driver / boot poll loop) is
+**RAM** — code that RAM-JIT *should* compile. Its 0-compiled-hits means **RAM code
+is running in the interpreter**, i.e. the real coverage gap, not an expected
+ROM-in-interp. (c74 @ 0x01002xxx genuinely IS ROM and interp-run — that part holds.)
+
+### Revised conclusion (reverses "throughput not correctness")
+The boot is MMU-enabled early (`68040 MMU: enabled=1` @ 0x01000a44); the diag PC
+sits in MMU-translated RAM (`0x04382xxx`) and runs in interp. PRIME hypothesis:
+**MMU-enabled RAM code is not being JIT-compiled** (dispatcher routes it to
+exec_normal without ever calling compile_block), so essentially the entire
+real-OS boot runs interpreted. This is a JIT coverage/correctness gap (per the
+zero-interp-fallback goal), and it is the real target — NOT throughput, NOT a
+phantom SCSI MMIO bug.
+
+### Next
+Find why the dispatcher routes MMU-enabled RAM PCs (0x0438xxxx) to exec_normal
+instead of compile_block: is there an mmu_enabled / code-translation gate that
+forces interp? Is compile_block being called and bailing, or never called? (counter
+says never called — only 13×). Root-cause the compile-trigger gap for MMU RAM code;
+that single fix should collapse the 8M interp calls and is the actual path to
+kernel handoff + File Viewer.

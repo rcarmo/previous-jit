@@ -1548,11 +1548,36 @@ void execute_normal(void)
 			 * Bcc trace barrier INSIDE the lockstep arming window only, so the
 			 * c74 Bcc-liveness block reaches compile_block and the lockstep DUT
 			 * hook can arm + step the gold interpreter against it. Scoped to the
-			 * window via jit_lockstep_window_pc so normal boots are unperturbed. */
+			 * window via jit_lockstep_window_pc so normal boots are unperturbed.
+			 *
+			 * B2_JIT_LOCKSTEP_DROP generalizes NOBCC to a comma/space list of
+			 * trace-barrier families to drop inside the same window, so the proven
+			 * lockstep+REGONLY spot-check can be SELF-VALIDATED on a known-good
+			 * low-risk barrier (rts/rte or link/unlk) BEFORE it is trusted on Bcc.
+			 * Recognized tokens: bcc, dbcc, rts (== ret), link (== unlk). Default
+			 * empty => no effect; NOBCC remains a backward-compatible alias for
+			 * dropping bcc. The drop is still scoped to jit_lockstep_window_pc, so
+			 * the spot-check fires exactly at the newly-compiled barrier block. */
+			enum { DROP_BCC = 1, DROP_DBCC = 2, DROP_RET = 4, DROP_LINK = 8 };
 			static int ls_nobcc = -1;
+			static int ls_dropmask = -1;
 			if (ls_nobcc < 0) ls_nobcc = getenv("B2_JIT_LOCKSTEP_NOBCC") ? 1 : 0;
-			const bool drop_bcc = ls_nobcc && jit_lockstep_window_pc(pc_before_op);
-			const bool trace_barrier_op = (current_is_bcc && !drop_bcc) || current_is_dbcc || current_is_stack_pop_move || current_is_stack_push_pea || current_is_return || current_is_link_unlk || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp;
+			if (ls_dropmask < 0) {
+				ls_dropmask = 0;
+				const char *dl = getenv("B2_JIT_LOCKSTEP_DROP");
+				if (dl && *dl) {
+					if (strstr(dl, "bcc"))  ls_dropmask |= DROP_BCC;
+					if (strstr(dl, "dbcc")) ls_dropmask |= DROP_DBCC;
+					if (strstr(dl, "rts") || strstr(dl, "rte") || strstr(dl, "ret")) ls_dropmask |= DROP_RET;
+					if (strstr(dl, "link") || strstr(dl, "unlk")) ls_dropmask |= DROP_LINK;
+				}
+			}
+			const bool in_ls_window = jit_lockstep_window_pc(pc_before_op);
+			const bool drop_bcc  = ((ls_nobcc || (ls_dropmask & DROP_BCC)) && in_ls_window);
+			const bool drop_dbcc = ((ls_dropmask & DROP_DBCC) && in_ls_window);
+			const bool drop_ret  = ((ls_dropmask & DROP_RET)  && in_ls_window);
+			const bool drop_link = ((ls_dropmask & DROP_LINK) && in_ls_window);
+			const bool trace_barrier_op = (current_is_bcc && !drop_bcc) || (current_is_dbcc && !drop_dbcc) || current_is_stack_pop_move || current_is_stack_push_pea || (current_is_return && !drop_ret) || (current_is_link_unlk && !drop_link) || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp;
 			if (trace_barrier_op) {
 				/* B2_JIT_BARRIER_STATS: per-barrier-type bailout frequency ranking
 				 * (default-off). Names which trace_barrier dominates the boot path
@@ -1595,7 +1620,15 @@ void execute_normal(void)
 			 * block AT the Bcc so it actually compiles (otherwise the trace runs on to
 			 * the next barrier — e.g. the c74 CRC loop's trailing DBF — and is skipped,
 			 * leaving the c74 ALU ops uninstrumented). */
-			if (drop_bcc && current_is_bcc)
+			/* When a lockstep window drops a barrier, terminate the block AT that
+			 * barrier op so it actually compiles (otherwise the trace runs on to
+			 * the next barrier and is skipped, leaving the target ops
+			 * uninstrumented). Generalized from the original drop_bcc/Bcc case to
+			 * every B2_JIT_LOCKSTEP_DROP family. */
+			if ((drop_bcc && current_is_bcc) ||
+			    (drop_dbcc && current_is_dbcc) ||
+			    (drop_ret && current_is_return) ||
+			    (drop_link && current_is_link_unlk))
 				must_end = true;
 			if (!must_end && end_block(opcode)) {
 				uintptr new_pcp = (uintptr)regs.pc_p;

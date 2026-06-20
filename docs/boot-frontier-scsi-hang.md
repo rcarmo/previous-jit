@@ -313,3 +313,31 @@ compiles, not a sweep from boot-start) MUST obey two fidelity rules, reusing the
 Build order: spot-check harness -> self-validate on RTS/LINK (clean) -> prove it
 catches a real divergence -> only THEN apply to Bcc. Validate the tool, then trust
 it — do not debug Bcc codegen through an unproven validator.
+
+---
+
+## First-compile spot-check harness — step 1 implemented (barrier-drop generalization)
+
+The proven lockstep+REGONLY machinery only dropped the **Bcc** trace barrier
+inside the lockstep window (`B2_JIT_LOCKSTEP_NOBCC`). To SELF-VALIDATE the
+spot-check on a known-good low-risk barrier (rts/rte or link/unlk) BEFORE trusting
+it on Bcc, the barrier-drop is now generalized:
+
+- `B2_JIT_LOCKSTEP_DROP=<list>` (default empty => no effect) drops the named
+  trace-barrier families inside `jit_lockstep_window_pc` only. Tokens: `bcc`,
+  `dbcc`, `rts`/`rte`/`ret`, `link`/`unlk`. `B2_JIT_LOCKSTEP_NOBCC` stays as a
+  backward-compatible alias for `bcc`.
+- Each dropped family also forces `must_end` at its op so the block actually
+  compiles ending at the barrier (parallel to the original drop_bcc/Bcc rule),
+  letting the lockstep DUT hook arm + step the gold interpreter against the
+  newly-compiled barrier block.
+
+Scoped to the window, default-off => normal boots and all regression gates are
+unperturbed. Validation: opcode harness 75/75 (`score=100`), RAM-code MMU fast
+smoke 32/32 (`score=100`), build clean.
+
+Next (reserve for a clear CPU slot per the concurrent-boot cap): drive
+`B2_JIT_LOCKSTEP_DROP=rts` (then `link`) over a known-good RTS/LINK barrier-block
+window with `B2_JIT_LOCKSTEP_REGONLY=1` and confirm `LOCKSTEP_OK` (zero
+register/next_pc divergence) — the self-validation gate — before applying the
+spot-check to the deep RAM Bcc blocks.

@@ -130,6 +130,27 @@ static inline uae_u32 bridge_cznv_jit_to_legacy(uae_u32 jit)
 extern "C" uae_u32 Uae2026BridgeCznvLegacyToJit(uae_u32 v) { return bridge_cznv_legacy_to_jit(v); }
 extern "C" uae_u32 Uae2026BridgeCznvJitToLegacy(uae_u32 v) { return bridge_cznv_jit_to_legacy(v); }
 
+/* JIT lockstep tracer support: read/seed the REAL interpreter `regflags`
+ * (legacy cznv layout) in canonical M68K CCR layout (bit4=X bit3=N bit2=Z
+ * bit1=V bit0=C). The lockstep gold step runs interpreter handlers that write
+ * THIS regflags symbol, but the JIT compiler unit's `regflags` is the renamed
+ * jit_regflags (nzcv) with a different struct layout, so the gold flag state
+ * must be bridged through these interpreter-unit accessors instead of a raw
+ * cross-layout struct copy. */
+extern "C" uae_u8 Uae2026InterpCanonicalCcr5(void)
+{
+    return (uae_u8)(((GET_XFLG() & 1) << 4) | ((GET_NFLG() & 1) << 3) |
+                    ((GET_ZFLG() & 1) << 2) | ((GET_VFLG() & 1) << 1) | (GET_CFLG() & 1));
+}
+extern "C" void Uae2026InterpSeedCcr5(uae_u8 ccr)
+{
+    SET_XFLG((ccr >> 4) & 1);
+    SET_NFLG((ccr >> 3) & 1);
+    SET_ZFLG((ccr >> 2) & 1);
+    SET_VFLG((ccr >> 1) & 1);
+    SET_CFLG(ccr & 1);
+}
+
 namespace {
 static bool bridge_logged = false;
 static char bridge_summary[768];

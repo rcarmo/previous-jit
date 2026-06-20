@@ -729,15 +729,33 @@ extern "C" {
 }
 
 extern "C" { uae_u32 g_ls_dut_nextpc = 0; }
-static bool      g_ls_armed = false;
+/* Interpreter-unit CCR bridge (defined in uae2026_jit_bridge.cpp): read/seed the
+ * REAL `regflags` (legacy cznv) in canonical 5-bit CCR. The gold step runs
+ * interpreter handlers that write the real regflags, which this JIT unit cannot
+ * decode directly (here `regflags` is the renamed jit_regflags / nzcv layout). */
+extern "C" uae_u8 Uae2026InterpCanonicalCcr5(void);
+extern "C" void   Uae2026InterpSeedCcr5(uae_u8 ccr);
 static bool      g_ls_finished = false;
 static bool      g_ls_gold_faulted = false;  /* set when a guarded gold step faults */
 static regstruct g_ls_gold_regs;
-static flag_struct g_ls_gold_flags;
+static uae_u8    g_ls_gold_ccr5 = 0;         /* gold canonical CCR after the step */
 static uae_u32   g_ls_gold_pc = 0;
-static uae_u32   g_ls_expect_pc = 0;
 static unsigned long g_ls_steps = 0;
 static unsigned long g_ls_maxsteps = 200000;
+static bool      g_ls_maxsteps_init = false;
+/* PRE-state seed (seed-fix): the DUT register/flag state captured AFTER the
+ * previous instrumented op IS the exact PRE-state of the next sequential op.
+ * We only compare when this op's PC equals the previous op's fall-through
+ * (cur_pc == g_ls_pending_next): that guarantees gold replays the SAME single
+ * instruction from the SAME entry state, with no branch/block-gap wrong-path
+ * replay. This removes the seeded-once fall-through desync that produced the
+ * step=0 untouched-register phantom (CMPI.B D3 -> d1 gold!=dut). A genuine
+ * straight-line ALU block now reads LOCKSTEP_OK; only a real codegen mismatch
+ * is reported. */
+static bool      g_ls_have_pending = false;
+static regstruct g_ls_pending_regs;
+static uae_u8    g_ls_pending_ccr5 = 0;
+static uae_u32   g_ls_pending_next = 0;
 
 struct ls_arch { uae_u32 d[8]; uae_u32 a[8]; uae_u32 next_pc; uae_u8 ccr; };
 
@@ -756,12 +774,27 @@ static inline uae_u8 ls_ccr_from_pstate(uae_u32 ps, uae_u32 xbit) {
  * the outer bridge handler. On a gold fault we set g_ls_gold_faulted, leave the
  * gold shadow state unchanged, and let the caller end the window cleanly
  * (field=gold_fault) — this is the spec R3 / §12 gold-context isolation. */
-static void ls_step_gold(void) {
+static uae_u32 g_ls_gold_op_dbg = 0;
+static void ls_step_gold(uae_u32 dut_opcode, uae_u8 seed_ccr5) {
     regstruct  saved_regs  = regs;
-    flag_struct saved_flags = regflags;
-    regs = g_ls_gold_regs; regflags = g_ls_gold_flags;
+    /* Snapshot+seed the REAL interpreter CCR through the bridge accessors. The
+     * interpreter handlers write the real `regflags` (legacy cznv layout); this
+     * JIT unit's `regflags` is the renamed jit_regflags (nzcv), a different struct
+     * layout, so gold flags must be bridged canonically, not raw-copied. */
+    uae_u8 saved_ccr5 = Uae2026InterpCanonicalCcr5();
+    regs = g_ls_gold_regs;
+    Uae2026InterpSeedCcr5(seed_ccr5);
     m68k_setpc(g_ls_gold_pc);
-    uae_u32 op = get_opcode_cft_map((uae_u16)get_word(g_ls_gold_pc));
+    fill_prefetch_0();
+    /* Dispatch gold on the EXACT opcode the DUT executed (passed in by the hook),
+     * NOT a re-fetch of guest memory. get_word()+get_opcode_cft_map() double-byte-
+     * swapped the word (get_opcode_cft_map = bswap16 is for raw host-pointer derefs,
+     * but get_word already returns the host-order opcode) AND, in RAM/MMU mode, the
+     * data-view fetch can read a stale word that differs from the executable code
+     * stream the DUT actually ran. cpufunctbl[] is indexed by the raw big-endian
+     * instruction word (same as the interpreter's GET_OPCODE dispatch). */
+    uae_u32 op = dut_opcode & 0xffff;
+    g_ls_gold_op_dbg = op;
     bool was_reentrant = jit_block_verify_reentrant;
     jit_block_verify_reentrant = true;
     jmp_buf gold_buf;
@@ -770,7 +803,8 @@ static void ls_step_gold(void) {
         __pushtry(&gold_buf);
         (*cpufunctbl[op])(op);
         __poptry();
-        g_ls_gold_regs = regs; g_ls_gold_flags = regflags;
+        g_ls_gold_regs = regs;
+        g_ls_gold_ccr5 = Uae2026InterpCanonicalCcr5();
         g_ls_gold_pc = m68k_getpc();
     } else {
         /* gold step faulted: unwind our try-frame and flag the window end */
@@ -779,7 +813,8 @@ static void ls_step_gold(void) {
         g_ls_gold_faulted = true;
     }
     jit_block_verify_reentrant = was_reentrant;
-    regs = saved_regs; regflags = saved_flags;
+    regs = saved_regs;
+    Uae2026InterpSeedCcr5(saved_ccr5);   /* restore real interpreter CCR */
 }
 
 /* DUT synchronization point: called from emitted code AFTER each window op compiles+runs.
@@ -787,77 +822,84 @@ static void ls_step_gold(void) {
  * regs.regs[] already flushed to memory by the emit site. */
 extern "C" void jit_ls_dut_dump(uae_u32 cur_pc, uae_u32 opcode) {
     if (g_ls_finished) return;
-    if (!g_ls_armed) {
-        /* Seed gold ONCE from the DUT's post-op state. The DUT has ALREADY executed
-         * cur_pc, so gold must start at the NEXT op (g_ls_dut_nextpc) and we do NOT
-         * compare on this arming step (we have no pre-state for cur_pc). Only arm on
-         * a mid-block op that has a known next PC. */
-        if (g_ls_dut_nextpc == 0) return;
-        g_ls_gold_regs = regs; g_ls_gold_flags = regflags;
-        g_ls_gold_pc = g_ls_dut_nextpc; g_ls_expect_pc = g_ls_dut_nextpc;
+    if (!g_ls_maxsteps_init) {
         const char* ms = getenv("B2_JIT_LOCKSTEP_MAXSTEPS");
         g_ls_maxsteps = (ms && *ms) ? strtoul(ms, 0, 0) : 200000;
-        g_ls_steps = 0; g_ls_armed = true;
-        return;
+        g_ls_maxsteps_init = true;
     }
-    if (cur_pc != g_ls_expect_pc && g_ls_expect_pc != 0xffffffffu) {
-        /* not a hard error: gold resyncs by replaying to cur_pc below */
+    static int g_ls_dbg = -1;
+    if (g_ls_dbg < 0) g_ls_dbg = getenv("B2_JIT_LOCKSTEP_DEBUG") ? 1 : 0;
+    if (g_ls_dbg) {
+        bool seq = (g_ls_have_pending && g_ls_pending_next != 0 && cur_pc == g_ls_pending_next);
+        fprintf(stderr, "LSDBG pc=%08x op=%04x nextpc=%08x have_pend=%d pend_next=%08x seq=%d  d0=%08x d1=%08x d2=%08x d5=%08x\n",
+            cur_pc, (unsigned)(opcode & 0xffff), g_ls_dut_nextpc, (int)g_ls_have_pending, g_ls_pending_next, (int)seq,
+            (unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[2], (unsigned)regs.regs[5]);
     }
+
     /* DUT canonical arch (post-op). flush(1) at the emit site already materialised
      * the DUT's flags into regflags.cznv and its regs into regs.regs[], so read
-     * them canonically here — same decode the gold side uses. (N is materialised
-     * correctly per the c74 liveness audit; a flush-free MRS PSTATE path is a
-     * future fidelity enhancement, not needed for this class of bug.) */
+     * them canonically here — same decode the gold side uses. */
     ls_arch dut;
     for (int k = 0; k < 8; k++) { dut.d[k] = regs.regs[k]; dut.a[k] = regs.regs[8 + k]; }
     dut.next_pc = g_ls_dut_nextpc;
     dut.ccr = ls_ccr_from_current_cznv();
-    /* advance gold by replaying ops (including uninstrumented ones the DUT ran
-     * between dumps) until it has just executed the instruction at cur_pc */
-    {
-        int guard = 0; bool hit = false;
-        while (guard++ < 40000) {
-            uae_u32 before = g_ls_gold_pc;
-            ls_step_gold();
-            if (g_ls_gold_faulted) {
-                /* gold replay reached a faulting (I/O / device-memory) op; the
-                 * single-RAM shadow can't isolate that access. End the window
-                 * cleanly at the last clean instruction rather than chasing a
-                 * reentrant trap frame (spec R3 escalation boundary). */
-                fprintf(stderr, "LOCKSTEP_END step=%lu pc=%08x op=%04x field=gold_fault gold_pc=%08x (gold I/O fault; window stopped before device memory)\n",
-                    g_ls_steps, cur_pc, (unsigned)(opcode & 0xffff), before);
-                g_ls_finished = true; return;
-            }
-            if (before == cur_pc) { hit = true; break; }
+
+    /* STRAIGHT-LINE LOCKSTEP GATE (seed-fix): only compare when this op directly
+     * follows the previous instrumented op (cur_pc == previous fall-through). That
+     * makes the pending state an exact PRE-state seed for cur_pc and lets gold run
+     * exactly one instruction from the same entry — no branch/gap wrong-path
+     * replay, so an untouched register can never spuriously diverge. When the run
+     * is NOT sequential (branch / block gap / first dump) we DO NOT compare; we
+     * just roll the pending seed forward and re-sync cleanly. */
+    if (g_ls_have_pending && g_ls_pending_next != 0 && cur_pc == g_ls_pending_next) {
+        /* seed gold from the captured PRE-state and run exactly the op at cur_pc */
+        g_ls_gold_regs = g_ls_pending_regs;
+        g_ls_gold_pc = cur_pc;
+        ls_step_gold(opcode, g_ls_pending_ccr5);
+        if (g_ls_gold_faulted) {
+            /* gold hit an I/O / device-memory op; single-RAM shadow can't isolate
+             * it. End the window cleanly at the last clean instruction. */
+            fprintf(stderr, "LOCKSTEP_END step=%lu pc=%08x op=%04x field=gold_fault (gold I/O fault; window stopped before device memory)\n",
+                g_ls_steps, cur_pc, (unsigned)(opcode & 0xffff));
+            g_ls_finished = true; return;
         }
-        if (!hit) {
-            fprintf(stderr, "LOCKSTEP_DIVERGE step=%lu pc=%08x op=%04x field=path_lost gold_pc=%08x (gold never reached cur_pc)\n",
-                g_ls_steps, cur_pc, (unsigned)(opcode & 0xffff), g_ls_gold_pc);
+        ls_arch gold;
+        for (int k = 0; k < 8; k++) { gold.d[k] = g_ls_gold_regs.regs[k]; gold.a[k] = g_ls_gold_regs.regs[8 + k]; }
+        gold.next_pc = g_ls_gold_pc;
+        gold.ccr = g_ls_gold_ccr5;
+        if (g_ls_dbg) {
+            fprintf(stderr, "LSDBG_GOLD pc=%08x dut_op=%04x gold_fetched_op=%04x seed_d2=%08x gold_d0=%08x gold_d2=%08x gold_ccr=%02x dut_ccr=%02x gold_nextpc=%08x\n",
+                cur_pc, (unsigned)(opcode & 0xffff), (unsigned)g_ls_gold_op_dbg,
+                (unsigned)g_ls_pending_regs.regs[2], (unsigned)gold.d[0], (unsigned)gold.d[2],
+                (unsigned)gold.ccr, (unsigned)dut.ccr, (unsigned)gold.next_pc);
+        }
+        /* compare in canonical layout; report FIRST differing field */
+        const char* field = 0; int idx = -1; uae_u32 gv = 0, dv = 0;
+        for (int k = 0; k < 8 && !field; k++) if (gold.d[k] != dut.d[k]) { field = "d"; idx = k; gv = gold.d[k]; dv = dut.d[k]; }
+        for (int k = 0; k < 8 && !field; k++) if (gold.a[k] != dut.a[k]) { field = "a"; idx = k; gv = gold.a[k]; dv = dut.a[k]; }
+        if (!field && gold.ccr != dut.ccr) { field = "ccr"; gv = gold.ccr; dv = dut.ccr; }
+        if (!field && dut.next_pc && gold.next_pc != dut.next_pc) { field = "next_pc"; gv = gold.next_pc; dv = dut.next_pc; }
+        if (field) {
+            fprintf(stderr, "LOCKSTEP_DIVERGE step=%lu pc=%08x op=%04x field=%s%d gold=%08x dut=%08x  gold_ccr=%02x dut_ccr=%02x\n",
+                g_ls_steps, cur_pc, (unsigned)(opcode & 0xffff), field, idx < 0 ? 0 : idx,
+                (unsigned)gv, (unsigned)dv, (unsigned)gold.ccr, (unsigned)dut.ccr);
+            g_ls_finished = true; return;
+        }
+        g_ls_steps++;
+        if (g_ls_steps > g_ls_maxsteps) {
+            fprintf(stderr, "LOCKSTEP_OK no divergence in window after %lu steps\n", g_ls_steps);
             g_ls_finished = true; return;
         }
     }
-    ls_arch gold;
-    for (int k = 0; k < 8; k++) { gold.d[k] = g_ls_gold_regs.regs[k]; gold.a[k] = g_ls_gold_regs.regs[8 + k]; }
-    gold.next_pc = g_ls_gold_pc;
-    { flag_struct sf = regflags; regflags = g_ls_gold_flags; gold.ccr = ls_ccr_from_current_cznv(); regflags = sf; }
-    /* compare in canonical layout; report FIRST differing field */
-    const char* field = 0; int idx = -1; uae_u32 gv = 0, dv = 0;
-    for (int k = 0; k < 8 && !field; k++) if (gold.d[k] != dut.d[k]) { field = "d"; idx = k; gv = gold.d[k]; dv = dut.d[k]; }
-    for (int k = 0; k < 8 && !field; k++) if (gold.a[k] != dut.a[k]) { field = "a"; idx = k; gv = gold.a[k]; dv = dut.a[k]; }
-    if (!field && gold.ccr != dut.ccr) { field = "ccr"; gv = gold.ccr; dv = dut.ccr; }
-    if (!field && dut.next_pc && gold.next_pc != dut.next_pc) { field = "next_pc"; gv = gold.next_pc; dv = dut.next_pc; }
-    if (field) {
-        fprintf(stderr, "LOCKSTEP_DIVERGE step=%lu pc=%08x op=%04x field=%s%d gold=%08x dut=%08x  gold_ccr=%02x dut_ccr=%02x\n",
-            g_ls_steps, cur_pc, (unsigned)(opcode & 0xffff), field, idx < 0 ? 0 : idx,
-            (unsigned)gv, (unsigned)dv, (unsigned)gold.ccr, (unsigned)dut.ccr);
-        g_ls_finished = true; return;
-    }
-    g_ls_steps++;
-    if (g_ls_steps > g_ls_maxsteps) {
-        fprintf(stderr, "LOCKSTEP_OK no divergence in window after %lu steps\n", g_ls_steps);
-        g_ls_finished = true; return;
-    }
-    g_ls_expect_pc = 0xffffffffu;
+
+    /* roll the pending seed forward: this op's post-state is the next op's
+     * pre-state, and its fall-through is the next op's expected PC. The CCR is
+     * carried canonically (the DUT's flushed flags decoded here) so the gold step
+     * can re-seed the interpreter's real regflags in its own layout. */
+    g_ls_pending_regs = regs;
+    g_ls_pending_ccr5 = dut.ccr;
+    g_ls_pending_next = g_ls_dut_nextpc;
+    g_ls_have_pending = true;
 }
 
 static inline uae_u16 ccr_from_cznv(uae_u32 cz, uae_u32 xw){return (uae_u16)((((xw>>8)&1)<<4)|(((cz>>15)&1)<<3)|(((cz>>14)&1)<<2)|(((cz>>0)&1)<<1)|((cz>>8)&1));}

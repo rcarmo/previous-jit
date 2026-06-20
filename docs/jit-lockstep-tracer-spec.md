@@ -520,3 +520,64 @@ Validation gate restated: a known-good straight-line block must run to
 `LOCKSTEP_OK` (no step=0 untouched-reg divergence) BEFORE any c74 result is
 trusted. The provisional-(A) build is sound; the seed/sync fix is the remaining
 trustworthiness work.
+
+---
+
+## 14. SEED-FIX LANDED — phantom eliminated; 3 of 4 tracer-fidelity bugs fixed
+
+Acted on the §13 RED gate. The step=0 untouched-register phantom is **GONE**.
+Root-caused and fixed THREE distinct tracer-fidelity bugs (all confirmed via the
+env-gated `B2_JIT_LOCKSTEP_DEBUG` trace on the c74 window `0x01002400-0x01002700`,
+NOBCC, RAM boot). Tracer stays default-off; regression green
+(`uae2026-mmu-fast-smoke` 32/32, `uae2026-opcode-harness` 75/75, score=100).
+
+### Fix 1 — straight-line pre-state seed (the seed/sync fix the auditor named)
+Replaced seeded-once free-running gold + 40k-step wrong-path catch-up with a
+**straight-line lockstep gate**: gold is compared only when this op's PC equals
+the previous instrumented op's fall-through (`cur_pc == g_ls_pending_next`). The
+seed is the previous op's true DUT post-state (the exact PRE-state of this op),
+so gold runs the SAME single instruction from the SAME entry. Branch/block/gap
+runs roll the pending seed forward and re-sync WITHOUT comparing, so an untouched
+register can never spuriously diverge. Eliminates the `CMPI.B D3 -> d1` /
+`MOVE.L D2,D0 -> d0` step=0 phantom.
+
+### Fix 2 — gold opcode double-byte-swap + stale data-view fetch
+`ls_step_gold` fetched the gold opcode with
+`get_opcode_cft_map((uae_u16)get_word(pc))`. `get_opcode_cft_map = uae_bswap_16`
+is meant for RAW host-pointer derefs (`DO_GET_OPCODE`), but `get_word()` already
+returns the host-order opcode — so the word was **double-byte-swapped**
+(`0x2002 MOVE.L D2,D0` -> `0x0220`, executed as ANDI.B, zeroing D0). In RAM/MMU
+mode the data-view `get_word` can also read a stale word differing from the
+executable code stream the DUT ran. Fix: dispatch gold on the **exact opcode the
+DUT executed** (already passed to the hook), `cpufunctbl[opcode & 0xffff]` — the
+same raw big-endian dispatch the interpreter's `GET_OPCODE` uses. Added
+`fill_prefetch_0()` after `m68k_setpc` for extension-word reads.
+
+### Fix 3 — gold flag-layout bridge (interpreter cznv vs JIT nzcv)
+The compiler unit does `#define regflags jit_regflags` (nzcv/x layout); the
+interpreter handlers (`cpufunctbl[]`) write the REAL `regflags` (legacy cznv,
+N=15/Z=14/C=8/V=0). The gold step seeded+captured the WRONG flag struct, so every
+flag-setting op read stale flags (`ASR.L` result=0 with Z unset). Fix: added
+interpreter-unit accessors `Uae2026InterpCanonicalCcr5()` /
+`Uae2026InterpSeedCcr5()` (in `uae2026_jit_bridge.cpp`, where `regflags` is the
+real cznv symbol) and carry the gold seed/result CCR **canonically** (5-bit
+X/N/Z/V/C) across the layout seam. After this, `ASR.L D1,D0` reads
+`gold_ccr=04 == dut_ccr=04` (Z correct).
+
+### Remaining blocker (4th, precisely located) — DUT-side dead-flag capture
+Window now advances to step=2 `MOVEQ #3,D6`: gold correctly `ccr=00` (result 3,
+Z clear) but DUT `ccr=04` — the **stale Z from the prior ASR**. The JIT drops
+flag computation for flag-DEAD ops (`dont_care_flags`); `flush(1)` at the dump
+site cannot materialise a flag that was never computed, so the DUT's
+`jit_regflags` carries the previous op's Z. This is NOT a seed bug and NOT a real
+architectural divergence — it is the documented flag-liveness / flush-free-NZCV
+DUT-capture limitation (§3, R1, R4). Reaching `LOCKSTEP_OK` on a flag-setting
+block requires the DUT side to either (a) read live host PSTATE flush-free
+(MRS NZCV per §3) AND only compare flags the JIT actually computed for that op
+(liveness mask), or (b) restrict the self-test to a block whose every op's flags
+are live (consumed by the next op). The seed/dispatch/gold-layout fidelity is now
+correct; the DUT dead-flag mask is the next gate.
+
+Landed in `compemu_support_arm.cpp` (straight-line gate, opcode dispatch,
+canonical CCR carry) + `uae2026_jit_bridge.cpp` (interp CCR accessors).
+`B2_JIT_LOCKSTEP_DEBUG=1` adds the LSDBG/LSDBG_GOLD per-op trace. All default-off.

@@ -134,6 +134,12 @@ $(RUNDIR)/home/.previous/previous.cfg: $(RUNDIR)
 headless-jit: build $(WARM_IMG) $(RUNDIR)/home/.previous/previous.cfg ## Detached JIT+handoff headless boot on $(DISPLAY_NAME)/$(VNC_PORT)
 	@./tools/headless-launch.sh $(DISPLAY_NAME) $(VNC_PORT) $(RUNDIR) $(BIN) jit
 
+lockstep-sweep: build ## REGONLY register/next_pc-ONLY lockstep sweep past c74 (LOCKSTEP_WIN=range)
+	@./tools/lockstep-sweep.sh
+
+lockstep-selftest: build ## Lockstep tracer trustworthiness self-test on the c74 known-good block
+	@./tools/lockstep-selftest.sh
+
 headless-interp: build $(WARM_IMG) $(RUNDIR)/home/.previous/previous.cfg ## Detached interpreter-only headless boot
 	@./tools/headless-launch.sh $(DISPLAY_NAME) $(VNC_PORT) $(RUNDIR) $(BIN) interp
 

@@ -287,3 +287,29 @@ Options to validate deep RAM Bcc blocks as the barrier is dropped:
     (the gate already verifies each newly-compiled block as it starts compiling).
 Recommended: (c) — it matches the auditor's "gate verifies each newly-compiled
 block organically" and avoids the unreachability of a contiguous deep sweep.
+
+---
+
+## First-compile REGONLY spot-check — design constraints (auditor reinforcements)
+
+The spot-check validator (arm lockstep AT each barrier block the moment it
+compiles, not a sweep from boot-start) MUST obey two fidelity rules, reusing the
+§11.x tooling already built:
+
+1. SEED FIDELITY — seed gold from the DUT's TRUE register+memory state at the
+   barrier-block ENTRY, using the state-keyed seeding from the seed-fix (d2ac44a)
+   + architectural mask. NOT a fresh-from-boot gold — that would re-introduce the
+   stale-seed problem already solved. The spot-check bounds the comparison to a
+   short window at the point of interest, seeded from real DUT entry state.
+
+2. SELF-VALIDATION BEFORE TRUST — before trusting the spot-check on Bcc, prove it
+   fires clean on a KNOWN-GOOD compile: a correctly-compiled low-risk barrier
+   (RTS/RTE or LINK/UNLK) must read REGONLY-clean (zero divergence) through the
+   spot-check first. Only after the spot-check is shown to report clean on a known
+   -good compile is a subsequent real Bcc divergence trustworthy. (Same discipline
+   that gated the original lockstep with the known-good 0x01002400-0x01002700
+   region reading LOCKSTEP_OK.)
+
+Build order: spot-check harness -> self-validate on RTS/LINK (clean) -> prove it
+catches a real divergence -> only THEN apply to Bcc. Validate the tool, then trust
+it — do not debug Bcc codegen through an unproven validator.

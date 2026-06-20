@@ -341,3 +341,27 @@ Next (reserve for a clear CPU slot per the concurrent-boot cap): drive
 window with `B2_JIT_LOCKSTEP_REGONLY=1` and confirm `LOCKSTEP_OK` (zero
 register/next_pc divergence) — the self-validation gate — before applying the
 spot-check to the deep RAM Bcc blocks.
+
+---
+
+## Spot-check self-validation MUST be two-sided (auditor, before trusting on Bcc)
+
+Step 1 done (56c96fc): B2_JIT_LOCKSTEP_DROP generalizes the in-window barrier drop
+to {bcc,dbcc,rts,link}. Before the spot-check is trusted on the Bcc prize, it must
+be self-validated BOTH ways — a validator that only ever reads OK is worthless:
+
+(a) POSITIVE — known-GOOD compile reads clean. Drop a low-risk barrier (rts/rte or
+    link/unlk) in-window, REGONLY spot-check the newly-compiled block → LOCKSTEP_OK,
+    zero register/next_pc divergence. (Have the harness; run when CPU clears.)
+
+(b) NEGATIVE — known-BROKEN compile is FLAGGED. Deliberately perturb ONE barrier's
+    native codegen (a known-wrong emit, e.g. an off-by-one displacement or a
+    dropped flag on the rts/link handler) and confirm the spot-check reports
+    NON-ZERO register/next_pc divergence at that block. This proves the spot-check
+    actually FIRES on a real divergence — §11.2 discipline applied to the validator
+    itself. Revert the perturbation after.
+
+Only after BOTH (a) clean-on-correct AND (b) fires-on-broken is a subsequent real
+Bcc divergence trustworthy. Then deep Bcc = codegen-only fight; scope-call if
+architecturally stuck. (Reserve the heavy boots for a clear idx-1/idx-2 slot per the
+concurrent-CPU cap.)

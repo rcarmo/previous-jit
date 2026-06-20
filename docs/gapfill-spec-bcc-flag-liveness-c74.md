@@ -106,3 +106,51 @@ This is a single, root-caused liveness fix at the branch terminator — not a
 per-opcode tweak, not a boundary sync. If the discriminator shows N IS already
 live (unlikely given the audit), fall back to per-op single-step of the 6 ops
 to find the first diverging register/flag.
+
+---
+
+## VALIDATION OUTCOME (idx-1 active slot) — liveness hypothesis FALSIFIED; c74 is a comparator artifact
+
+Ran the gated per-op flag-liveness print (`B2_JIT_TRACE_C74`) with Bcc enabled,
+early-ROM window. Decisive output:
+
+```
+C74 op=b304 pc=01002c7c (EOR.B) set=0f use=00 livein=1f needed=0f   <- needed INCLUDES FLAG_N(0x08)
+C74 op=6a06 pc=01002c7e (BPL)   set=00 use=08 livein=1f needed=00   <- BPL use_flags = N, correct
+```
+
+**N is correctly live.** The terminal BPL's `use_flags=0x08` (N) propagates into
+`liveflags`, and EOR.B's `needed=0x0f` includes N → N IS materialized. The
+JOIN_DROP OR-in fix would be a **no-op**. Liveness hypothesis FALSIFIED; not shipped.
+
+**c74 reclassified as a comparator artifact.** With Bcc enabled, c74's oracle
+verdict is `mismatch=1 regs=0 ctrl=1 flags=0` — registers AND flags MATCH, only
+`ctrl` (next-PC) differs. That is exactly the stale-`regs.pc` artifact recorded
+earlier (native `regs.pc` = block-start, `pc_p` correct; the comparator reads the
+stale base). c74's compiled execution is correct; it has been a RED HERRING.
+
+**The per-block oracle is insufficient for this lever.** Verified the actual spin
+region `0x01002400-0x01002700` (blocks `0100253e`/`01002556`): **0 real
+mismatches**. The oracle shows CLEAN everywhere windowed, yet the full 780s boot
+still live-locks at `0x0100254e`. So the Bcc divergence is NOT pinned to a single
+mis-compiled block by the snapshot-based per-block oracle — it is either
+accumulated/timing-dependent or in a block the per-block compare cannot fault
+(the snapshot re-run does not reproduce the exact runtime state; the comparator
+itself carries stale-pc / nzcv-cznv artifacts).
+
+## Conclusion + strategic recommendation
+
+Four hypotheses (unroll, regs.pc, direction, boundary-sync) and now a fifth
+(terminal-Bcc liveness) have each been implemented, tested, and falsified. The
+common blocker is that the **per-block snapshot oracle is artifact-prone and
+cannot reliably isolate the real Bcc runtime divergence**. Continuing to mine it
+yields red herrings (c74), not the cause.
+
+The decisive next step is a **verifier-INDEPENDENT lockstep differential tracer**:
+run the JIT and the interpreter in true lockstep from a common state and log the
+FIRST PC where the architectural state (regs + CCR + next-PC, decoded in the
+correct layout) diverges — the technique the BasiliskII sibling used to kill its
+own rabbit hole. This is a dedicated tooling effort, not a per-block-oracle
+hypothesis. Recommend a strategic decision before more Bcc attempts:
+(A) build the lockstep tracer, or (B) accept Bcc-barriered boot (correct,
+~15x slow) and redirect. `ec26050` (0800) remains the only landed real handler.

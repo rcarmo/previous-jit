@@ -840,6 +840,16 @@ extern "C" void jit_ls_dut_dump(uae_u32 cur_pc, uae_u32 opcode) {
     }
     static int g_ls_dbg = -1;
     if (g_ls_dbg < 0) g_ls_dbg = getenv("B2_JIT_LOCKSTEP_DEBUG") ? 1 : 0;
+    /* REGONLY sweep mode (trust boundary): when B2_JIT_LOCKSTEP_REGONLY is set we
+     * compare ONLY architecturally-always-live register + next_pc state and fully
+     * suppress the CCR path (no enqueue, no ccrLIVE/ccrUNRESOLVED resolution, no
+     * advisory cap consumption). Per the established trust boundary, CCR diffs are
+     * advisory-only (stale-capture / dead-flag false positives), so this mode lets a
+     * wide post-c74 sweep run to the FIRST real register/next_pc divergence without
+     * the 40-divergence cap being burned by benign CCR noise. Default-off => full
+     * CCR-deferred behaviour unchanged. */
+    static int g_ls_regonly = -1;
+    if (g_ls_regonly < 0) g_ls_regonly = getenv("B2_JIT_LOCKSTEP_REGONLY") ? 1 : 0;
     if (g_ls_dbg) {
         bool seq = (g_ls_have_pending && g_ls_pending_next != 0 && cur_pc == g_ls_pending_next);
         fprintf(stderr, "LSDBG pc=%08x op=%04x nextpc=%08x have_pend=%d pend_next=%08x seq=%d  d0=%08x d1=%08x d2=%08x d5=%08x\n",
@@ -886,8 +896,9 @@ extern "C" void jit_ls_dut_dump(uae_u32 cur_pc, uae_u32 opcode) {
         }
         /* (1) Resolve PENDING CCR-bit divergences from earlier ops against THIS
          * op's architectural use/set. Consumed-before-overwrite => REAL (surface);
-         * overwritten => dead (drop). This is the architectural dead-flag mask. */
-        {
+         * overwritten => dead (drop). This is the architectural dead-flag mask.
+         * Skipped entirely in REGONLY sweep mode (CCR is advisory-only). */
+        if (!g_ls_regonly) {
             uae_u8 cur_use = prop[cft_map(opcode)].use_flags;
             uae_u8 cur_set = prop[cft_map(opcode)].set_flags;
             int w = 0;
@@ -925,8 +936,9 @@ extern "C" void jit_ls_dut_dump(uae_u32 cur_pc, uae_u32 opcode) {
                 g_ls_finished = true; return;
             }
         }
-        /* enqueue any differing CCR bits as PENDING for the architectural mask */
-        if (gold.ccr != dut.ccr) {
+        /* enqueue any differing CCR bits as PENDING for the architectural mask
+         * (suppressed in REGONLY sweep mode: CCR is advisory-only) */
+        if (!g_ls_regonly && gold.ccr != dut.ccr) {
             uae_u8 diff = (uae_u8)(gold.ccr ^ dut.ccr);
             for (uae_u8 b = 0x01; b <= 0x10; b <<= 1) {
                 if (!(diff & b)) continue;

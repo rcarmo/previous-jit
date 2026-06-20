@@ -119,6 +119,13 @@ Add env ranges parsed by the existing `jit_pc_in_env_ranges()` machinery
 - `B2_JIT_LOCKSTEP_PCS` — window range(s), e.g. `0x01002400-0x01002700`.
 - `B2_JIT_LOCKSTEP_MAXSTEPS` — safety cap (default 200000).
 - `B2_JIT_LOCKSTEP_DUMP_RADIUS` — bytes of touched-mem window to diff (default 64).
+- `B2_JIT_LOCKSTEP_REGONLY` — sweep mode: compare ONLY architecturally-always-live
+  register + next_pc state; fully suppress the CCR path (no enqueue, no
+  ccrLIVE/ccrUNRESOLVED resolution, no advisory cap consumption). Per the
+  established trust boundary (register/next_pc trustworthy; CCR advisory-only due
+  to stale-capture/dead-flag false positives), this lets a wide post-c74 sweep run
+  to the FIRST real register/next_pc divergence without the 40-divergence cap being
+  burned by benign CCR noise. Default-off ⇒ full CCR-deferred behaviour unchanged.
 
 Add `static inline bool jit_lockstep_target_pc(uae_u32 pc)` next to
 `jit_trace_target_pc` (≈ line 576).

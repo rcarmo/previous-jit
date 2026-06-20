@@ -476,3 +476,47 @@ Landed code (single commit): `ls_step_gold` setjmp guard + `g_ls_gold_faulted`
 driver path + `LOCKSTEP_END field=gold_fault`; `jit_lockstep_window_pc` export;
 `B2_JIT_LOCKSTEP_NOBCC` window-scoped Bcc drop in the legacy trace builder;
 `tools/fg-verify-window.sh` `B2_JIT_LOCKSTEP_*` env passthrough. All default-off.
+
+---
+
+## 13. SELF-TEST RESULT (gate) — tracer NOT yet trustworthy: seed/sync stale
+
+Ran the §11.2 trustworthiness gate. The fault-guard (R3) holds — armed runs on the
+c74/2600 region complete with 0 double-faults. But the FIRST-divergence is a
+tracer artifact, not architectural:
+
+```
+LOCKSTEP_DIVERGE step=0 pc=01002628 op=0c03 field=d1 gold=000013ff dut=00000008
+```
+`op=0c03` is `CMPI.B #imm,D3` — it does NOT write D1, yet **D1 differs at step=0**
+(the first compare after arming). A register the current op cannot have changed,
+differing on the first compare, is the binary signature the auditor named:
+**the gold seed/sync is stale, not a real divergence.** (Earlier the same
+signature appeared as MOVE.L D2,D0 gold=0 vs dut=3.) Gate = RED; do not trust any
+`LOCKSTEP_DIVERGE` yet.
+
+### Root cause of the stale seed
+Seeded-once gold requires the gold PC trajectory to match the DUT's exactly. The
+arming seeds `g_ls_gold_pc = g_ls_dut_nextpc` (the arming op's *fall-through*).
+When arming lands on a control-flow op, or when the next instrumented dump is in a
+different block reached via a branch, gold replays the WRONG path → its registers
+desync from the DUT while the per-op compare reports the desync as a divergence on
+an untouched register at step 0.
+
+### Fix direction (next build step, before trusting anything)
+The robust fix is exact gold tracking inside the window. Options, cheapest first:
+1. **Arm only on a straight-line run**: require the arming op and the next
+   `MAXSTEPS` dumps to be CONSECUTIVE sequential PCs in one block (no branch, no
+   block boundary between dumps). Defer arming until such a run; abandon (re-arm)
+   if a gap appears. This makes `gold_pc` exact.
+2. **Instrument every op in the window** (drop the compiled-only restriction by
+   also dumping at the interp-fallback boundary) so gold steps exactly one op per
+   dump and never has to guess a replay path.
+3. Seed gold at `cur_pc` with the op's PRE-state (capture before the op runs, via
+   a pre-op hook mirroring the existing `jit_verify_pre`) so the first compare is
+   the arming op itself with a known-good seed.
+
+Validation gate restated: a known-good straight-line block must run to
+`LOCKSTEP_OK` (no step=0 untouched-reg divergence) BEFORE any c74 result is
+trusted. The provisional-(A) build is sound; the seed/sync fix is the remaining
+trustworthiness work.

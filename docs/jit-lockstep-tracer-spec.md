@@ -618,3 +618,38 @@ branch target). The tracer is now the right instrument for that hunt.
 Optional cleanup: the dead-flag ROR.B/LSL.L N/Z/C divergences are worth a
 separate low-priority `jff_ROR_b`/`jff_LSL_l` flag-fidelity fix, but they do NOT
 gate boot.
+
+---
+
+## 15. ARCHITECTURAL dead-flag mask (prep; boot-validation deferred to CPU slot)
+
+Per the auditor's critical reinforcement: the dead-flag mask MUST be architectural,
+NOT based on the JIT's own `dont_care`/liveness — otherwise it would mask exactly
+the suspected c74 JIT flag-LIVENESS bug (JIT marks a flag dead that a downstream
+consumer reads) and give a false GREEN.
+
+Implemented (deferred-pending design, `jit_ls_dut_dump`):
+- A diverging CCR bit is NOT reported immediately; it is pushed to `g_ls_pend[]`
+  with its producer pc/op.
+- At each subsequent op, each pending bit is resolved against THAT op's
+  ARCHITECTURAL `prop[].use_flags` / `prop[].set_flags` (canonical ccr bit layout
+  == FLAG_* layout, so the mask bit indexes prop directly):
+  - downstream op CONSUMES the bit (`use_flags`) before overwrite => `field=ccrLIVE`
+    (SURFACE — this is the real divergence, e.g. a Bcc reading a mis-computed N),
+  - an op OVERWRITES it (`set_flags`) first => architecturally dead => masked (drop),
+  - no consumer/overwrite within 24 ops => `field=ccrUNRESOLVED` (conservatively
+    surfaced, never silently masked).
+- Registers and next_pc remain ALWAYS-live (reported immediately).
+
+This is liveness computed INDEPENDENTLY of the JIT: a flag the JIT dropped but
+architectural liveness says is consumed is surfaced, not hidden. Builds clean,
+default-off.
+
+BOOT VALIDATION DEFERRED (concurrent-CPU cap; web:uae mid-run): at the next CPU
+slot, the GREEN gate is —
+1. a known-good block with BOTH a live-flag op and a dead-flag op (MOVEQ-after-ASR
+   shape) reads `LOCKSTEP_OK` (mask excludes uncomputed flags without suppressing
+   computed ones), THEN
+2. re-run c74: the dead N/Z/C of ROR.B/LSL.L are masked; if a `ccrLIVE` surfaces
+   on the EOR-N / BPL path it is the real blocker; if c74 stays clean, redirect to
+   the wrong-branch block reaching 0100254e.

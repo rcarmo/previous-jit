@@ -659,6 +659,7 @@ static uae_u32 jit_block_verify_entry_pc = 0xffffffffu;
 
 typedef void (*jit_compiled_handler)(void);
 static inline unsigned int get_opcode_cft_map(unsigned int f);
+static inline unsigned int cft_map(unsigned int f);
 
 static void jit_block_verify_snapshot_free(jit_block_verify_snapshot *snap)
 {
@@ -742,6 +743,15 @@ static uae_u8    g_ls_gold_ccr5 = 0;         /* gold canonical CCR after the ste
 static uae_u32   g_ls_gold_pc = 0;
 static unsigned long g_ls_steps = 0;
 static unsigned long g_ls_ndiv = 0;
+/* Deferred ARCHITECTURAL dead-flag mask: a diverging CCR bit is held pending and
+ * surfaced ONLY if a downstream op CONSUMES it (prop[].use_flags) before an op
+ * OVERWRITES it (prop[].set_flags) — computed from the architectural flag tables,
+ * NOT the JIT's own dont_care/liveness (which could mask the very liveness bug we
+ * hunt). Canonical ccr bit layout (C=0x01,V=0x02,Z=0x04,N=0x08,X=0x10) == FLAG_*
+ * layout, so the bit mask is used directly against prop use/set. */
+struct ls_pend { uae_u8 bit; uae_u8 gv; uae_u8 dv; uae_u16 op; uae_u32 pc; int age; };
+static ls_pend g_ls_pend[8];
+static int g_ls_npend = 0;
 static unsigned long g_ls_maxsteps = 200000;
 static bool      g_ls_maxsteps_init = false;
 /* PRE-state seed (seed-fix): the DUT register/flag state captured AFTER the
@@ -874,24 +884,64 @@ extern "C" void jit_ls_dut_dump(uae_u32 cur_pc, uae_u32 opcode) {
                 (unsigned)g_ls_pending_regs.regs[2], (unsigned)gold.d[0], (unsigned)gold.d[2],
                 (unsigned)gold.ccr, (unsigned)dut.ccr, (unsigned)gold.next_pc);
         }
-        /* compare in canonical layout; report FIRST differing field */
+        /* (1) Resolve PENDING CCR-bit divergences from earlier ops against THIS
+         * op's architectural use/set. Consumed-before-overwrite => REAL (surface);
+         * overwritten => dead (drop). This is the architectural dead-flag mask. */
+        {
+            uae_u8 cur_use = prop[cft_map(opcode)].use_flags;
+            uae_u8 cur_set = prop[cft_map(opcode)].set_flags;
+            int w = 0;
+            for (int p = 0; p < g_ls_npend; p++) {
+                uae_u8 b = g_ls_pend[p].bit;
+                if (cur_use & b) {
+                    fprintf(stderr, "LOCKSTEP_DIVERGE step=%lu pc=%08x op=%04x field=ccrLIVE bit=%02x gold=%02x dut=%02x consumed_at=%08x consumer=%04x\n",
+                        g_ls_steps, g_ls_pend[p].pc, g_ls_pend[p].op, (unsigned)b,
+                        (unsigned)g_ls_pend[p].gv, (unsigned)g_ls_pend[p].dv, cur_pc, (unsigned)(opcode & 0xffff));
+                    if (++g_ls_ndiv >= 40) { fprintf(stderr, "LOCKSTEP_END divergence cap reached\n"); g_ls_finished = true; return; }
+                } else if (cur_set & b) {
+                    /* overwritten before use -> architecturally dead -> mask (drop) */
+                } else if (++g_ls_pend[p].age <= 24) {
+                    g_ls_pend[w++] = g_ls_pend[p];   /* still unresolved, keep watching */
+                } else {
+                    fprintf(stderr, "LOCKSTEP_DIVERGE step=%lu pc=%08x op=%04x field=ccrUNRESOLVED bit=%02x gold=%02x dut=%02x (no consumer/overwrite in 24 ops; conservatively live)\n",
+                        g_ls_steps, g_ls_pend[p].pc, g_ls_pend[p].op, (unsigned)b, (unsigned)g_ls_pend[p].gv, (unsigned)g_ls_pend[p].dv);
+                    if (++g_ls_ndiv >= 40) { fprintf(stderr, "LOCKSTEP_END divergence cap reached\n"); g_ls_finished = true; return; }
+                }
+            }
+            g_ls_npend = w;
+        }
+        /* (2) compare in canonical layout. Registers + next_pc are ALWAYS live ->
+         * report immediately. CCR bits are deferred to the architectural mask above. */
         const char* field = 0; int idx = -1; uae_u32 gv = 0, dv = 0;
         for (int k = 0; k < 8 && !field; k++) if (gold.d[k] != dut.d[k]) { field = "d"; idx = k; gv = gold.d[k]; dv = dut.d[k]; }
         for (int k = 0; k < 8 && !field; k++) if (gold.a[k] != dut.a[k]) { field = "a"; idx = k; gv = gold.a[k]; dv = dut.a[k]; }
-        if (!field && gold.ccr != dut.ccr) { field = "ccr"; gv = gold.ccr; dv = dut.ccr; }
         if (!field && dut.next_pc && gold.next_pc != dut.next_pc) { field = "next_pc"; gv = gold.next_pc; dv = dut.next_pc; }
         if (field) {
             fprintf(stderr, "LOCKSTEP_DIVERGE step=%lu pc=%08x op=%04x field=%s%d gold=%08x dut=%08x  gold_ccr=%02x dut_ccr=%02x\n",
                 g_ls_steps, cur_pc, (unsigned)(opcode & 0xffff), field, idx < 0 ? 0 : idx,
                 (unsigned)gv, (unsigned)dv, (unsigned)gold.ccr, (unsigned)dut.ccr);
             if (++g_ls_ndiv >= 40) {
-                fprintf(stderr, "LOCKSTEP_END divergence cap (%lu) reached\n", g_ls_ndiv);
+                fprintf(stderr, "LOCKSTEP_END divergence cap reached\n");
                 g_ls_finished = true; return;
             }
-            /* log-and-CONTINUE: re-sync gold from the DUT post-state (roll pending
-             * forward below) so we enumerate every per-op divergence — the dead
-             * benign ones (e.g. a C overwritten by the next op) AND the one that
-             * actually propagates to a register / used flag / branch. */
+        }
+        /* enqueue any differing CCR bits as PENDING for the architectural mask */
+        if (gold.ccr != dut.ccr) {
+            uae_u8 diff = (uae_u8)(gold.ccr ^ dut.ccr);
+            for (uae_u8 b = 0x01; b <= 0x10; b <<= 1) {
+                if (!(diff & b)) continue;
+                bool dup = false;
+                for (int p = 0; p < g_ls_npend; p++) if (g_ls_pend[p].bit == b) { dup = true; break; }
+                if (!dup && g_ls_npend < (int)(sizeof(g_ls_pend)/sizeof(g_ls_pend[0]))) {
+                    g_ls_pend[g_ls_npend].bit = b;
+                    g_ls_pend[g_ls_npend].gv = (uae_u8)(gold.ccr & b);
+                    g_ls_pend[g_ls_npend].dv = (uae_u8)(dut.ccr & b);
+                    g_ls_pend[g_ls_npend].op = (uae_u16)(opcode & 0xffff);
+                    g_ls_pend[g_ls_npend].pc = cur_pc;
+                    g_ls_pend[g_ls_npend].age = 0;
+                    g_ls_npend++;
+                }
+            }
         }
         g_ls_steps++;
         if (g_ls_steps > g_ls_maxsteps) {

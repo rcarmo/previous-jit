@@ -116,3 +116,14 @@ The ranked trace-barrier gap-fills — Bcc (6706/62b8/6704/6c9c), LINK (4e56),
 UNLK (4e5e), RTS (4e75), JSR (4e92), PEA (4878) — all end blocks whose verdicts
 depend on flag state crossing boundaries. They cannot be gate-validated until the
 oracle reads flags consistently. Spec them after the oracle fix.
+
+## REAL-EXEC manifestation (the c74 boot hang) — separate, higher-priority fix
+
+The Fix-C concern above ("the same seam could affect normal execution") is now
+confirmed in real execution: the c74 terminal `Bcc` reads stale `jit_regflags.nzcv`
+(N@31) after an interpreter fallback wrote the architectural CCR into legacy
+`regflags.cznv` (N@15), with NO conversion at the intra-batch interp→JIT
+boundary → wrong branch → `0x0100254e/2568` LED-spin live-lock past `0x01002cb4`.
+Implement-ready fix (per-fallback `Uae2026BridgeSyncFlagsLegacyToJit()` folded
+into `Uae2026JitCanonicalizePcAfterFallback()`), exact inverting bit (N), probe,
+and boot verify range: see `docs/oracle-flag-layout-seam-realexec-bcc.md`.

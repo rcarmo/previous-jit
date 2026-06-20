@@ -116,3 +116,33 @@ Stop hunting a phantom SCSI divergence. Instead: (a) reduce boot wall-time
 (`0x05054296`, where the interpreter is) — only THEN, if a real divergence appears,
 lockstep it. NOTE: `B2_JIT_RTE_FAULT_HANDOFF=1` was separately reported to hang at
 the same PC and is NOT covered by this correction (default=0 is what progresses).
+
+---
+
+## CONFIRMATION 2 — RTE_FAULT_HANDOFF=1 also progresses; poll is INTERPRETER-run
+
+Applied the auditor's location-guard (B2_JIT_TRACE_PCS at the poll PC) + tested the
+one config cb14fb6 claimed "hangs at the exact same point":
+
+- **RTE_FAULT_HANDOFF=1, 260s:** 15756 lines, **11550 after** the last 0x04387150,
+  **994 SCSI block reads** advancing 0 → 149199, active ESP commands at PC=0x043876ee
+  at the timeout. **Also NOT frozen** — same slow-poll-then-progress as default.
+  cb14fb6's "=1 hangs (4206 identical)" is the same too-short-run artifact.
+- **Location guard: `B2_JIT_TRACE_PCS=0x04387100-0x04387200` → 0 JIT-compiled-op
+  hits.** The SCSI/ESP poll runs in the **INTERPRETER**, not JIT-compiled — expected,
+  because RAM-JIT mode (`PREVIOUS_UAE2026_JIT_RAM=1`) compiles RAM code
+  (`0x01xxxxxx`+) and runs ROM (`0x04xxxxxx`) in the interpreter.
+
+### The "JIT MMIO read-caching at 0x04387150" hypothesis is MOOT
+There is no freeze (both configs read ~1000 disk blocks past it), AND the poll is
+not JIT codegen (0 compiled hits) — so there is no JIT MMIO read to CSE/hoist there.
+The whole SCSI-divergence hunt is closed.
+
+### Accurate frontier model
+Under pure-RAM-JIT: ROM (POST + SCSI/ESP driver, `0x04xxxxxx`) executes in the
+**interpreter** — slow but correct — loading the NeXTSTEP kernel from disk into RAM.
+The **JIT-critical phase is kernel execution in RAM**, which only begins AFTER the
+disk load completes. No JIT divergence exists on the ROM-driver boot path. To
+exercise/validate the JIT (and surface any real divergence), the boot must finish
+the disk load and start running the RAM-resident kernel. Current gate = THROUGHPUT
+(slow interp ROM driver streaming thousands of blocks), not a JIT correctness bug.

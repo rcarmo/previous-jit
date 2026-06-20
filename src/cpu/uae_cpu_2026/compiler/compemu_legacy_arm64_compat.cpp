@@ -18,6 +18,7 @@ extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7(uae_u32 pc, uae_u32 opco
 extern "C" void Uae2026JitMmuTxnCommit(void);
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 extern "C" bool Uae2026OpcodeTestModeActive(void);
+extern "C" bool jit_lockstep_window_pc(uae_u32 pc);
 extern "C" bool Uae2026OpcodeTestModeHandleStopTrailer(void);
 extern uintptr jit_MEMBaseDiff;
 static inline void jit_interpreted_op_check_ticks(void)
@@ -1543,7 +1544,15 @@ void execute_normal(void)
 			    ((opcode & 0xff00u) == 0x0800u) && ((opcode & 0x0038u) != 0x0000u);
 			const bool current_is_ethernet_reset_island = (pc_before_op >= 0x010014a0u && pc_before_op <= 0x010014d0u);
 			const bool current_is_jsr_jmp = ((opcode & 0xffc0u) == 0x4e80u || (opcode & 0xffc0u) == 0x4ec0u);
-			const bool trace_barrier_op = current_is_bcc || current_is_dbcc || current_is_stack_pop_move || current_is_stack_push_pea || current_is_return || current_is_link_unlk || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp;
+			/* Optional, default-off: when B2_JIT_LOCKSTEP_NOBCC is set, drop the
+			 * Bcc trace barrier INSIDE the lockstep arming window only, so the
+			 * c74 Bcc-liveness block reaches compile_block and the lockstep DUT
+			 * hook can arm + step the gold interpreter against it. Scoped to the
+			 * window via jit_lockstep_window_pc so normal boots are unperturbed. */
+			static int ls_nobcc = -1;
+			if (ls_nobcc < 0) ls_nobcc = getenv("B2_JIT_LOCKSTEP_NOBCC") ? 1 : 0;
+			const bool drop_bcc = ls_nobcc && jit_lockstep_window_pc(pc_before_op);
+			const bool trace_barrier_op = (current_is_bcc && !drop_bcc) || current_is_dbcc || current_is_stack_pop_move || current_is_stack_push_pea || current_is_return || current_is_link_unlk || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp;
 			if (trace_barrier_op) {
 				if (verify_this_block) {
 					fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d skipped=trace_barrier pc=%08x op=%04x\n",

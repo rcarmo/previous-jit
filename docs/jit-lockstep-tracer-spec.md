@@ -423,3 +423,56 @@ gold never executes a memory/IO op; if it must, treat it as `field=gold_fault`.
 
 Status: infrastructure committed; gold-context isolation is the next build step
 before the tracer can pin the `0100254e` first-divergence.
+
+---
+
+## 13. UPDATE — gold fault-guard LANDED + tracer now arms on the Bcc region
+
+**R3 blocker RESOLVED (setjmp fault-guard, single-RAM).** `ls_step_gold` now runs
+the gold `cpufunctbl[op]` inside a local try-frame (`setjmp(gold_buf)` +
+`__pushtry/__poptry`, the same nesting the bridge uses at
+`uae2026_jit_bridge.cpp:1492`). A gold MMU/bus fault from a reentrant I/O access
+is caught **locally**: we unwind the try-frame, set `g_ls_gold_faulted`, leave the
+gold shadow unchanged, and the driver ends the window cleanly with
+`LOCKSTEP_END ... field=gold_fault`. Confirmed: an armed window that previously
+produced `fatal double MMU exception` + machine reset now runs to completion with
+**zero** double-faults (`grep -c 'fatal double MMU' = 0`).
+
+**Arming on the Bcc region (new env gate `B2_JIT_LOCKSTEP_NOBCC`, default-off).**
+The legacy trace builder (`compemu_legacy_arm64_compat.cpp`) bails the whole
+trace to the interpreter at the `current_is_bcc` barrier and never calls
+`compile_block`, so the lockstep DUT hook (which lives inside `compile_block`)
+could not arm on the c74 Bcc region. Added a window-scoped drop:
+`B2_JIT_LOCKSTEP_NOBCC=1` removes the Bcc barrier **only** for PCs inside the
+lockstep window (`jit_lockstep_window_pc`), so the block reaches `compile_block`
+and the hook arms. Default-off and window-scoped ⇒ normal boots unperturbed.
+NOTE: run with the harness `VERIFY_BLOCKS` range pointed **away** from the
+lockstep window — `verify_this_block` diverts to `jit_block_verify_run` and
+*also* skips `compile_block`, suppressing the hook.
+
+**First armed run (window `0x01002400-0x01002700`, NOBCC, pure-JIT):**
+```
+LOCKSTEP_DIVERGE step=0 pc=01002606 op=2002 field=d0 gold=00000000 dut=00000003  gold_ccr=00 dut_ccr=00
+```
+(op 2002 = MOVE.L D2,D0). The fault-guard held (0 double-faults) and the boot
+ran on past the line (KMS LED traffic follows).
+
+**CAVEAT — this is NOT yet a trusted architectural first-divergence.** It fired
+at **step=0**, i.e. the very first compare after arming, on a plain register move
+(gold d0=0 vs dut d0=3 ⇒ gold d2=0 vs dut d2=3 going in). A divergence at step 0
+is the canonical signature of a **seed/replay fidelity bug**, not a JIT codegen
+bug: the gold was seeded from the DUT's flushed `regs.regs[]` mirror at arming,
+and if that mirror lagged the true DUT `d2` (or the replay desynced control flow)
+gold carries a wrong value forward and "diverges" immediately. Per §11.2 this is
+exactly what the **known-good self-test must rule out before trusting any
+`LOCKSTEP_DIVERGE`**. NEXT slot: run the §11.2 self-test (arm a clean ALU/shift/
+logic block OUTSIDE the suspect region; require `no divergence`). If the self-test
+also fires at step=0, the seed/replay path is the bug — fix the arming-seed
+mirror (capture true live regs at arming, not the possibly-stale flushed mirror)
+and/or assert `cur_pc == g_ls_expect_pc` hard before comparing. Only once the
+self-test is clean does the c74 region run name a trustworthy producer.
+
+Landed code (single commit): `ls_step_gold` setjmp guard + `g_ls_gold_faulted`
+driver path + `LOCKSTEP_END field=gold_fault`; `jit_lockstep_window_pc` export;
+`B2_JIT_LOCKSTEP_NOBCC` window-scoped Bcc drop in the legacy trace builder;
+`tools/fg-verify-window.sh` `B2_JIT_LOCKSTEP_*` env passthrough. All default-off.

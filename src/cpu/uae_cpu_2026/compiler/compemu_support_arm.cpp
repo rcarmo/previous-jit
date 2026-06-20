@@ -616,6 +616,15 @@ static inline bool jit_lockstep_target_pc(uae_u32 pc)
 	return jit_pc_in_env_ranges("B2_JIT_LOCKSTEP_PCS", pc);
 }
 
+/* Exported so the legacy trace builder can ask whether a PC is in the lockstep
+ * arming window. Used to scope the optional B2_JIT_LOCKSTEP_NOBCC Bcc-barrier
+ * drop to the window only (so the c74 Bcc region actually reaches compile_block
+ * and the lockstep DUT hook can arm). Default-off: NOBCC unset => no effect. */
+extern "C" bool jit_lockstep_window_pc(uae_u32 pc)
+{
+	return jit_lockstep_target_pc(pc);
+}
+
 struct jit_verify_snapshot {
 	regstruct regs;
 	flag_struct flags;
@@ -707,9 +716,22 @@ static void jit_block_verify_entry_capture(uae_u32 block_pc)
  * per-instruction in canonical M68K CCR+reg+next-PC layout. No per-block re-seed (catches
  * accumulated drift), DUT flags captured flush-free via host PSTATE. Env-gated, default off.
  * See docs/jit-lockstep-tracer-spec.md. */
+/* cpummu.c try-stack (C linkage) — used to fault-guard the reentrant gold step
+ * so an interpreter MMU/bus fault during gold replay is contained locally and
+ * does NOT escape into the outer bridge handler (which would double-fault and
+ * reset the machine). Mirrors the extern block in uae2026_jit_bridge.cpp. */
+extern "C" {
+    extern jmp_buf __exbuf;
+    extern int __exvalue;
+    jmp_buf *__poptry(void);
+    void __pushtry(jmp_buf *j);
+    int __is_catched(void);
+}
+
 extern "C" { uae_u32 g_ls_dut_nextpc = 0; }
 static bool      g_ls_armed = false;
 static bool      g_ls_finished = false;
+static bool      g_ls_gold_faulted = false;  /* set when a guarded gold step faults */
 static regstruct g_ls_gold_regs;
 static flag_struct g_ls_gold_flags;
 static uae_u32   g_ls_gold_pc = 0;
@@ -727,7 +749,13 @@ static inline uae_u8 ls_ccr_from_pstate(uae_u32 ps, uae_u32 xbit) {
     return (uae_u8)(((xbit&1)<<4)|(((ps>>31)&1)<<3)|(((ps>>30)&1)<<2)|(((ps>>28)&1)<<1)|((ps>>29)&1));
 }
 
-/* advance the gold interpreter by exactly one instruction, against the shared RAM */
+/* advance the gold interpreter by exactly one instruction, against the shared RAM.
+ * The cpufunctbl op is run inside a local try-frame (setjmp + __pushtry/__poptry,
+ * the same nesting pattern the bridge uses at uae2026_jit_bridge.cpp:1492) so an
+ * MMU/bus fault from a gold I/O access is caught HERE instead of longjmp'ing into
+ * the outer bridge handler. On a gold fault we set g_ls_gold_faulted, leave the
+ * gold shadow state unchanged, and let the caller end the window cleanly
+ * (field=gold_fault) — this is the spec R3 / §12 gold-context isolation. */
 static void ls_step_gold(void) {
     regstruct  saved_regs  = regs;
     flag_struct saved_flags = regflags;
@@ -736,10 +764,21 @@ static void ls_step_gold(void) {
     uae_u32 op = get_opcode_cft_map((uae_u16)get_word(g_ls_gold_pc));
     bool was_reentrant = jit_block_verify_reentrant;
     jit_block_verify_reentrant = true;
-    (*cpufunctbl[op])(op);
+    jmp_buf gold_buf;
+    int gprb = setjmp(gold_buf);
+    if (gprb == 0) {
+        __pushtry(&gold_buf);
+        (*cpufunctbl[op])(op);
+        __poptry();
+        g_ls_gold_regs = regs; g_ls_gold_flags = regflags;
+        g_ls_gold_pc = m68k_getpc();
+    } else {
+        /* gold step faulted: unwind our try-frame and flag the window end */
+        __exvalue = gprb;
+        if (__is_catched()) __poptry();
+        g_ls_gold_faulted = true;
+    }
     jit_block_verify_reentrant = was_reentrant;
-    g_ls_gold_regs = regs; g_ls_gold_flags = regflags;
-    g_ls_gold_pc = m68k_getpc();
     regs = saved_regs; regflags = saved_flags;
 }
 
@@ -780,6 +819,15 @@ extern "C" void jit_ls_dut_dump(uae_u32 cur_pc, uae_u32 opcode) {
         while (guard++ < 40000) {
             uae_u32 before = g_ls_gold_pc;
             ls_step_gold();
+            if (g_ls_gold_faulted) {
+                /* gold replay reached a faulting (I/O / device-memory) op; the
+                 * single-RAM shadow can't isolate that access. End the window
+                 * cleanly at the last clean instruction rather than chasing a
+                 * reentrant trap frame (spec R3 escalation boundary). */
+                fprintf(stderr, "LOCKSTEP_END step=%lu pc=%08x op=%04x field=gold_fault gold_pc=%08x (gold I/O fault; window stopped before device memory)\n",
+                    g_ls_steps, cur_pc, (unsigned)(opcode & 0xffff), before);
+                g_ls_finished = true; return;
+            }
             if (before == cur_pc) { hit = true; break; }
         }
         if (!hit) {

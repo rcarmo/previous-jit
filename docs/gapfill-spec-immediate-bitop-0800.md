@@ -125,3 +125,36 @@ Implemented the one-line EA-mode guard and ran the oracle. Result:
 
 **Decision:** reverted (unvalidatable until the oracle seam is fixed). The fix is
 still correct; re-land it after the oracle fix lands.
+
+---
+
+## RE-LAND CONFIRMED (HEAD 386147b, trustworthy oracle, window 0x0409f500-0x0409f600)
+
+Re-landed the line-1538 EA-mode guard and ran the narrow oracle (780s, window
+reached: blocks 0409f51c..0409f5e2). Measured delta:
+
+- `op=0800` **terminal-barrier** count: **3119 → 0** (real, instruction-level).
+- FAIL rule **green**: `mismatch=1 = 0` across the whole window; no passing block
+  flipped. Oracle is trustworthy here (the 4 regs=1 false-positives live in the
+  0409ec window, not this one).
+- Block `0409f520`: **len 24 → 25** — the register-direct BTST now continues
+  through instead of terminating the trace.
+
+**But net block-level fallback reduction = ZERO.** Every affected block rebinds to
+its trailing control-flow/stack barrier and still falls back:
+
+```
+0409f51c -> op=4e56 (LINK)    0409f520 -> op=6706 (BEQ.S)
+0409f57c -> op=6706           0409f582 -> op=6706
+0409f5c6 -> op=62b8 (BHI.S)   0409f5cc -> op=62b8
+0409f5da -> op=4e5e (UNLK)    0409f5e2 -> op=4e75 (RTS)
+```
+
+0 compiled `mismatch=0` verdicts in the window. The binding barriers are the
+Bcc family (6706/62b8) + stack-frame ops (4e56 LINK / 4e5e UNLK / 4e75 RTS).
+
+**Conclusion:** the 0800 guard is a correct, zero-overhead, FAIL-rule-clean
+prerequisite, but it is NOT a boot lever on its own — it makes no block compile
+that did not before. The real zero-fallback lever is **Bcc-family + LINK/UNLK/RTS
+native-continuation correctness** (the dominant binding barriers above). Landed as
+a prerequisite with no boot-progress claim; Bcc-family is the next handler.

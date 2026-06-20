@@ -1535,7 +1535,12 @@ void execute_normal(void)
 			/* Immediate bit operations (BTST/BCHG/BCLR/BSET, 0x08xx) have
 			 * extension-word + memory side effects that are still unsafe across
 			 * native continuation; keep the trace in the interpreter. */
-			const bool current_is_immediate_bitop = ((opcode & 0xff00u) == 0x0800u);
+			/* Only memory-EA immediate bit-ops carry extension-word + memory side
+			 * effects unsafe across native continuation. Register-direct forms
+			 * (BTST/BCHG/BCLR/BSET #imm,Dn, EA mode 000) touch only Dn + Z and have
+			 * compiled handlers (op_800/840/880/8c0), so let the trace continue. */
+			const bool current_is_immediate_bitop =
+			    ((opcode & 0xff00u) == 0x0800u) && ((opcode & 0x0038u) != 0x0000u);
 			const bool current_is_ethernet_reset_island = (pc_before_op >= 0x010014a0u && pc_before_op <= 0x010014d0u);
 			const bool current_is_jsr_jmp = ((opcode & 0xffc0u) == 0x4e80u || (opcode & 0xffc0u) == 0x4ec0u);
 			const bool trace_barrier_op = current_is_bcc || current_is_dbcc || current_is_stack_pop_move || current_is_stack_push_pea || current_is_return || current_is_link_unlk || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp;

@@ -75,3 +75,44 @@ ALU/flag divergence.
   and `B2_JIT_LOCKSTEP_REGONLY` passthrough. Defaults reproduce the prior behaviour.
 - `tools/lockstep-sweep.sh`: REGONLY register/next_pc-only sweep wrapper.
 - `Makefile`: `lockstep-sweep` and `lockstep-selftest` targets.
+
+---
+
+## CORRECTION (same day, longer run) — 0x04387150 is NOT a freeze; it is a slow poll
+
+The section-3 conclusion ("identical 4206 lines at 35s and 75s ⇒ frozen") was
+**premature — the runs were too short.** Re-run of the DEFAULT plain JIT boot
+(`B2_JIT_RTE_FAULT_HANDOFF=0`, the wrapper default) for **260s**:
+
+- **16015 log lines** (vs 4206 at 75s) — **11809 lines AFTER** the last
+  `PC=0x04387150` ("reset SCSI bus") occurrence at line 4206.
+- **1011 SCSI block reads**, offsets advancing **0 → 149248**.
+- Reaches `[ESP] Select … Target: 0`, `SCSI command: Read sector`, and at the 260s
+  timeout is **mid-transfer** reading "16 block(s) at offset 149248" — 31 distinct
+  PCs in the last 800 lines (not a tight stall), still advancing.
+
+### What actually happens at 0x04387150
+The SCSI bus reset is configured **non-interrupting** (config `$57`), so the driver
+must **poll** for reset/select completion instead of taking an IRQ. Under the JIT
+that poll is a long, **silent** spin (no log output) that takes **>75s but <~150s**
+of wall time to satisfy, then the driver proceeds to SELECT + sector reads. The
+35s/75s snapshots both landed inside that silent poll → looked identical → looked
+frozen. They were not. The boot is **slow, not hung.**
+
+### Revised frontier
+- c74/CRC: REGONLY-clean (no JIT divergence) — unchanged, confirmed.
+- SCSI/ESP `0x04387150`: **NOT a JIT divergence/freeze.** The default JIT boot
+  passes it and reads 1000+ disk blocks (kernel load), reaching the same ROM PC
+  frontier (`0x04387786`) as the interpreter.
+- **The current frontier is THROUGHPUT, not correctness:** the JIT boot is alive
+  and loading NeXTSTEP from SCSI disk, just far slower than the interpreter
+  (verbose device logging + per-op JIT/emulation overhead). No JIT divergence has
+  been observed anywhere on the boot path through 1011 disk blocks.
+
+### Revised next step
+Stop hunting a phantom SCSI divergence. Instead: (a) reduce boot wall-time
+(lower device-log verbosity; the SCSI/ESP `nTextLogLevel=5` spam dominates), and
+(b) run a long boot to confirm the JIT reaches kernel handoff / FPU region
+(`0x05054296`, where the interpreter is) — only THEN, if a real divergence appears,
+lockstep it. NOTE: `B2_JIT_RTE_FAULT_HANDOFF=1` was separately reported to hang at
+the same PC and is NOT covered by this correction (default=0 is what progresses).

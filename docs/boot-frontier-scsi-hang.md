@@ -188,3 +188,42 @@ forces interp? Is compile_block being called and bailing, or never called? (coun
 says never called — only 13×). Root-cause the compile-trigger gap for MMU RAM code;
 that single fix should collapse the 8M interp calls and is the actual path to
 kernel handoff + File Viewer.
+
+---
+
+## ROOT CAUSE 4 — the 99.99% interp is the trace_barrier bailout list
+
+`compemu_legacy_arm64_compat.cpp:~1556` — the block builder returns WITHOUT calling
+compile_block whenever the block contains a `trace_barrier_op`:
+
+```
+trace_barrier_op = current_is_bcc(&!drop_bcc) || current_is_dbcc
+  || current_is_stack_pop_move || current_is_stack_push_pea || current_is_return
+  || current_is_link_unlk || current_is_immediate_bitop
+  || current_is_ethernet_reset_island || current_is_jsr_jmp;
+if (trace_barrier_op) { ...; return; }   // <-- block NOT compiled -> runs in interp
+```
+
+These barriers — conditional branches, DBcc, RTS/RTE, JSR/JMP, LINK/UNLK, stack
+push/pop moves — appear in nearly EVERY real basic block. So almost every block
+bails here and runs in the interpreter: **that is the mechanism behind
+compile_block=13 / exec_normal=8.1M (99.99% interp).**
+
+This is precisely the "no trace_barrier / interpreter early-returns" the hard goal
+names. The path to a JIT boot (and File Viewer) is to make blocks containing these
+ops **compile with correct native control-flow/stack semantics** instead of bailing.
+
+### Re-centred frontier (supersedes the c74 + SCSI detours)
+- c74 (ROM, interp by design) and the SCSI "freeze" (slow poll) were both detours.
+- The REAL blocker, quantified: the JIT only compiles trivial straight-line blocks;
+  every control-flow/stack barrier returns to interp. ~100% of the boot is interp.
+- Prior single-barrier attempts (Bcc native-continuation, immediate-bitop ec26050)
+  were chipping at THIS list; most Bcc attempts were falsified/reverted.
+
+### Next (the actual work)
+Pick the highest-frequency barrier on the boot path and implement correct native
+JIT codegen for it so its blocks compile (start: Bcc and JSR/JMP — the control-flow
+backbone — then RTS/RTE, DBcc, stack moves). Gate each barrier removal on: blocks
+now compile (compile_block count rises, exec_normal share drops), REGONLY lockstep
+clean on the newly-compiled blocks, and 75/75 + 32/32 green. Instrument a per-barrier
+hit counter first to rank them by boot-path frequency.

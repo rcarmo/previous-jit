@@ -152,3 +152,49 @@ direction / wrong fall-through PC than the interpreter, then fix that codegen
 mapping for the specific cc that early ROM uses at `0x01002568`. Only re-enable
 the barrier drop after that block compiles `mismatch=0` AND boot passes
 `0x01002cb4` to the kernel range.
+
+---
+
+## ROOT-CAUSE NARROWED (single-step probe @ early-ROM repro) — it's FLAGS, not branch-direction
+
+Ran the JIT-vs-interp comparator on the cheap early repro
+`B2_JIT_VERIFY_BLOCKS=0x01002500-0x01002d00`. Decisive results:
+
+**Pinned the first diverging block: `0x01002c74` (len 6), terminal Bcc.**
+Comparator (full-Bcc enable): `mismatch=1 regs=1 ctrl=1 flags=1`, 189× vs 4×
+match (intermittent = entry-state-dependent). Detail line:
+```
+pc interp=01002c80/...2c74  native=01002c74/...2c80   (regs.pc base stale, pc_p correct)
+sr interp=2710 native=2708 / native=2718              (low SR byte: interp 0x10=X, native 0x08=N / 0x18)
+```
+
+**Eliminated hypotheses:**
+- **regs.pc commit is correct.** Block-end branch resolution
+  (`compemu_support_arm.cpp:6899+`) emits `compemu_raw_endblock_pc_isconst` for
+  BOTH targets, writing the full PC triple. The comparator's "stale regs.pc =
+  block-start" is an artifact (it reads `regs.pc` base, not the synced PC; native
+  `pc_p` is correct). NOT the bug.
+- **Branch-direction / backward-loop is NOT the (sole) cause.** Tried a scoped
+  **forward-only** narrowing (enable native continuation only for strictly-forward
+  short Bcc — displacement = opcode low byte; backward + Bcc.W/.L stay barriers).
+  Early 90s run looked clean (LED-spin 862→1, advanced past 0x01002c86), BUT the
+  full 780s boot **still live-locks** (868 LED-spin lines, kernel range never
+  reached). Forward Bcc hangs too → direction/loop is not the root cause.
+
+**Root cause (narrowed):** the compiled Bcc evaluates **divergent flags** vs the
+interpreter (low SR byte interp `0x10` X vs native `0x08`/`0x18` N — the
+nzcv-vs-cznv flag-layout seam) → the live `compemu_raw_jcc_l_oponly(cc)` takes the
+wrong direction → control eventually routes into the `0x0100254e/2568` LED-spin
+loop. The bug is in the **JIT flag state feeding the branch condition**
+(`make_flags_live` / flag-layout), NOT the trace barrier, NOT regs.pc, NOT
+branch-direction. This is the same flag-layout seam tracked across the oracle
+work — here it has a REAL runtime consequence (not just a comparator artifact),
+because a compiled Bcc *consumes* the flags for control flow.
+
+**Decision:** reverted full-Bcc AND forward-only (both regress boot; FAIL rule).
+The Bcc lever is BLOCKED on fixing JIT→Bcc flag correctness first. Next:
+single-step the flag state at `0x01002c74`'s terminal Bcc — capture m68k CCR
+(interp) vs the ARM NZCV `make_flags_live` materializes (JIT) at the branch, find
+which flag bit inverts, fix the flag-layout conversion on that path. Only then
+re-test Bcc continuation. `ec26050` (0800 handler) stands; this slot eliminated 3
+hypotheses and pinned the blocker to JIT branch-flag computation.

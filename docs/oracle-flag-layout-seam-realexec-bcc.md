@@ -202,3 +202,41 @@ With the per-fallback conversion in place, compiled terminators read the correct
 just-produced CCR, so the gap-fill barriers can be landed and gate-validated
 (mismatch=0) one by one. This is the prerequisite the seam doc named as gating
 "ALL flag-touching JIT coverage".
+
+---
+
+## VALIDATION OUTCOME (implemented + tested @ HEAD 1b59531 → REVERTED, hypothesis FALSIFIED)
+
+Applied EDIT 1 (`Uae2026BridgeSyncFlagsLegacyToJit`: legacy cznv→jit nzcv + X@8→@29)
+and EDIT 2 (fold it into `Uae2026JitCanonicalizePcAfterFallback`). Clean build.
+Tested both gates with real-exec runs:
+
+**Gate 2 (boot lever, flag-fix + Bcc enabled, 780s) — FAILED.**
+Boot still live-locks: 858 LED-spin lines at `0x0100254e/2568`, never leaves
+`0x0100xxxx` (highest PC `0x01002cb4`), kernel range never reached — *identical*
+to the no-flag-fix hang (862 spins). The c74 oracle mismatch also persists
+(`regs/ctrl/flags` still 1). **The fallback-boundary flag sync does NOT fix the
+c74 Bcc divergence.**
+
+**Gate 1 (oracle absolute, flag-fix alone, Bcc held, 780s) — FAILED.**
+Boot reaches the MVSR2 window normally (no hang). But the mismatch set CHANGED:
+baseline `{ec68, ec70, ecbe, ece0}` → with-fix `{ec68, ec6c, ecbe}`. Block
+**`0409ec6c` (previously passing) flipped to `mismatch=1`** — an absolute
+FAIL-rule violation (a passing block regressed). The global per-fallback sync has
+real blast-radius damage.
+
+**Conclusion — hypothesis falsified.** The c74 terminal-Bcc wrong-direction is
+NOT caused by a missing legacy→jit flag conversion at the interp-fallback
+boundary. Both the persistent hang (gate 2) and the new `ec6c` regression (gate 1)
+disprove it. The real divergence is deeper — most likely the **compiled block's
+own flag computation** for the ops preceding the Bcc (a `make_flags_live` /
+compiled-flag-set issue within the JIT block), not a cross-boundary sync. The
+inverting-bit observation (N) stands, but its origin is the JIT's internal flag
+production, not the fallback handoff.
+
+**Decision:** reverted all source edits (HEAD source restored to `ec26050`
+behavior). Bcc lever remains blocked. Next investigation must target the compiled
+flag computation inside the c74 block itself (disassemble c74's 6 ops, find the
+compiled flag-setter feeding the Bcc, compare its emitted NZCV vs the interp CCR),
+NOT another boundary-sync. `ec26050` (0800 handler) remains the only landed real
+handler; this slot falsified the boundary-sync hypothesis with real-exec gates.

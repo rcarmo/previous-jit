@@ -258,3 +258,32 @@ continuation is architecturally broken with large blast radius (why it was
 barriered), name the mechanism and surface as a scope call — do NOT churn reverts
 (prior full-drop/pure-terminator/forward-only/flag-boundary-sync attempts were all
 reverted for exactly these endblock/direct-chain reasons).
+
+---
+
+## Bcc campaign — validation-reachability constraint (measured this slot)
+
+Tried a broad NOBCC+REGONLY sweep (window 0x01002000-0x01010000, 500k maxsteps) to
+characterize compiled-Bcc correctness across many blocks. Result: LOCKSTEP_OK, 0
+divergence — BUT only 2 blocks compiled in-window: the per-step gold-interp
+(~100x slowdown) kept the run pinned in the c74 CRC loop for all 500k steps; it
+never traversed to diverse Bcc blocks. So:
+
+- POSITIVE: c74's compiled Bcc is REGONLY-clean (reconfirmed) — a real signal the
+  Bcc codegen is not uniformly broken.
+- CONSTRAINT: a contiguous REGONLY lockstep sweep CANNOT reach the high-frequency
+  RAM Bcc blocks (0x0438xxxx, ~60% of bailouts) — they're deep in the boot and the
+  lockstep is far too slow to get there. Validation for the campaign must NOT rely
+  on a single contiguous sweep reaching them.
+
+### Implication for the Bcc campaign validation strategy
+Options to validate deep RAM Bcc blocks as the barrier is dropped:
+(a) Lockstep windows that EXCLUDE early hot loops (e.g. skip c74) so steps aren't
+    burned before the target region — but the target must still be reached.
+(b) Per-block / checkpoint validation: arm REGONLY only at a specific Bcc block PC
+    once the boot reaches it (seed at that PC), rather than a contiguous sweep.
+(c) Drop the Bcc barrier GLOBALLY but keep the architectural block-verify + a
+    compiled-block REGONLY spot-check at first compile of each new Bcc block
+    (the gate already verifies each newly-compiled block as it starts compiling).
+Recommended: (c) — it matches the auditor's "gate verifies each newly-compiled
+block organically" and avoids the unreachability of a contiguous deep sweep.

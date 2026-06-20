@@ -116,3 +116,39 @@ and push to `rcarmo-jit/main` with the measured block-count drop.
 `LINK 4e56` / `UNLK 4e5e` / `RTS 4e75` — stack-frame native continuation
 (separate spec; A7-frame correctness). Rank after Bcc since Bcc is ~2x their
 combined frequency in this window.
+
+---
+
+## VERIFICATION OUTCOME (implemented + tested @ HEAD 511fc44 → REVERTED)
+
+Applied both edits (dropped `current_is_bcc` from `trace_barrier_op` + forced
+`must_end` pure terminator), incremental build clean, ran narrow oracle
+`0x0409f500-0x0409f600` (780s).
+
+**HARD REGRESSION — early-ROM boot broke.** Boot reached only PC ~`0x01002cb4`
+(early ROM, 0x0100xxxx) then fell into an infinite spin toggling the SCR2 LED at
+`$0200d003` between PC `0x0100254e` ↔ `0x01002568` (860 toggles, 84% of the log).
+It **never reached** the `0x0409xxxx` kernel range the 0800 baseline reached
+(0 JITBLOCKVERIFY lines in the verify window). No panic/segv — a live-lock.
+
+**Conclusion — the diagnosis was incomplete.** The structural finding (the
+barrier pre-empts the correct `end_block` terminator path) is still true, but the
+native Bcc COMPILED path itself diverges in early ROM — the bug is in the
+compiled handler / `register_branch` chaining / flag-liveness, **NOT** the
+forward-unroll. "Pure terminator, no unroll" does not make it safe; the barrier
+was guarding a real native-Bcc codegen bug, not just an unroll artifact. FAIL
+rule (boot regression) → reverted; binary restored to `ec26050` behavior.
+
+**Next (root-cause BEFORE re-enabling):** the divergence is reachable EARLY —
+the spin is at PC `0x01002568`/`0x0100254e` and boot dies right after
+`0x01002cb4`. That is a cheap, fast repro (no 13-min wait to the kernel window).
+Single-step JIT-vs-interp at the first Bcc executed in `0x01002500-0x01002d00`
+(verifier-independent real-exec comparator — the transferable BasiliskII
+technique): find the first PC where the compiled Bcc takes a different
+direction / wrong fall-through PC than the interpreter, then fix that codegen
+(suspects, in order): (1) `register_branch` not_taken/taken target PCs vs
+`m68k_pc_offset` extension-word accounting; (2) `make_flags_live()` timing
+(flags consumed by the cc test not yet materialized at the branch); (3) native-cc
+mapping for the specific cc that early ROM uses at `0x01002568`. Only re-enable
+the barrier drop after that block compiles `mismatch=0` AND boot passes
+`0x01002cb4` to the kernel range.

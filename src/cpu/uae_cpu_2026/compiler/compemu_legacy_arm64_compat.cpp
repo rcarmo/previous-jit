@@ -1554,6 +1554,26 @@ void execute_normal(void)
 			const bool drop_bcc = ls_nobcc && jit_lockstep_window_pc(pc_before_op);
 			const bool trace_barrier_op = (current_is_bcc && !drop_bcc) || current_is_dbcc || current_is_stack_pop_move || current_is_stack_push_pea || current_is_return || current_is_link_unlk || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp;
 			if (trace_barrier_op) {
+				/* B2_JIT_BARRIER_STATS: per-barrier-type bailout frequency ranking
+				 * (default-off). Names which trace_barrier dominates the boot path
+				 * so native-codegen work can target the highest-frequency barrier. */
+				static int bstats = -1;
+				if (bstats < 0) bstats = getenv("B2_JIT_BARRIER_STATS") ? 1 : 0;
+				if (bstats) {
+					static unsigned long c_bcc=0,c_dbcc=0,c_pop=0,c_push=0,c_ret=0,c_lnk=0,c_bit=0,c_enet=0,c_jmp=0,c_tot=0;
+					if (current_is_bcc && !drop_bcc) c_bcc++;
+					else if (current_is_dbcc) c_dbcc++;
+					else if (current_is_stack_pop_move) c_pop++;
+					else if (current_is_stack_push_pea) c_push++;
+					else if (current_is_return) c_ret++;
+					else if (current_is_link_unlk) c_lnk++;
+					else if (current_is_immediate_bitop) c_bit++;
+					else if (current_is_ethernet_reset_island) c_enet++;
+					else if (current_is_jsr_jmp) c_jmp++;
+					if (++c_tot % 200000 == 0)
+						fprintf(stderr, "JIT_BARRIER_STATS tot=%lu bcc=%lu jsr_jmp=%lu ret=%lu dbcc=%lu link_unlk=%lu push=%lu pop=%lu imm_bitop=%lu enet=%lu pc=0x%08x\n",
+							c_tot, c_bcc, c_jmp, c_ret, c_dbcc, c_lnk, c_push, c_pop, c_bit, c_enet, (unsigned)pc_before_op);
+				}
 				if (verify_this_block) {
 					fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d skipped=trace_barrier pc=%08x op=%04x\n",
 						(unsigned)verify_block_pc, blocklen, (unsigned)pc_before_op, (unsigned)(opcode & 0xffffu));

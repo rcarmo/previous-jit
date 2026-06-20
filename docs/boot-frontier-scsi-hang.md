@@ -227,3 +227,34 @@ backbone — then RTS/RTE, DBcc, stack moves). Gate each barrier removal on: blo
 now compile (compile_block count rises, exec_normal share drops), REGONLY lockstep
 clean on the newly-compiled blocks, and 75/75 + 32/32 green. Instrument a per-barrier
 hit counter first to rank them by boot-path frequency.
+
+---
+
+## NEXT-SLOT LAUNCH MAP — Bcc native codegen (the 60% barrier)
+
+Gate confirmed = deliberate trace_barrier in execute_normal:~1556. Target = Bcc
+(59.6% of bailouts). Entry points for the fix campaign:
+
+- Barrier site: `compemu_legacy_arm64_compat.cpp:~1556` — `current_is_bcc` →
+  `if (trace_barrier_op) return;`. The fix lets Bcc traces reach `compile_block`
+  (B2_JIT_LOCKSTEP_NOBCC already drops it inside the lockstep window — reuse that
+  scoping to validate before a global drop).
+- Native Bcc handlers: `compemu_arm.cpp` — op_6000 (BRA, unconditional, no cc),
+  op_6001/op_60ff (BRA.B/.L), op_6100 (BSR); CONDITIONAL Bcc = op_62xx..op_6fxx
+  (cc 2..15) — these emit native jcc + two endblock exits (taken/not-taken) and are
+  where the bugs live.
+- endblock / direct-chain machinery: `codegen_arm64.cpp:609`
+  (`compemu_raw_endblock_pc_inreg`), `:700` (`_isconst`), counter
+  `jit_endblock_inreg_count` (codegen_arm64.cpp:1330). Comment at
+  compemu_legacy_arm64_compat.cpp:~1521 names the failure modes: "Bcc/DBcc can
+  stop early or fall through into extension words after a few compiled iterations"
+  + "endblock/direct-chain state bugs".
+
+Method (per auditor): make conditional-Bcc native codegen correct (taken/not-taken
+endblock + direct-chain across the branch, flag-condition read), then drop the Bcc
+barrier; validate with REGONLY lockstep on the newly-compiled Bcc blocks +
+compile_block-up/exec_normal-down + 75/75 & 32/32. TRIPWIRE: if the conditional
+continuation is architecturally broken with large blast radius (why it was
+barriered), name the mechanism and surface as a scope call — do NOT churn reverts
+(prior full-drop/pure-terminator/forward-only/flag-boundary-sync attempts were all
+reverted for exactly these endblock/direct-chain reasons).

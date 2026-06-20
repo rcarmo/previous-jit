@@ -699,3 +699,54 @@ FLAGX vreg.) Next: re-confirm `needed_flags` for the LSL.L at c76 with NOBCC; if
 FLAG_X is absent, fix the liveness so ROXR's X-use reaches LSL (architectural,
 mirrors the BPL-N JOIN logic), rebuild, and gate on the mask going `ccrLIVE`-free
 on c74 + boot advancing past 0100254e + regression green.
+
+---
+
+## 17. RETRACTION + CORRECTION — c74 is NOT the blocker; CCR-compare path is untrustworthy
+
+Direct probe at the c74 CRC loop (dumping seed/gold/dut registers + raw regflags.x
+when gold.ccr != dut.ccr) produced the decisive result:
+
+```
+pc=01002c7a op=e219(ROR.B #1,D1)
+  gold_d1==dut_d1  (every iteration: 0x819,0x88c,0x846,...)
+  gold_d4==dut_d4  (every iteration)
+  gold_d0==dut_d0  (every iteration)
+  ONLY gold.ccr != dut.ccr, and the differing bit is UNSTABLE across iterations
+  (C, then N, then Z) for the SAME opcode.
+```
+
+### What this proves
+- **All registers (D0/D1/D4, the CRC state) match gold/dut perfectly through the
+  entire loop.** The JIT computes the CRC correctly.
+- The loop-exit branch `bpl.s @ 0x01002c7e` keys off `EOR.B`'s N set at
+  `0x01002c7c` — which does NOT appear as a divergence (gold.ccr==dut.ccr there),
+  so **the branch decision matches and c74 exits correctly.**
+- Therefore **c74 is NOT the boot blocker.** Registers correct + branch correct.
+
+### The CCR divergences are artifacts/dead, not the bug
+If registers match but flags computed FROM those same registers differ, and the
+differing bit is unstable, the CCR-compare is unreliable: stale `regflags`
+snapshots and/or real-but-DEAD flags (overwritten by `EOR.B` before the branch).
+The mask's "LSL.L X consumed by ROXR.B" was a FALSE POSITIVE: D4 (ROXR's result)
+matches, so the JIT's internal X feeding ROXR was correct — only the tracer's X
+capture diverged.
+
+### RETRACTION
+Commit `dcfd115` ("FIRST REAL DIVERGENCE — JIT LSL.L X-flag") is **RETRACTED**.
+It was a false positive from the unreliable CCR-capture path, the exact
+"don't trust a divergence the measurement creates" trap. c74 is correct.
+
+### Trust boundary (going forward)
+- TRUSTWORTHY: the tracer's **register + next_pc** comparison (always-live, no
+  capture ambiguity). Registers match => JIT correct; next_pc mismatch => real
+  wrong-path branch.
+- UNTRUSTWORTHY: the tracer's **CCR** comparison (stale snapshots, dead-flag
+  mis-attribution). Treat CCR diffs as advisory only.
+
+### Next
+The boot wall is PAST c74 (boot reaches ~0x01002cb4+). Re-run the tracer over a
+wider window comparing ONLY registers/next_pc (ignore CCR noise) to locate the
+first REAL register/branch divergence. Separately, the ROR.B byte-width N and the
+rotate X captures may be real latent JIT flag bugs but are DEAD on the boot path
+(benign) — deprioritised.

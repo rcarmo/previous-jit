@@ -1571,6 +1571,12 @@ void execute_normal(void)
 				maxrun_limit = env_maxrun;
 			}
 			bool must_end = helper_callsite || __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
+			/* When the lockstep NOBCC window drops a Bcc barrier, also terminate the
+			 * block AT the Bcc so it actually compiles (otherwise the trace runs on to
+			 * the next barrier — e.g. the c74 CRC loop's trailing DBF — and is skipped,
+			 * leaving the c74 ALU ops uninstrumented). */
+			if (drop_bcc && current_is_bcc)
+				must_end = true;
 			if (!must_end && end_block(opcode)) {
 				uintptr new_pcp = (uintptr)regs.pc_p;
 				uintptr blk_start = (uintptr)pc_hist[0].location;

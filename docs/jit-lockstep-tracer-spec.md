@@ -581,3 +581,40 @@ correct; the DUT dead-flag mask is the next gate.
 Landed in `compemu_support_arm.cpp` (straight-line gate, opcode dispatch,
 canonical CCR carry) + `uae2026_jit_bridge.cpp` (interp CCR accessors).
 `B2_JIT_LOCKSTEP_DEBUG=1` adds the LSDBG/LSDBG_GOLD per-op trace. All default-off.
+
+---
+
+## 14. TRACER TRUSTWORTHY + FIRST REAL RESULT — c74 CLEARED
+
+Seed-fix landed (straight-line pre-state gate) + `must_end` on the NOBCC-dropped
+Bcc (so the c74 CRC block actually compiles/instruments) + log-and-continue
+enumeration (cap 40).
+
+**Trustworthiness gate GREEN:** the `0x01002400-0x01002700` region — which
+previously false-positived `step=0` on an untouched register — now runs
+`LOCKSTEP_OK` (201 clean compare steps). No more seed/sync artifact.
+
+**First trustworthy result on the c74 CRC window (`0x01002c00-0x01002d00`),
+reproducible across runs:** every divergence is CCR-only, at `ROR.B` (c7a) and
+`LSL.L` (c76), in the **N/Z/C** bits. Crucially:
+- **X (bit4) always matches**, all **registers always match**, and `ROXR` (c78),
+  `EOR` (c7c, the BPL's N producer) and the `BPL` (c7e) show **zero divergence**.
+- The diverging N/Z/C of ROR.B/LSL.L are **dead** — the next `eor.b` overwrites
+  N/Z and clears C/V before any use.
+
+**Conclusion: c74 is CORRECT and is NOT the boot blocker.** Its live state (X,
+registers, the EOR-N the branch tests, and the branch target) all match the
+interpreter. The dead-flag ROR.B/LSL.L N/Z/C differences are a benign JIT
+flag-codegen nicety, not the hang. This independently CONFIRMS the earlier
+liveness disproof and the stale-pc artifact reclassification — with a trustworthy
+per-instruction tool instead of the red-herring-prone per-block oracle.
+
+**Redirect:** the wrong-branch that routes to the `0100254e` spin is in a
+DIFFERENT block. Next: widen / re-point the lockstep window to the actual
+control-flow that reaches 254e (sweep the Bcc-terminated blocks on the path),
+find the first divergence with a LIVE consequence (a register, X, or the EOR-N /
+branch target). The tracer is now the right instrument for that hunt.
+
+Optional cleanup: the dead-flag ROR.B/LSL.L N/Z/C divergences are worth a
+separate low-priority `jff_ROR_b`/`jff_LSL_l` flag-fidelity fix, but they do NOT
+gate boot.

@@ -741,6 +741,7 @@ static regstruct g_ls_gold_regs;
 static uae_u8    g_ls_gold_ccr5 = 0;         /* gold canonical CCR after the step */
 static uae_u32   g_ls_gold_pc = 0;
 static unsigned long g_ls_steps = 0;
+static unsigned long g_ls_ndiv = 0;
 static unsigned long g_ls_maxsteps = 200000;
 static bool      g_ls_maxsteps_init = false;
 /* PRE-state seed (seed-fix): the DUT register/flag state captured AFTER the
@@ -883,7 +884,14 @@ extern "C" void jit_ls_dut_dump(uae_u32 cur_pc, uae_u32 opcode) {
             fprintf(stderr, "LOCKSTEP_DIVERGE step=%lu pc=%08x op=%04x field=%s%d gold=%08x dut=%08x  gold_ccr=%02x dut_ccr=%02x\n",
                 g_ls_steps, cur_pc, (unsigned)(opcode & 0xffff), field, idx < 0 ? 0 : idx,
                 (unsigned)gv, (unsigned)dv, (unsigned)gold.ccr, (unsigned)dut.ccr);
-            g_ls_finished = true; return;
+            if (++g_ls_ndiv >= 40) {
+                fprintf(stderr, "LOCKSTEP_END divergence cap (%lu) reached\n", g_ls_ndiv);
+                g_ls_finished = true; return;
+            }
+            /* log-and-CONTINUE: re-sync gold from the DUT post-state (roll pending
+             * forward below) so we enumerate every per-op divergence — the dead
+             * benign ones (e.g. a C overwritten by the next op) AND the one that
+             * actually propagates to a register / used flag / branch. */
         }
         g_ls_steps++;
         if (g_ls_steps > g_ls_maxsteps) {

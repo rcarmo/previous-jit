@@ -332,3 +332,55 @@ where the two architectures actually disagree. For `0100254e` the cheapest
 config (single-RAM gold, register/flag/next-PC compare) is predicted to name the
 CRC loop's flag producer directly — the answer the per-block oracle can only
 red-herring around.
+
+---
+
+## 11. Instant-execute prep (refinements for greenlight)
+
+### 11.1 §4.4b dual-RAM escalation — concrete trigger (no judgement call)
+
+Start ALWAYS with single-RAM gold (§4.4a) + register/flag/next-PC compare,
+`B2_JIT_LOCKSTEP_DUMP_RADIUS=0`. Escalate to dual-RAM **iff and only iff** BOTH:
+
+1. The single-RAM run reports `no divergence in window` (exit 0) across the full
+   `0x01002400-0x01002700` arming window AND `MAXSTEPS` not hit — i.e. regs+CCR
+   +next-PC agree at every step; yet
+2. The same boot still live-locks at `0x0100254e` (LED-spin > 100 lines in the
+   780s run).
+
+That conjunction is the *only* signature of a silent memory-write divergence the
+register/flag/next-PC compare cannot see. Do NOT pre-emptively build dual-RAM.
+Intermediate step before full dual-RAM: re-run single-RAM with
+`DUMP_RADIUS=64` (touched-mem window diff around each op EA) — this catches a
+local store/load divergence at ~zero extra cost and only if it too is clean do
+you build the thread-local dual bank (§4.4b). Escalation ladder, in order:
+`radius=0` → `radius=64` → dual-RAM. Stop at the first that fires.
+
+### 11.2 Known-good self-test blocks (proves the tracer never false-positives)
+
+The self-test must arm the lockstep on blocks the *current* per-block oracle
+already reports `mismatch=0`, OUTSIDE the suspect CRC region, covering the flag
+shapes the real bug touches (rotate/shift/logic producing N/Z/C/X). Pick at
+execute time from a quick clean sweep (no guessing now):
+
+```bash
+# enumerate clean compiled blocks in a calm kernel window:
+tools/fg-verify-window.sh 0x0409f000-0x0409f200 780 2>&1 \
+ | grep 'mismatch=0' | grep -oE 'block=[0-9a-f]+' | sort -u | head
+```
+
+Required self-test coverage (arm each; expect `no divergence`):
+- one straight-line integer-ALU block (ADD/SUB/MOVE) — baseline reg+Z/N.
+- one shift/rotate block (LSL/LSR/ROXR) — exercises X materialisation (the
+  lower-fidelity field in §3/R4); confirms the X decode path doesn't manufacture
+  a false CCR diff.
+- one logic block (AND/OR/EOR) — the exact family of the c74 producer.
+If ANY self-test block reports a divergence, the tracer's own `ls_arch` decode
+(§5) is wrong — fix the decode before trusting a real `LOCKSTEP_DIVERGE`.
+
+### 11.3 Non-perturbation gate (mandatory, before trusting any result)
+
+Build once, capture `JIT_CODEGEN` block boundaries / emitted sizes for the
+`0x01002400-0x01002700` window with the tracer env UNSET vs SET. The two must be
+identical (the dump is MRS + non-freeing STR only). A boundary shift means the
+instrumentation moved liveness and the result is void — fix per R1 before use.

@@ -1605,6 +1605,20 @@ static inline bool jit_store_pcp_on_chain_env(void)
 	return cached != 0;
 }
 
+static inline bool jit_backedge_tick_enabled(void)
+{
+	/* fix-A (Rui-approved 2026-06-21): emit a device-tick yield on compiled
+	   loop BACK-EDGES so IO-poll loops advance device/event emulation instead
+	   of busy-spinning. Without it, a dropped-Bcc device-poll loop compiles a
+	   self-chaining native block that never returns to dispatch -> the polled
+	   device register never updates -> infinite spin. Default ON;
+	   B2_JIT_NO_BACKEDGE_TICK=1 disables it (A/B control). */
+	static int cached = -1;
+	if (cached < 0)
+		cached = (getenv("B2_JIT_NO_BACKEDGE_TICK") && *getenv("B2_JIT_NO_BACKEDGE_TICK") && strcmp(getenv("B2_JIT_NO_BACKEDGE_TICK"), "0") != 0) ? 0 : 1;
+	return cached != 0;
+}
+
 static inline bool jit_trace_setpc_env(void)
 {
 	static int cached = -1;
@@ -6329,6 +6343,37 @@ static inline unsigned int get_opcode_cft_map(unsigned int f)
 }
 #define DO_GET_OPCODE(a) (get_opcode_cft_map((uae_u16)*(a)))
 
+/* fix-A: shared runtime counter gating the back-edge device-tick cadence.
+   cpu_do_check_ticks is heavy (M68000_AddCycles + DSP_Run + i860_Run + IRQ
+   processing), so calling it on every loop iteration both kills throughput and
+   over-charges emulated cycles. Call it once per ~JIT_TICK_INTERVAL(64) emulated
+   instructions — i.e. every max(1,64/blocklen) back-edge crossings — matching the
+   mid-block tick injection cadence. A single shared counter is sufficient for
+   liveness (any spinning loop decrements it). */
+static uae_u32 jit_backedge_tick_counter = 0;
+
+static void jit_emit_backedge_tick(int blocklen)
+{
+    int n = 64 / (blocklen > 0 ? blocklen : 1);
+    if (n < 1) n = 1;
+    LOAD_U64(REG_WORK3, (uintptr)&jit_backedge_tick_counter);
+    LDR_wXi(REG_WORK1, REG_WORK3, 0);
+    uae_u32* b_call = (uae_u32*)get_target();
+    CBZ_wi(REG_WORK1, 0);                 /* counter==0 -> tick + reset (patched) */
+    /* counter != 0: decrement, store, skip the heavy tick (fast path) */
+    LOAD_U32(REG_WORK2, 1);
+    SUB_www(REG_WORK1, REG_WORK1, REG_WORK2);
+    STR_wXi(REG_WORK1, REG_WORK3, 0);
+    uae_u32* b_done = (uae_u32*)get_target();
+    B_i(0);                               /* -> done (patched) */
+    /* tick path: reset counter to n-1, advance device/event emulation */
+    write_jmp_target(b_call, (uintptr)get_target());
+    LOAD_U32(REG_WORK1, (uae_u32)(n - 1));
+    STR_wXi(REG_WORK1, REG_WORK3, 0);
+    compemu_raw_call((uintptr)cpu_do_check_ticks);
+    write_jmp_target(b_done, (uintptr)get_target());
+}
+
 void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 {
 #if defined(CPU_AARCH64)
@@ -7315,6 +7360,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                 branchadd = (uae_u32*)get_target() - 1;
 
                 /* predicted outcome */
+                /* fix-A: canonical loop-start address, for back-edge tick yield */
+                const uintptr block_start_canon = jit_canonicalize_target_pc((uintptr)pc_hist[0].location);
                 uintptr ct1 = jit_canonicalize_target_pc(t1);
                 tbi = get_blockinfo_addr_new((void*)ct1);
                 match_states(tbi);
@@ -7328,6 +7375,12 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     }
                 }
 
+                /* fix-A: if the predicted (fall-through) edge is a backward
+                   loop back-edge, advance device/event emulation so IO-poll
+                   loops make progress instead of busy-spinning. NZCV already
+                   consumed by the jcc above; regs flushed by flush(1). */
+                if (jit_backedge_tick_enabled() && ct1 <= block_start_canon)
+                    jit_emit_backedge_tick(blocklen);
                 /* Use endblock_pc_isconst for ALL blocks (including DBF)
                    to enable countdown + direct chaining. */
                 tba = compemu_raw_endblock_pc_isconst(scaled_cycles(totcycles), ct1);
@@ -7349,6 +7402,10 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     }
                 }
 
+                /* fix-A: same back-edge tick yield for the taken (not-predicted)
+                   edge — for ARM64 this is taken_pc_p, the usual loop back-edge. */
+                if (jit_backedge_tick_enabled() && ct2 <= block_start_canon)
+                    jit_emit_backedge_tick(blocklen);
                 tba = compemu_raw_endblock_pc_isconst(scaled_cycles(totcycles), ct2);
                 write_jmp_target(tba, get_handler(ct2));
                 create_jmpdep(bi, 1, tba, ct2);

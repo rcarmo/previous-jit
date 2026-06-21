@@ -593,3 +593,32 @@ root-cause step: instrument to capture a0/Xn at the first divergence and at the
 chained re-entry, to pin chain-entry-state vs internal-op vs index-carry. Honor
 the hard tripwire: if endblock/direct-chain is architecturally broken with large
 blast radius, name the mechanism + surface the scope call — do NOT revert-churn.
+
+### REFINED root cause — localized DATA-VALUE op bug, NOT architectural (chain + address refuted)
+
+Two decisive narrowing tests:
+
+1. CHAIN refuted: B2_JIT_FORCE_NONDIRECT_HANDLER=1 (direct-chain OFF) + DROP=bcc +
+   MAXSTEPS=1 — boot STILL stalls at 0x04382dde (94 ESP cmds vs 95 chained). Not
+   the direct-chain state-carry.
+
+2. ADDRESS refuted via block-verify (native-vs-interp full compare, the better tool
+   here — no gold device double-read): block 0x04382d9c len=25 mismatch=1 with
+   regs=1 ctrl=0 flags=0 mem=0 — ONLY d0/d1 diverge; ALL a-registers + monitored
+   memory MATCH. So the indexed reads hit the RIGHT addresses; the bug is in the
+   DATA-VALUE arithmetic, not the EA.
+
+Divergence signature: reg[0]/reg[1] interp=0008c6c6 native=0008c6c7 (off-by-one
+low bit; magnitude data-dependent across entries, e.g. 0008c6e0 vs 0006e000). The
+block assembles a 24-bit value: move.b (d8,a0,Xn),d0 reads + clr/move.b d0,d1 +
+swap d1 + clr.w d1 + asl.l #8,d0 + or.l d0,d1 (x2) + andi.l + move.l d2,d0 +
+eor.l d1,d0 + btst + beq. The native byte-assembly/shift/or/eor produces a value
+off by one low bit -> btst/beq mis-branches -> eventual EA overrun to 0x0211a004.
+
+=> This is a TRACTABLE per-op arithmetic codegen bug in the byte-assembly sequence
+(asl.l #8 / or.l / move.b-to-d1 / eor.l), NOT the endblock/direct-chain/extension-
+word architectural class. The earlier lockstep per-op d0 "fire" was partly gold
+device-double-read noise; block-verify is the trustworthy pinpoint here. NOT a
+scope call. Next: native-disassemble block 0x04382d9c (B2_JIT_DUMP) to identify
+which arithmetic op emits the off-by-one, fix that handler, re-verify
+(block-verify mismatch=0 + boot past 0x04382dde + 75/75 & 32/32) -> single SHA.

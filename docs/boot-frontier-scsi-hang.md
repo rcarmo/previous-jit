@@ -467,3 +467,45 @@ a full matrix; trust the validator ONLY when ALL FOUR are green AT the barrier b
 
 All four green -> only THEN the Bcc codegen fight. Until then the validator would
 silently pass every Bcc (next_pc) bug.
+
+---
+
+## FIX phase, next_pc validator + FULL 4-POINT MATRIX GREEN (2026-06-21)
+
+Implemented the next_pc-capture half (the dimension proven blind at 4961356) as a
+branch-target MEMBERSHIP check, not a next-arrival cross-check. The emit site
+publishes the DUT's TWO compile-time branch targets (taken + not-taken, as guest
+PCs via `get_virtual_address`) into `g_ls_dut_taken_pc`/`g_ls_dut_nottaken_pc`/
+`g_ls_dut_is_branch` alongside the existing `g_ls_dut_nextpc` store. In
+`jit_ls_dut_dump`, after the gold step, a control-transfer op asserts that gold's
+architecturally-correct successor `gold.next_pc` is one of the DUT's two compiled
+targets; if codegen corrupted the taken/not-taken target it is absent from the set
+=> `field=next_pc` FIRES at the producer PC, before the pending reseed launders it.
+
+Why membership, not next-arrival: a per-op "gold-predicted successor == next
+instrumented cur_pc" cross-check FALSE-FIRES on a clean compile, because only
+barrier-dropped blocks are instrumented — the DUT's next instrumented op is the
+loop top (0x01002c76), not the BPL's immediate successor (0x01002c86). Membership
+runs entirely in the C hook on compile-time constants, so it also never perturbs
+the delicate chained-endblock condition codegen (no inline flush/call between the
+condition eval and the raw_jcc).
+
+### FULL 4-POINT MATRIX (window 0x01002700-0x01002d00, DROP/NOBCC, REGONLY)
+1. POSITIVE — clean compile: GATE=GREEN, LOCKSTEP_OK, no register/next_pc fire.
+   gold.next_pc=01002c86 ∈ {dut_taken=01002c86, dut_nottaken=01002c80}.
+2. NEXT_PC teeth — `B2_JIT_PROVE_CORRUPT_TAKEN=1` (taken-target +2 in window):
+   FIRES `field=next_pc gold=01002c86 dut_taken=01002c88 dut_nottaken=01002c80`
+   at pc=01002c7e (op 6a06 BPL). Non-vacuous.
+3. REGISTER teeth — `B2_JIT_PROVE_CORRUPT_REG=1` (flushed D2 +1 in window):
+   FIRES `field=d2 gold=.. dut=..+1` across the windowed ops. Register dimension
+   now PROVEN firing in Previous (was untested / sibling-conflated at 4961356).
+4. REACHABILITY — the barrier block 0x01002c76 (containing the BPL at 0x01002c7e)
+   COMPILED under the dropped Bcc barrier and was COMPARED across 300001 steps in
+   the positive run; teeth fire on the first taken iteration. Non-vacuous.
+
+Both teeth were env-gated, default-off, and REVERTED after the gate; the binary
+was rebuilt clean. Regression green: opcode harness 75/75 score=100; fast MMU
+smoke 32/32 score=100; positive lockstep re-confirmed GREEN after revert.
+
+The validator now catches BOTH register AND next_pc/branch-target divergence ->
+it is trustworthy for the Bcc (60%) codegen fight.

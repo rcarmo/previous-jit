@@ -767,6 +767,24 @@ static bool      g_ls_have_pending = false;
 static regstruct g_ls_pending_regs;
 static uae_u8    g_ls_pending_ccr5 = 0;
 static uae_u32   g_ls_pending_next = 0;
+/* NEXT_PC / branch-target divergence capture (control-transfer codegen).
+ * The static emit-site _ls_next is 0 for an end-of-block control transfer, so
+ * the in-gate `dut.next_pc` compare is SKIPPED for exactly the Bcc/DBcc class we
+ * must validate, leaving the validator structurally BLIND to branch-target
+ * divergence (proven non-vacuous at the c74 BPL block 0x01002c76, commit 4961356).
+ *
+ * Per-op next-ARRIVAL comparison does not work: only barrier-dropped blocks are
+ * instrumented, so the DUT's next instrumented op is the loop top, not the
+ * branch's immediate successor (it false-fires on a clean compile). Instead the
+ * emit site publishes the DUT's TWO compile-time branch targets (taken + not-
+ * taken, as guest PCs) for the terminal control-transfer op. The free-running
+ * gold interpreter computes the architecturally-correct successor; that target
+ * MUST be one of the DUT's two compiled targets. If the codegen corrupted the
+ * taken/not-taken target, gold's successor is absent from the set -> FIRE
+ * field=next_pc at the producer PC, BEFORE the pending reseed launders it. The
+ * check runs entirely in the C hook on compile-time constants, so it never
+ * perturbs the delicate chained-endblock condition codegen. */
+extern "C" { uae_u32 g_ls_dut_taken_pc = 0; uae_u32 g_ls_dut_nottaken_pc = 0; uae_u32 g_ls_dut_is_branch = 0; }
 
 struct ls_arch { uae_u32 d[8]; uae_u32 a[8]; uae_u32 next_pc; uae_u8 ccr; };
 
@@ -952,6 +970,24 @@ extern "C" void jit_ls_dut_dump(uae_u32 cur_pc, uae_u32 opcode) {
                     g_ls_pend[g_ls_npend].pc = cur_pc;
                     g_ls_pend[g_ls_npend].age = 0;
                     g_ls_npend++;
+                }
+            }
+        }
+        /* NEXT_PC / branch-target divergence: for a control-transfer op the emit
+         * site published the DUT's two compile-time targets. gold.next_pc is the
+         * architecturally-correct successor and MUST be one of them; if codegen
+         * corrupted the taken/not-taken target, gold's successor is absent from
+         * the set -> branch-target divergence. Fires BEFORE the reseed launders
+         * it. (Register/CCR divergence already handled above; this is the
+         * orthogonal control-flow dimension the static-next gate was blind to.) */
+        if (!field && g_ls_dut_is_branch) {
+            if (gold.next_pc != g_ls_dut_taken_pc && gold.next_pc != g_ls_dut_nottaken_pc) {
+                fprintf(stderr, "LOCKSTEP_DIVERGE step=%lu pc=%08x op=%04x field=next_pc gold=%08x dut_taken=%08x dut_nottaken=%08x  (branch-target divergence)\n",
+                    g_ls_steps, cur_pc, (unsigned)(opcode & 0xffff),
+                    (unsigned)gold.next_pc, (unsigned)g_ls_dut_taken_pc, (unsigned)g_ls_dut_nottaken_pc);
+                if (++g_ls_ndiv >= 40) {
+                    fprintf(stderr, "LOCKSTEP_END divergence cap reached\n");
+                    g_ls_finished = true; return;
                 }
             }
         }
@@ -6744,9 +6780,27 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         uae_u32 _ls_next = (i + 1 < blocklen)
                             ? (block_m68k_pc + (uae_u32)((uintptr)pc_hist[i + 1].location - (uintptr)pc_hist[0].location))
                             : 0;
+                        /* Publish the DUT's two compile-time branch targets for a
+                         * control-transfer op so jit_ls_dut_dump can check that
+                         * gold's architecturally-correct successor is one of them
+                         * (branch-target divergence). taken_pc_p/next_pc_p are host
+                         * pointers set by the branch handler during comptbl above;
+                         * convert to guest PCs here. Non-branch ops clear is_branch. */
+                        uae_u32 _ls_is_branch = (next_pc_p && taken_pc_p) ? 1u : 0u;
+                        uae_u32 _ls_taken = _ls_is_branch ? get_virtual_address((uae_u8*)taken_pc_p) : 0u;
+                        uae_u32 _ls_nottaken = _ls_is_branch ? get_virtual_address((uae_u8*)next_pc_p) : 0u;
                         flush(1);
                         compemu_raw_mov_l_ri(REG_WORK1, _ls_next);
                         LOAD_U64(REG_WORK3, (uintptr)&g_ls_dut_nextpc);
+                        STR_wXi(REG_WORK1, REG_WORK3, 0);
+                        compemu_raw_mov_l_ri(REG_WORK1, _ls_is_branch);
+                        LOAD_U64(REG_WORK3, (uintptr)&g_ls_dut_is_branch);
+                        STR_wXi(REG_WORK1, REG_WORK3, 0);
+                        compemu_raw_mov_l_ri(REG_WORK1, _ls_taken);
+                        LOAD_U64(REG_WORK3, (uintptr)&g_ls_dut_taken_pc);
+                        STR_wXi(REG_WORK1, REG_WORK3, 0);
+                        compemu_raw_mov_l_ri(REG_WORK1, _ls_nottaken);
+                        LOAD_U64(REG_WORK3, (uintptr)&g_ls_dut_nottaken_pc);
                         STR_wXi(REG_WORK1, REG_WORK3, 0);
                         compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
                         compemu_raw_mov_l_ri(REG_PAR2, opcode);

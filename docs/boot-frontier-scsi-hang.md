@@ -439,3 +439,31 @@ NOTE (record accuracy): no B2_JIT_PROVE_PERTURB mechanism or d0-at-0x010005c0
 negative exists in THIS repo (HEAD a25655e -> this commit); a register-fires result
 described elsewhere is a sibling-session artifact, not Previous. For Previous the
 register-fire path is untested and the next_pc path is PROVEN blind.
+
+---
+
+## Re-prove gate = FULL 4-POINT MATRIX (auditor, after conflation correction)
+
+Both structural fixes are proven-required BEFORE Bcc:
+  (i)  REACHABILITY (RTS finding a25655e): first-compile per-block spot-check —
+       arm a bounded REGONLY window AT each newly-compiled barrier block, seeded
+       from DUT true entry state (bb0c275).
+  (ii) NEXT_PC VISIBILITY (BPL finding 4961356): for a control-transfer block,
+       capture dut.next_pc = ACTUAL post-op regs.pc (not static _ls_next=0) and
+       compare to gold's target BEFORE the reseed.
+
+Because the earlier "register-fires" (d0 @010005c0 / B2_JIT_PROVE_PERTURB) was a
+SIBLING conflation, register-teeth is ALSO untested in Previous. So the re-prove is
+a full matrix; trust the validator ONLY when ALL FOUR are green AT the barrier block:
+
+  (1) POSITIVE: correct compile -> clean on BOTH dimensions (no register, no next_pc
+      divergence) at the barrier block.
+  (2) NEXT_PC TEETH: corrupt BPL taken-target (+2) -> FIRES field=next_pc at
+      0x01002c7e.
+  (3) REGISTER TEETH: corrupt a register write (e.g. RTS A7 pop, or a d-reg emit)
+      -> FIRES field=register at that block.
+  (4) REACHABILITY: confirm the perturbed block actually COMPILED + was COMPARED
+      (non-vacuous — the failure mode that made a25655e's positive meaningless).
+
+All four green -> only THEN the Bcc codegen fight. Until then the validator would
+silently pass every Bcc (next_pc) bug.

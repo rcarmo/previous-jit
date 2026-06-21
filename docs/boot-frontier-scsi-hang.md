@@ -509,3 +509,35 @@ smoke 32/32 score=100; positive lockstep re-confirmed GREEN after revert.
 
 The validator now catches BOTH register AND next_pc/branch-target divergence ->
 it is trustworthy for the Bcc (60%) codegen fight.
+
+---
+
+## c74 Bcc VERIFY (trustworthy validator) — existing codegen CLEAN at c74
+
+With the next_pc-aware validator (7604ec8, 4-matrix green), re-ran the c74 Bcc
+positive: B2_JIT_LOCKSTEP_DROP=bcc + REGONLY, window 0x01002700-0x01002d00, UNPERTURBED.
+
+- Result: LOCKSTEP_OK, 300001 steps, 0 divergence (neither register nor next_pc).
+- c74 bpl block (0x01002c76, bpl.s @ 0x2c7e) compiled and validated.
+
+=> The EXISTING Bcc codegen (op_6a01 BPL.B) is CORRECT for the c74 case, now proven
+by an oracle with teeth on BOTH dimensions. The simple short-backward-branch path
+works.
+
+### Important caveat (the risk is NOT at c74)
+c74 is a SIMPLE short backward branch. The 4 prior Bcc reverts
+(full-drop/pure-terminator/forward-only/flag-boundary-sync) failed on the COMPLEX
+endblock/direct-chain/extension-word cases — NOT representable by c74. So "c74 Bcc
+clean" is necessary but NOT sufficient: it proves the simple case + validates the
+oracle end-to-end on real Bcc, but the boot-advancing deep-RAM Bcc blocks
+(0x0438xxxx) include the complex cases the barrier was protecting against.
+
+### Next (the actual codegen fight — fresh, oracle-watched, incremental)
+The "land Bcc" single-SHA = narrowing/removing current_is_bcc from trace_barrier_op
+so Bcc blocks compile for real. A naive global drop is the KNOWN-FAILING path (the
+4 reverts). The disciplined route: extend the proven first-compile spot-check to the
+deep-RAM Bcc blocks (the arm), let the trustworthy oracle catch the complex-case
+endblock/direct-chain divergences AS they compile, fix per-case, gate each on
+4-matrix-clean + compile_block-up + 75/75 & 32/32 single-SHA — or surface a scope
+call if architecturally stuck. This is a substantial high-revert-risk effort: do it
+fresh with the oracle watching, not rushed.

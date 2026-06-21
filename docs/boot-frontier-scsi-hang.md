@@ -541,3 +541,55 @@ endblock/direct-chain divergences AS they compile, fix per-case, gate each on
 4-matrix-clean + compile_block-up + 75/75 & 32/32 single-SHA — or surface a scope
 call if architecturally stuck. This is a substantial high-revert-risk effort: do it
 fresh with the oracle watching, not rushed.
+
+---
+
+## DEEP-RAM Bcc fight — oracle FIRED on a REAL codegen bug (reproduced + disambiguated + localized)
+
+Fresh slot (auditor-resumed). Extended the first-compile spot-check to deep RAM.
+
+### Reachability PROVEN
+Harvest (B2_JIT_BARRIER_STATS, no drop): the dominant Bcc barrier hot-spot IS
+deep-RAM — pc samples cluster at 0x04382df4 / e2c / e08 / d96 (bcc grew
+2.9M->4.0M over the window; dbcc plateaued ~1.097M). So "0x0438xxxx = the 60%"
+is CONFIRMED (earlier doubt about it was wrong — the brief 0x04380882->043808d8
+NextBus bus-error probe is a different, one-shot region).
+
+Tight-window spot-check (B2_JIT_LOCKSTEP_PCS=0x04382c00-0x04383200, DROP=bcc,
+REGONLY) ARMED at the real hot block (359 LSDBG) — deep-RAM reachability works.
+
+### Oracle FIRED — field=d0, dut runs one op AHEAD of gold
+LOCKSTEP_DIVERGE field=d0 at MOVE.B ops (1010/1030), e.g. step2 pc=04382da6
+gold d0=07fffc00 dut=07fffc08; dut's value at op N == gold's value at op N+1
+(dut one memory-element ahead). gold reads the SAME real memory as dut
+(ls_step_gold uses cpufunctbl[] on real RAM, no separate shadow), so a same-PC
+byte divergence = native execution diverging from interpreter ground truth.
+
+### Disambiguated: REAL codegen bug, NOT a harness artifact
+Candidate artifact: lockstep gold double-reading shared ESP device memory
+(side-effecting reads). Ruled OUT: compiled the block with gold stopped after 1
+step (MAXSTEPS=1, no ongoing double-reads) — boot STILL stalls identically at
+0x04382dde (Bus error $0211a004, 95 ESP commands vs 329 in pure interpreter).
+0x0211a004 NEVER appears in the interpreter harvest => codegen-only. The
+trustworthy oracle correctly caught a real bug.
+
+### Block + fault localization
+Loop 0x04382d9c-0x04382e2c (byte-scan/checksum):
+  d9c 2240 move.l d0,a1     d9e 2429 move.l (d16,a1),d2   da2 2069 move.l (d16,a1),a0
+  da6 1010 move.b (a0),d0   da8 2079 move.l (abs.L),a0     dae 203c move.l #imm,d0
+  db4 1030 move.b (d8,a0,Xn),d0  ... dc6 1030 ... dda 1030  (indexed reads)
+  df4 6706 beq.s            e2c 62f4 bhi.s (backward loop branch)
+The indexed read feeding 0x04382dde computes out-of-range 0x0211a004
+(ESP base 0x02114000 + 0x6004 overrun) -> bus error -> boot stall.
+
+### Mechanism hypothesis (endblock/direct-chain class — the 4 prior reverts)
+These addressing modes ((d16,An),(abs.L),(d8,An,Xn)) compile correctly in
+straight-line ROM. The bug is CONTEXTUAL to this deep-RAM block compiling +
+chaining across its backward Bcc (e2c). Leading hypothesis: native continuation
+carries wrong register state (the indexed base/index) across the chained backward
+branch, so the EA overruns. Divergence appears from the block's first compared op
+=> could also be wrong CHAIN-ENTRY state rather than an internal-op bug. Next
+root-cause step: instrument to capture a0/Xn at the first divergence and at the
+chained re-entry, to pin chain-entry-state vs internal-op vs index-carry. Honor
+the hard tripwire: if endblock/direct-chain is architecturally broken with large
+blast radius, name the mechanism + surface the scope call — do NOT revert-churn.

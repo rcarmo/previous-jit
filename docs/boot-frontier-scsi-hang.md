@@ -622,3 +622,27 @@ device-double-read noise; block-verify is the trustworthy pinpoint here. NOT a
 scope call. Next: native-disassemble block 0x04382d9c (B2_JIT_DUMP) to identify
 which arithmetic op emits the off-by-one, fix that handler, re-verify
 (block-verify mismatch=0 + boot past 0x04382dde + 75/75 & 32/32) -> single SHA.
+
+### Mechanism PINNED = (b) internal codegen bug (auditor a/b/c discriminator resolved)
+
+jit_block_verify_run seeds BOTH engines from the IDENTICAL entry snapshot
+(jit_block_verify_entry_state restored before the interp re-run AND before the
+native compile+run), then compares end state. Block 0x04382d9c diverges (d0/d1
+off-by-one, a-regs+mem match) from that identical clean entry in a SINGLE block
+execution. Therefore:
+  (a) wrong state carried INTO the block (entry-state)  -> REFUTED (identical entry seed)
+  (c) Xn/index drift across the backward-Bcc chain      -> REFUTED (single clean-entry block already diverges; no iteration/chain involved)
+  (b) internal codegen bug inside the block             -> CONFIRMED
+The defect is in this block's own emitted code: either op_1030's indexed
+(d8,a0,Xn) source-EA via calc_disp_ea_020 brief path, or one byte-assembly
+arithmetic op (move.b->d1 / swap / asl.l#8 / or.l / eor.l).
+
+Per-op verify (B2_JIT_VERIFY_PCS) did NOT cleanly pin the op: under it the block
+fell back / faulted at d9c (addr 0x08002077, just past RAM end) instead of
+compiling, so no JITVERIFY lines — the verify instrumentation perturbs the trace.
+Clean pin therefore needs native disassembly: instrument B2_JIT_DUMP to emit the
+compiled bytes for block 0x04382d9c, disassemble the AArch64, and check the
+indexed-EA emission (sign_extend_16_rr + lea_l_brr_indexed scale/disp8) and the
+asl.l#8/or.l/eor.l emitters against the off-by-one. Then fix the single emitter,
+re-verify (block-verify mismatch=0 + boot past 0x04382dde + 75/75 & 32/32) ->
+single SHA. NOT a scope call — mechanism (b) is a localized handler fix.

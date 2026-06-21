@@ -401,3 +401,41 @@ NEGATIVE #1 and #2 FIRE (register/next_pc divergence at the RTS block) and POSIT
 reads clean is the validator trustworthy. Only THEN proceed to Bcc.
 
 (Perturbations reverted; binary rebuilt clean; opcode regression 75/75 green.)
+
+---
+
+## PROVE phase, next_pc half — validator is BLIND to branch-target divergence (critical, blocks Bcc)
+
+Per the auditor's required next_pc-fire test (Bcc diverges by next_pc, not register):
+perturbed the BPL.B taken-target (+2) in op_6a01_0_comp_ff/_nf, then DROP=bcc +
+REGONLY on the c74 window (0x01002700-0x01002d00):
+
+- The c74 loop block (0x01002c76, containing the bpl.s at 0x01002c7e) COMPILED
+  under DROP=bcc and the lockstep validated it across all 300001 steps.
+- Result: **LOCKSTEP_OK — the corrupted branch target did NOT fire.** NON-VACUOUS
+  (the block was compiled+exercised), so this is a real validator blind spot.
+
+### Root cause (structural)
+The REGONLY contiguous lockstep cannot see control-flow divergence:
+1. For an end-of-block control transfer, the emit site sets dut.next_pc =
+   _ls_next = 0 (i+1==blocklen), and the compare does `if (dut.next_pc && gold!=dut)`
+   -> skipped. The branch TARGET is never compared.
+2. The per-step gold RESEED (g_ls_pending_regs = dut post-state) makes gold ADOPT
+   dut's (wrong) PC on the next step, so a wrong branch never surfaces downstream.
+
+So the validator catches REGISTER divergences (compared AT the op, e.g. a d0
+miscompile fires) but is BLIND to NEXT_PC/branch-target divergences. Bcc bugs are
+branch-target divergences -> **the current validator CANNOT validate Bcc.** A
+register-only negative pass (d0 fires) does NOT cover the branch class.
+
+### Required harness fix BEFORE Bcc
+The first-compile per-block spot-check must, for a compiled control-transfer block,
+capture dut.next_pc = the ACTUAL post-op regs.pc (not static _ls_next=0) and compare
+it to gold's computed target BEFORE reseeding. Then re-run this exact test; gate =
+the corrupted BPL target FIRES field=next_pc at 0x01002c7e AND a correct compile
+reads clean. Only then is the validator trustworthy for the 60% Bcc prize.
+
+NOTE (record accuracy): no B2_JIT_PROVE_PERTURB mechanism or d0-at-0x010005c0
+negative exists in THIS repo (HEAD a25655e -> this commit); a register-fires result
+described elsewhere is a sibling-session artifact, not Previous. For Previous the
+register-fire path is untested and the next_pc path is PROVEN blind.

@@ -365,3 +365,39 @@ Only after BOTH (a) clean-on-correct AND (b) fires-on-broken is a subsequent rea
 Bcc divergence trustworthy. Then deep Bcc = codegen-only fight; scope-call if
 architecturally stuck. (Reserve the heavy boots for a clear idx-1/idx-2 slot per the
 concurrent-CPU cap.)
+
+---
+
+## PROVE phase result — spot-check FAILS the NEGATIVE self-validation (harness not yet trustworthy)
+
+Ran the two-sided self-validation on RTS (B2_JIT_LOCKSTEP_DROP=rts + REGONLY,
+window 0x01000000-0x01003000). Result is the disciplined catch the auditor's
+negative half is for:
+
+- POSITIVE (correct RTS codegen): LOCKSTEP_OK, 300001 steps, 0 divergence.
+- NEGATIVE #1 (corrupt RTS return PC, arm_ADD_l_ri(newad,2) in op_4e75 _ff+_nf):
+  LOCKSTEP_OK — **did NOT fire.**
+- NEGATIVE #2 (corrupt RTS A7 pop, lea 15,15,6 — REGISTER-observable): LOCKSTEP_OK
+  — **also did NOT fire.**
+- Diagnostic: only **3 distinct compiled blocks** validated across the 300001
+  steps. The contiguous lockstep is PINNED in a tiny early compiled loop (the
+  ~100x gold-interp slowdown, 10d46c9's reachability constraint) and never reaches
+  the RTS blocks. So the POSITIVE LOCKSTEP_OK was **VACUOUS** (no RTS validated),
+  and both NEGATIVES are silent for the same reason.
+
+### Conclusion — do NOT trust the spot-check on Bcc yet
+A validator that does not fire on a deliberately-broken compile is worthless. The
+current harness (56c96fc) only generalized the in-window barrier DROP mask; the
+lockstep validation is still the CONTIGUOUS straight-line gate, which pins in early
+loops and never validates the dropped barrier blocks. **56c96fc is necessary but
+NOT sufficient.**
+
+### Required next step (was already specified in 10d46c9, now PROVEN necessary)
+Implement the actual FIRST-COMPILE per-block spot-check: arm REGONLY in a BOUNDED
+window AT each newly-compiled barrier block (seeded from the DUT's true entry state
+per bb0c275), so the comparison happens exactly at the barrier block — not a
+contiguous sweep that pins elsewhere. Re-run the SAME two-sided test; only when
+NEGATIVE #1 and #2 FIRE (register/next_pc divergence at the RTS block) and POSITIVE
+reads clean is the validator trustworthy. Only THEN proceed to Bcc.
+
+(Perturbations reverted; binary rebuilt clean; opcode regression 75/75 green.)

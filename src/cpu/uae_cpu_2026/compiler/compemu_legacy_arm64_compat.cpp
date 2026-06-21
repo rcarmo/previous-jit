@@ -1581,7 +1581,20 @@ void execute_normal(void)
 				}
 			}
 			const bool in_ls_window = jit_lockstep_window_pc(pc_before_op);
-			const bool drop_bcc  = ((ls_nobcc || (ls_dropmask & DROP_BCC)) && in_ls_window);
+			/* PRODUCTION Bcc-drop experiment (B2_JIT_DROP_BCC_PROD), optionally SCOPED to a PC
+			 * range [_LO,_HI] (default global). Drops the Bcc trace barrier WITHOUT the lockstep
+			 * window so genuine conditional Bcc compile+chain with no scaffold churn. Default-off. */
+			static int prod_drop_bcc = -1;
+			static uae_u32 prod_lo = 0u, prod_hi = 0xffffffffu;
+			if (prod_drop_bcc < 0) {
+				prod_drop_bcc = getenv("B2_JIT_DROP_BCC_PROD") ? 1 : 0;
+				const char* _lo = getenv("B2_JIT_DROP_BCC_PROD_LO");
+				const char* _hi = getenv("B2_JIT_DROP_BCC_PROD_HI");
+				if (_lo && *_lo) prod_lo = (uae_u32)strtoul(_lo, 0, 0);
+				if (_hi && *_hi) prod_hi = (uae_u32)strtoul(_hi, 0, 0);
+			}
+			const bool prod_drop_here = prod_drop_bcc && pc_before_op >= prod_lo && pc_before_op <= prod_hi;
+			const bool drop_bcc  = (((ls_nobcc || (ls_dropmask & DROP_BCC)) && in_ls_window) || prod_drop_here);
 			const bool drop_dbcc = ((ls_dropmask & DROP_DBCC) && in_ls_window);
 			const bool drop_ret  = ((ls_dropmask & DROP_RET)  && in_ls_window);
 			const bool drop_link = ((ls_dropmask & DROP_LINK) && in_ls_window);

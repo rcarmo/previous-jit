@@ -1533,7 +1533,7 @@ void execute_normal(void)
 			 * (deep-RAM SCSI loop: boot 95->895 ESP cmds + reaches DMA init once bsr
 			 * is kept barriered while true Bcc is dropped). */
 			const bool current_is_bsr = ((opcode & 0xff00u) == 0x6100u);
-			const bool current_is_bcc = ((opcode & 0xf000u) == 0x6000u && opcode != 0x6000u && !current_is_bsr);
+			const bool current_is_bcc = ((opcode & 0xf000u) == 0x6000u && (opcode & 0x0f00u) != 0x0000u && !current_is_bsr);
 			const bool current_is_dbcc = ((opcode & 0xf0f8u) == 0x50c8u);
 			const bool current_is_stack_pop_move = (opcode == 0x241fu);
 			const bool current_is_stack_push_pea =

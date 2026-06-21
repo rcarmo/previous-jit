@@ -6365,8 +6365,16 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 		int extra_len=0;
 
         redo_current_block = 0;
+        /* Cache-full reclaim MUST be a HARD flush: only flush_icache_hard
+           resets current_compile_p back to compiled_code. flush_icache_lazy
+           merely demotes blocks and never rewinds the emit pointer, so using
+           it here lets current_compile_p crawl past MAX_COMPILE_PTR until the
+           emit pointer (target) overruns the 64MB cache -> SIGSEGV. Matches
+           upstream compemu_support.cpp (flush_icache_hard at this checkpoint).
+           Latent in production (cache never fills); manifests once a Bcc-heavy
+           RAM loop compiles enough blocks to fill the cache. */
         if (current_compile_p >= MAX_COMPILE_PTR)
-            flush_icache_lazy(3);
+            flush_icache_hard(3);
 
         alloc_blockinfos();
 
@@ -7465,9 +7473,12 @@ endblock_done:
         raise_in_cl_list(bi);
         bi->nexthandler = current_compile_p;
 
-        /* We will flush soon, anyway, so let's do it now */
+        /* We will flush soon, anyway, so let's do it now. HARD flush here
+           (matches upstream): reclaims the cache by rewinding current_compile_p.
+           A lazy flush would leave current_compile_p past MAX_COMPILE_PTR and
+           overflow on the next compile. */
         if (current_compile_p >= MAX_COMPILE_PTR)
-            flush_icache_lazy(3);
+            flush_icache_hard(3);
 
         bi->status = BI_ACTIVE;
 #if defined(CPU_AARCH64)

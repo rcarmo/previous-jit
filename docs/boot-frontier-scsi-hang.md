@@ -646,3 +646,20 @@ indexed-EA emission (sign_extend_16_rr + lea_l_brr_indexed scale/disp8) and the
 asl.l#8/or.l/eor.l emitters against the off-by-one. Then fix the single emitter,
 re-verify (block-verify mismatch=0 + boot past 0x04382dde + 75/75 & 32/32) ->
 single SHA. NOT a scope call — mechanism (b) is a localized handler fix.
+
+### Emitter code-read narrowing (auditor's or.l/eor.l lead RULED OUT)
+
+Read the candidate emitters directly (no boot):
+- jnf_OR_l = ORR_rrr(d,d,s); jnf_EOR_l = EOR_rrr(d,d,s) — CLEAN. The or.l(de4)/
+  eor.l(dee) here are no-flags (beq consumes btst's Z, not the or/eor), so they
+  hit these clean reg-reg paths. Auditor's "low bit from or.l/eor.l" lead RULED OUT.
+- lea_l_brr_indexed: offset is IM8 = uae_s32 (signed); negative disp8 -> SUB s,-offset
+  correctly. EA-offset path CLEAN.
+Remaining suspects (need disasm to pin): sign_extend_16_rr (word-index extension in
+calc_disp_ea_020 brief), the move.b readbyte zero-extension into d0, asl.l#8 (e180),
+swap d1 (4841), or the andi.l masks. Bit-0 corruption with data-dependent magnitude
+(0008c6c6/c7 small vs 0008c6e0/0006e000 large) is most consistent with a WRONG BYTE
+being read (indexed EA index/scale/extension), not the reg-reg combiners. Definitive
+pin = B2_JIT_DUMP native disasm of block 0x04382d9c mapped op-by-op. Then careful
+single-emitter fix + re-verify (block-verify mismatch=0 on 0x04382d9c + boot past
+0x04382dde + 75/75 & 32/32) -> single SHA. Still mechanism (b), still not a scope call.

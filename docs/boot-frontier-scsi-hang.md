@@ -663,3 +663,41 @@ being read (indexed EA index/scale/extension), not the reg-reg combiners. Defini
 pin = B2_JIT_DUMP native disasm of block 0x04382d9c mapped op-by-op. Then careful
 single-emitter fix + re-verify (block-verify mismatch=0 on 0x04382d9c + boot past
 0x04382dde + 75/75 & 32/32) -> single SHA. Still mechanism (b), still not a scope call.
+
+### DISASM REFRAME — EA codegen is CORRECT; block reads side-effecting IO; earlier block-verify conclusion CORRECTED
+
+Native-disassembled block 0x04382d9c (B2_JIT_DUMP_BLOCK, reverted after).
+Brief ext word for all three indexed move.b = 0x0800 = LONG index D0, scale 1,
+disp 0. Each is preceded by move.l #0x0201a00X,d0, so EA = A0 + D0 (D0 a constant
+0x0201a001/2/3). Native emission for db4/dc6/dda is IDENTICAL and CORRECT:
+  ldr w17,[x28,#32] (A0); ldr w16,[x28] (D0); add w15,w17,w16 (EA=A0+D0)
+then readbyte helper, bfxil byte into D0. => The indexed-EA codegen is CORRECT.
+The "off-by-one arithmetic/EA op" hypothesis is REFUTED by disasm.
+
+A0 + 0x0201a00X lands in IO space: the stall is Bus error $0211a004 (ioMem.c) —
+these are DEVICE-REGISTER reads, not RAM. Two consequences:
+
+1. block-verify is UNRELIABLE for this block (CORRECTS the earlier "(b) internal,
+   (c) refuted" conclusion). block-verify runs interp THEN native, both reading the
+   side-effecting IO device (status-clear-on-read / FIFO-advance), so the single-
+   block "d0/d1 off-by-one from identical entry" is a DEVICE-DOUBLE-READ ARTIFACT,
+   not a codegen divergence — the same flaw as gold-lockstep. NO interp-comparison
+   oracle validates an IO-polling block.
+2. Device-read ROUTING is not the bug either: B2_JIT_ALL_SPECIAL_MEM=1 (force all
+   reads device-aware) STILL stalls identically at 0x04382dde (95 vs 329 ESP cmds).
+
+REAL mechanism = loop-carried / cross-block, NOT a single op. D0 is a const (same
+both engines) and the EA codegen is correct, yet native lands at an INVALID IO addr
+(0x0211a004) while interp stays valid — so A0 diverges at runtime. A0 = *(0x0439f538)
+(a RAM pointer, loop-carried). The block ends in bsr.l (0x61ff @ e22, itself
+mis-classified as "bcc") + backward bhi.s loop (e2c). So compiling the loop + its
+bsr callee diverges over iterations via the 0x0439f538 pointer -> A0 corrupts ->
+invalid IO addr -> bus error -> stall.
+
+USABLE oracle remains: boot-progress delta (native-only 95 ESP cmds vs interp 329)
+is oracle-free and does NOT suffer the device-double-read problem — so a fix CAN be
+validated by boot-advance even though per-op/block oracles cannot. But the bug is
+loop-carried through the bsr callee + RAM pointer, NOT this block's emitted ops.
+This is materially harder than a single-handler fix and approaches the architectural
+device-polling-loop class. Decision surfaced to auditor: deep cross-block/callee
+disasm (bigger effort) vs scope call. NOT churning a speculative op fix.

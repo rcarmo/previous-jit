@@ -701,3 +701,31 @@ loop-carried through the bsr callee + RAM pointer, NOT this block's emitted ops.
 This is materially harder than a single-handler fix and approaches the architectural
 device-polling-loop class. Decision surfaced to auditor: deep cross-block/callee
 disasm (bigger effort) vs scope call. NOT churning a speculative op fix.
+
+### ROOT CAUSE FIXED — bsr.l was mis-classified as Bcc (auditor lead confirmed)
+
+The deep-RAM "Bcc codegen bug" was largely a CLASSIFICATION error, not a Bcc-codegen
+defect. current_is_bcc = ((op & 0xf000)==0x6000 && op != 0x6000) swept in BSR
+(0x61xx) — but bsr is a subroutine CALL, not a conditional branch. So dropping the
+Bcc barrier (B2_JIT_LOCKSTEP_DROP=bcc, and any eventual Bcc-barrier removal) ALSO
+compiled the bsr through the conditional-branch trace path, breaking call/return and
+corrupting the loop-carried pointer (A0 = *(0x0439f538)) -> invalid IO addr
+0x0211a004 -> bus-error stall at 0x04382dde.
+
+PROOF (oracle-free boot-delta, immune to the device-double-read problem that makes
+block-verify/gold-lockstep invalid for this IO-polling block):
+- DROP=bcc with bsr ALSO dropped: 95 ESP cmds, stuck at 0x04382dde.
+- DROP=bcc with bsr kept BARRIERED: 895 ESP cmds, boot reaches DMA init (0x0407c03c).
+=> The deep-RAM Bcc LOOP codegen is SOUND; the stall was the bsr confound. This also
+retroactively explains the device-read "off-by-one" artifacts: the loop was running
+with a corrupted A0 from the mis-compiled bsr.
+
+FIX (single change, compemu_legacy_arm64_compat.cpp): classify bsr (0x61xx) as a CALL
+(current_is_bsr), exclude it from current_is_bcc, and barrier it unconditionally like
+jsr_jmp. No default-boot behavior change (bsr was already barriered when !drop_bcc);
+the fix ensures a Bcc drop/removal never compiles a call.
+
+GATE: 75/75 opcode harness score=100; 32/32 MMU fast smoke score=100; boot-delta
+95->895 ESP cmds + DMA init reached. RESIDUAL: a 0x04382dde spin still recurs later
+in the run (after DMA init) — a separate frontier to diagnose next, no longer the
+bsr confound.

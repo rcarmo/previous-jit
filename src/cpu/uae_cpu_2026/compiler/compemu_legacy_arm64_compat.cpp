@@ -1525,7 +1525,15 @@ void execute_normal(void)
 			 * the interpreter for now.  This is conservative but lets the JIT
 			 * continue compiling straight-line code elsewhere while preserving
 			 * branch-loop correctness. */
-			const bool current_is_bcc = ((opcode & 0xf000u) == 0x6000u && opcode != 0x6000u);
+			/* BSR (0x61xx) is a subroutine CALL, not a conditional branch. It must be
+			 * classified with the call/jsr_jmp barrier class, NOT Bcc: lumping it into
+			 * current_is_bcc meant a Bcc-barrier drop (or eventual removal) would also
+			 * compile the bsr through the conditional-branch trace path, breaking
+			 * call/return semantics and corrupting loop-carried pointer state
+			 * (deep-RAM SCSI loop: boot 95->895 ESP cmds + reaches DMA init once bsr
+			 * is kept barriered while true Bcc is dropped). */
+			const bool current_is_bsr = ((opcode & 0xff00u) == 0x6100u);
+			const bool current_is_bcc = ((opcode & 0xf000u) == 0x6000u && opcode != 0x6000u && !current_is_bsr);
 			const bool current_is_dbcc = ((opcode & 0xf0f8u) == 0x50c8u);
 			const bool current_is_stack_pop_move = (opcode == 0x241fu);
 			const bool current_is_stack_push_pea =
@@ -1577,7 +1585,7 @@ void execute_normal(void)
 			const bool drop_dbcc = ((ls_dropmask & DROP_DBCC) && in_ls_window);
 			const bool drop_ret  = ((ls_dropmask & DROP_RET)  && in_ls_window);
 			const bool drop_link = ((ls_dropmask & DROP_LINK) && in_ls_window);
-			const bool trace_barrier_op = (current_is_bcc && !drop_bcc) || (current_is_dbcc && !drop_dbcc) || current_is_stack_pop_move || current_is_stack_push_pea || (current_is_return && !drop_ret) || (current_is_link_unlk && !drop_link) || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp;
+			const bool trace_barrier_op = (current_is_bcc && !drop_bcc) || current_is_bsr || (current_is_dbcc && !drop_dbcc) || current_is_stack_pop_move || current_is_stack_push_pea || (current_is_return && !drop_ret) || (current_is_link_unlk && !drop_link) || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp;
 			if (trace_barrier_op) {
 				/* B2_JIT_BARRIER_STATS: per-barrier-type bailout frequency ranking
 				 * (default-off). Names which trace_barrier dominates the boot path

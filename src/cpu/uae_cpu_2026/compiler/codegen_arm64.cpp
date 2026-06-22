@@ -258,6 +258,47 @@ LOWFUNC(NONE,WRITE,1,compemu_raw_set_pc_i,(IMPTR s))
 }
 LENDFUNC(NONE,WRITE,1,compemu_raw_set_pc_i,(IMPTR s))
 
+LOWFUNC(NONE,WRITE,1,compemu_raw_set_pc_from_reg,(RR4 rr_pc))
+{
+	if (jit_trace_setpc_env()) {
+		STR_xXpre(rr_pc, RSP_INDEX, -16);
+		MOV_xx(REG_PAR1, rr_pc);
+		LOAD_U32(REG_PAR2, 10);
+		compemu_raw_call((uintptr)jit_trace_setpc_value);
+		LDR_xXpost(rr_pc, RSP_INDEX, 16);
+	}
+	const uintptr idx_pcp = (uintptr)&(regs.pc_p) - (uintptr)&regs;
+	const uintptr idx_pc = (uintptr)&(regs.pc) - (uintptr)&regs;
+	const uintptr idx_oldp = (uintptr)&(regs.pc_oldp) - (uintptr)&regs;
+	STR_xXi(rr_pc, R_REGSTRUCT, idx_pcp);
+	STR_xXi(rr_pc, R_REGSTRUCT, idx_oldp);
+	LOAD_U64(REG_WORK2, (uintptr)&MEMBaseDiff);
+	LDR_xXi(REG_WORK2, REG_WORK2, 0);
+	SUB_xxx(REG_WORK3, rr_pc, REG_WORK2);
+	STR_wXi(REG_WORK3, R_REGSTRUCT, idx_pc);
+}
+LENDFUNC(NONE,WRITE,1,compemu_raw_set_pc_from_reg,(RR4 rr_pc))
+
+LOWFUNC(NONE,WRITE,2,compemu_raw_set_pc_full_i,(IM32 guest_pc, IMPTR host_pc))
+{
+	LOAD_U64(REG_WORK1, host_pc);
+	if (jit_trace_setpc_env()) {
+		STR_xXpre(REG_WORK1, RSP_INDEX, -16);
+		LDR_xXi(REG_PAR1, RSP_INDEX, 0);
+		LOAD_U32(REG_PAR2, 11);
+		compemu_raw_call((uintptr)jit_trace_setpc_value);
+		LDR_xXpost(REG_WORK1, RSP_INDEX, 16);
+	}
+	const uintptr idx_pcp = (uintptr)&(regs.pc_p) - (uintptr)&regs;
+	const uintptr idx_pc = (uintptr)&(regs.pc) - (uintptr)&regs;
+	const uintptr idx_oldp = (uintptr)&(regs.pc_oldp) - (uintptr)&regs;
+	STR_xXi(REG_WORK1, R_REGSTRUCT, idx_pcp);
+	STR_xXi(REG_WORK1, R_REGSTRUCT, idx_oldp);
+	LOAD_U32(REG_WORK2, (uae_u32)guest_pc);
+	STR_wXi(REG_WORK2, R_REGSTRUCT, idx_pc);
+}
+LENDFUNC(NONE,WRITE,2,compemu_raw_set_pc_full_i,(IM32 guest_pc, IMPTR host_pc))
+
 LOWFUNC(NONE,WRITE,2,compemu_raw_mov_l_mi,(MEMW d, IMPTR s))
 {
 	uintptr idx = d - (uintptr) &regs;
@@ -337,6 +378,17 @@ LOWFUNC(WRITE,RMW,1,compemu_raw_dec_m,(MEMRW d))
 	STR_wXi(REG_WORK2, REG_WORK1, 0);
 }
 LENDFUNC(WRITE,RMW,1,compemu_raw_dec_m,(MEMRW ds))
+
+LOWFUNC(WRITE,RMW,1,compemu_raw_inc_m,(MEMRW d))
+{
+	/* Profiling helper: keep this flag-neutral so it can be inserted on
+	   already-decided control-flow paths without changing condition codes. */
+	LOAD_U64(REG_WORK1, d);
+	LDR_wXi(REG_WORK2, REG_WORK1, 0);
+	ADD_wwi(REG_WORK2, REG_WORK2, 1);
+	STR_wXi(REG_WORK2, REG_WORK1, 0);
+}
+LENDFUNC(WRITE,RMW,1,compemu_raw_inc_m,(MEMRW d))
 
 STATIC_INLINE void compemu_raw_call(uintptr t)
 {
@@ -1100,7 +1152,7 @@ LOWFUNC(NONE,WRITE,2,raw_fp_from_exten_mr,(RR4 adr, FR s))
 {
 	FMOV_xd(REG_WORK1, s);
 	FCMP_d0(s);
-	ADD_xxx(REG_WORK4, adr, R_MEMSTART);
+	ADD_xxwEX(REG_WORK4, R_MEMSTART, adr, EX_UXTW);
 
 	uae_u32* branchadd_iszero = (uae_u32*)get_target();
 	BEQ_i(0); // iszero
@@ -1151,7 +1203,7 @@ LENDFUNC(NONE,WRITE,2,raw_fp_from_exten_mr,(RR4 adr, FR s))
 
 LOWFUNC(NONE,READ,2,raw_fp_to_exten_rm,(FW d, RR4 adr))
 {
-	ADD_xxx(REG_WORK3, adr, R_MEMSTART);
+	ADD_xxwEX(REG_WORK3, R_MEMSTART, adr, EX_UXTW);
 
 	ADD_xxi(REG_WORK1, REG_WORK3, 4);
 	LDR_xXi(REG_WORK1, REG_WORK1, 0);

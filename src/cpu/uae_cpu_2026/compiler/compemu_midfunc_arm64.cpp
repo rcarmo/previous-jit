@@ -156,6 +156,21 @@ MIDFUNC(0,dont_care_flags,(void))
 }
 MENDFUNC(0,dont_care_flags,(void))
 
+/* Preserve the current M68K CCR before generated non-CCR control-flow
+   address plumbing (RTS/JSR/JMP/BSR) emits host calls or arithmetic that may
+   clobber native NZCV. Branch-like M68K instructions leave CCR unchanged, and
+   that has to remain true even when liveflags thought no later instruction in
+   the current native trace needed them: the successor block still may. */
+MIDFUNC(0,preserve_flags_before_nzcv_clobber,(void))
+{
+	int old_important = live.flags_are_important;
+	live.flags_are_important = 1;
+	clobber_flags();
+	live.flags_are_important = old_important;
+	flags_carry_inverted = false;
+}
+MENDFUNC(0,preserve_flags_before_nzcv_clobber,(void))
+
 /* Mark hardware NZCV as stale without saving it to regflags.nzcv.
    Used by DBcc (case 1/DBRA): the sub_w_ri sets NZCV for the branch
    decision, but M68K DBcc does NOT affect CCR. The pre-existing flags
@@ -174,25 +189,18 @@ MENDFUNC(0,discard_flags_in_nzcv,(void))
 
 /* Save hardware NZCV to regflags.nzcv, then discard — for DBcc cases 2-15
    where the preceding CMP/CMPI result is still in hardware NZCV
-   (dbcc_cond_move_ne_w uses CBZ which doesn't touch NZCV). */
+   (dbcc_cond_move_ne_w uses CBZ which doesn't touch NZCV).
+   IMPORTANT: this must NOT write regflags.x.  CMP/CMPI and DBcc never
+   affect the 68k X flag, so deriving X from the carry here corrupts it
+   (observed as an X-flip 1->0 across a CMP.L/DBEQ search loop). Only the
+   C/Z/N/V (cznv) state is persisted; the X flag is left exactly as-is. */
 MIDFUNC(0,save_and_discard_flags_in_nzcv,(void))
 {
 	if (live.flags_in_flags == VALID) {
-		/* Save X flag from carry using raw ARM64.
-		   Bypasses register allocator to avoid eviction issues. */
-		MRS_NZCV_x(REG_WORK4);
-		if (flags_carry_inverted) {
-			EOR_xxCflag(REG_WORK4, REG_WORK4);
-		}
-		/* Extract carry bit (bit 29) and store to regflags.x */
-		{
-			uae_u32 mask = 1u << 29;
-			LOAD_U32(REG_WORK3, mask);
-			AND_www(REG_WORK4, REG_WORK4, REG_WORK3);
-		}
-		LOAD_U64(REG_WORK3, (uintptr)&regflags.x);
-		STR_wXi(REG_WORK4, REG_WORK3, 0);
-		/* Save NZCV to regflags.nzcv */
+		/* Save NZCV (cznv) so a downstream Bcc/Scc after this DBcc sees
+		   the correct C/Z/N/V. raw_flags_to_reg() normalizes the inverted
+		   carry internally before storing regflags.nzcv. Do NOT touch
+		   regflags.x / FLAGX. */
 		int tmp = writereg(FLAGTMP);
 		raw_flags_to_reg(tmp);
 		unlock2(tmp);
@@ -200,17 +208,6 @@ MIDFUNC(0,save_and_discard_flags_in_nzcv,(void))
 	live.flags_in_flags = TRASH;
 	live.flags_on_stack = VALID;
 	flags_carry_inverted = false;
-	/* Mark FLAGX as INMEM since we wrote directly to regflags.x */
-	if (live.state[FLAGX].status == DIRTY || live.state[FLAGX].status == CLEAN) {
-		int r = live.state[FLAGX].realreg;
-		if (r >= 0) {
-			live.nat[r].nholds--;
-			if (live.nat[r].nholds == 0)
-				live.nat[r].touched = 0;
-		}
-		live.state[FLAGX].realreg = -1;
-	}
-	set_status(FLAGX, INMEM);
 }
 MENDFUNC(0,save_and_discard_flags_in_nzcv,(void))
 
@@ -1382,6 +1379,22 @@ MIDFUNC(2,roxr_b_ri,(RW1 d, IM8 i))
     unlock2(d);
 }
 MENDFUNC(2,roxr_b_ri,(RW1 d, IM8 i))
+
+/* DBF/DBRA in-place terminal test/decrement.
+   Sets hardware Z/N from the original low word so register_branch(..., NE)
+   can test the terminal condition, then decrements the low word without
+   allocating scratch virtual registers or changing NZCV again. DBcc does not
+   architecturally modify CCR; caller must discard the temporary NZCV. */
+MIDFUNC(1,dbf_dec_test_ne_w,(RW4 d))
+{
+	d = rmw(d);
+	UXTH_ww(REG_WORK1, d);
+	TST_ww(REG_WORK1, REG_WORK1);
+	SUB_wwi(REG_WORK1, d, 1);
+	BFXIL_xxii(d, REG_WORK1, 0, 16);
+	unlock2(d);
+}
+MENDFUNC(1,dbf_dec_test_ne_w,(RW4 d))
 
 /* Conditional move for DBcc terminal test: if src.W != 0, set d = s.
    Does NOT modify hardware NZCV or regflags.nzcv.

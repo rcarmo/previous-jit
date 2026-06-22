@@ -714,7 +714,10 @@ LOWFUNC(NONE,NONE,2,compemu_raw_endblock_pc_inreg,(RR4 rr_pc, IM32 cycles))
 		uintptr offs_pc = (uintptr)&regs.pc_p - (uintptr)&regs;
 		STR_xXi(rr_pc, R_REGSTRUCT, offs_pc);
 	}
-#if 0 /* disabled */
+#if 1 /* daea9c94 PC-triple store: re-derive guest pc/pc_oldp on hot chain so
+          chained successor blocks (incl. interp-fallback ops) see a coherent
+          PC triple. Validated: kills checksum-loop recompile churn (recomp
+          49911->1), advances boot 0x01002c76->SCSI loop; opcode 75/75, mmu 32/32. */
 #if defined(CPU_AARCH64)
 	/* ARM64: persist full PC triple on hot chain, same as endblock_pc_isconst. */
 	{
@@ -809,7 +812,7 @@ STATIC_INLINE uae_u32* compemu_raw_endblock_pc_isconst(IM32 cycles, IMPTR v)
 		uintptr offs_pc = (uintptr)&regs.pc_p - (uintptr)&regs;
 		STR_xXi(REG_WORK2, R_REGSTRUCT, offs_pc);
 	}
-#if 0 /* PC triple store causes bad_pc_p — disabled */
+#if 1 /* daea9c94 PC-triple store (isconst hot chain) — see endblock_pc_inreg note */
 	/* ARM64: persist the full PC triple (pc_p, pc, pc_oldp) on the hot
 	   chain path. Without this, chained successor blocks that contain
 	   interpreter fallback instructions call m68k_getpc() which derives

@@ -12,6 +12,17 @@ JIT boot blocker is a **hang in the SCSI/ESP device-init path** at ROM
 `PC=0x04387150` ("ESP Command: reset SCSI bus"). The interpreter sails past it; the
 JIT freezes. This is a **JIT divergence, not a Previous emulation gap.**
 
+> **UPDATE 2026-06-22 — diagnosis complete; see [final section](#session-2026-06-22--pure-jit-recompile-churn-root-cause-found-fix-selected).**
+> The chronological log below (2026-06-20/21) traces the natural-boot-path framing
+> through to ROOT CAUSE 4 (the `trace_barrier_op` bailout) and the bsr-misclassification
+> fix. The 2026-06-22 session carried that forward: under **pure-JIT barrier drops** the
+> SCSI loop and the NextBus board-ROM checksum *do* compile, but the checksum loop then
+> **recompiles ~7000× instead of running native**. Root cause is now **probe-confirmed**: a
+> stale forward-edge native chain to the `execute_normal` trampoline that bypasses a
+> *correct* `cache_tags` dispatch. Fix selected (a self-resolving chain thunk); five simpler
+> candidates eliminated with data. Implementation is the only remaining work. Jump to the
+> final section for the complete, current picture.
+
 ## Evidence chain
 
 ### 1. REGONLY sweep over c74 + CRC loop = LOCKSTEP CLEAN
@@ -729,3 +740,121 @@ GATE: 75/75 opcode harness score=100; 32/32 MMU fast smoke score=100; boot-delta
 95->895 ESP cmds + DMA init reached. RESIDUAL: a 0x04382dde spin still recurs later
 in the run (after DMA init) — a separate frontier to diagnose next, no longer the
 bsr confound.
+
+---
+
+## SESSION 2026-06-22 — pure-JIT recompile churn: root cause found, fix selected
+
+**Date:** 2026-06-22
+**Repo:** `previous` (rcarmo-jit/main), HEAD `b8b9829`
+**Status:** Diagnosis **complete and probe-confirmed**. Fix **selected** (self-resolving
+chain thunk). Five simpler candidates **empirically eliminated**. Only the
+(high-blast-radius, lockstep-gated) implementation remains.
+
+### TL;DR (current)
+
+- **The campaign goal is empirically reachable.** A pure-interpreter boot reaches the
+  kernel handoff region **`PC=0x050542A0`** (goal `0x05054296`), then hits an
+  unimplemented **FPU packed-decimal op `OP=F210-4C00`** — a separate, later frontier.
+  So nothing structural prevents reaching the kernel; only the JIT path stalls earlier.
+- Under **pure-JIT barrier drops** (the zero-fallback goal), the boot-critical
+  loops *do* compile, but the **NextBus board-ROM checksum loop at `0x01002c74`
+  recompiles ~7000× each iteration** (`compile=49513`, `recomp=49506`) instead of
+  running natively → never advances to the kernel.
+- **Root cause (probe-confirmed):** a **stale forward-edge native chain to the
+  `popall_execute_normal` trampoline** that bypasses a *correct, consistent*
+  `cache_tags` dispatch. Not a count/optlevel issue, not a cache_tags inconsistency,
+  not a flush, not a key/cacheline problem — all refuted with data.
+- **Fix:** make endblock chains target a **self-resolving thunk** (resolves the live
+  handler via `cache_tags` on hit; cannot persist a trampoline by construction).
+
+### What this region actually is
+
+The `0x01002c72–0x01002c8c` loop is the NeXT ROM's **board-presence CRC/checksum**:
+`MOVE.B (A1)+,D1` over a contiguous RAM buffer, inner `DBF D2` (8 bytes) doing
+`LSL/ROXR/ROR/EOR` bit-mixing, outer `BNE` on a `D3 ≈ 0x20000` countdown — a bounded
+128 KB checksum. Instrumentation (`B2_INTERP_LOWPC_TRACE`) proved it is **not** an
+interrupt-wait (`spcflags=0` throughout) and **not** a device poll (`A1` walks RAM
+sequentially, not a fixed MMIO address) — it is pure computation. The earlier
+NextBus `F2FFFFF0` bus-error is a **correct board-presence probe-miss** (interp hits it
+the same 2×); the hang is JIT-specific, not a device-emulation gap.
+
+### Why it churns (the mechanism, probe-by-probe)
+
+1. **`exec_normal` is pessimal.** With un-dropped barriers (DBcc/Bcc), the region runs
+   trace-build → hit-barrier → interpret-one-op → repeat, ~tens× slower than pure
+   interpretation. Barrier coverage is therefore *throughput-critical*, not just a
+   correctness nicety.
+2. **Dropping the barriers compiles the loop but it recompiles ~7000×.** `recomp≈compile`
+   with only `fresh=7` distinct blocks (the dead `cache_hit` counter is ignored here).
+3. **Arrival-path probe (39/40 → A_CHAIN):** at `check_for_cache_miss`, the recompiled
+   blocks are `BI_ACTIVE`, `is_primary=1`, and `cache_tags[cl].handler` is the **compiled**
+   handler (not `execute_normal`) — the dispatch state is *perfect*. The only way to reach
+   `execute_normal` with a correct cache_tags handler is a **native chain hardcoded to the
+   `popall_execute_normal` trampoline that bypasses cache_tags**. ⇒ root is **(A)** a stale
+   chain; **(B)** a cache_tags handler/bi inconsistency is **refuted**.
+4. **Cycling driver (dep probe):** the DBF fall-through edge `c86→c8a` is created while
+   `c8a` is INVALID → chain written to the trampoline. `set_dhtu(c8a)` *does* walk and
+   `adjust_jmpdep` that exact slot when `c8a` compiles (`will_adjust=1`), but it **races a
+   continuous re-invalidation**: stale chain → recompile → new instance supersedes old →
+   target INVALID → chain re-staled. The per-event re-point is correct but never reaches
+   steady state. **Self-sustaining.**
+
+### Candidates eliminated with data (no wrong line committed)
+
+| Candidate | Verdict |
+| --- | --- |
+| canonical/raw PC key, phantom blockinfo | refuted (chain probe 1: `raw==canon`, no phantom) |
+| stale **back-edge** chain | refuted (chain probe 2: back-edges target ACTIVE compiled handlers; `set_dhtu` fires) |
+| flush-driven invalidation | refuted (`flush_hard=0`, `check_checksum good=0/bad=0`) |
+| intra-loop cacheline collision | refuted (6 blocks, all-distinct cachelines) |
+| count-graduation / `cpu_compatible` flag | refuted (Previous **already** runs the JIT at `cpu_compatible=false`; forcing it changed nothing — `compat=0, max_optlev=2, ram_disp=1`) |
+| DBcc handler in isolation | refuted (handlers already exist; not the gate) |
+| direct-edge promotion (piece-b) | refuted/banked (operates above the churning layer; byte-identical ON/OFF) |
+| **return-1-for-active-primary** (re-dispatch instead of recompile) | **kills the churn** (`recomp 49506→0`) **but bounce-spins** through `execute_normal` without advancing (`exec_normal=736M`, PC pinned at `c76`). Proves native chaining is required, not merely no-recompile. |
+
+### The fix (selected)
+
+**(ii) Self-updating thunk**, as the *general* endblock chain-target mechanism (not a
+one-edge patch — the bounce-spin showed a re-dispatched block immediately hits the *next*
+un-thunked edge). On hit, the thunk loads the live `cache_tags[cacheline(target)].handler`
+and jumps to it (optionally patching the chain), so it **cannot persist a trampoline by
+construction** — robust to the re-invalidation race rather than trying to win it. Keep the
+fix to this one mechanism (`return-1` is redundant once chains run native).
+
+### Validation gate (hard) for the implementation
+
+1. Dropped checksum loop runs **native**: `recomp` bounded **and** `exec_normal` plateau
+   (not the 736M bounce-spin) **and guest PC advances past `c76`** (the `D3` outer counter
+   decrements / loop completes).
+2. Boot advances **`0x01002c74 → 0x050542A0`**.
+3. **Baseline regression:** drops-OFF behavior byte-identical to baseline.
+4. **Lockstep** (note: the lockstep validator has a known *next_pc blind spot* for
+   end-of-block transfers — set up branch-target verification for chaining changes).
+5. **Post-fix check** (answers the last open sub-question for free): does re-invalidation /
+   cache-growth stop? If yes, the churn *was* the whole story; if not, a separate
+   invalidation source (flush/cache-reclaim) remains to pin. Either way the thunk is correct.
+
+### Reference
+
+BasiliskII (`/workspace/projects/macemu/BasiliskII/src/uae_cpu_2026/compiler/`) is the same
+JIT family and boots further — read its endblock chain-target handling (thunk vs raw handler
+address) as a reference, but **verify empirically** (a static B2 cross-read misfired earlier
+this session — Previous's effective `cpu_compatible` is `false` at runtime despite the Hatari
+`bCompatibleCpu=true` config layer, which does not propagate to the JIT).
+
+### Shipped this session (default-OFF, inert)
+
+- `a026529` `drop_bsr` — JIT barrier drop for BSR (default-off, env-gated)
+- `2ae8892` `drop_jsr` — JIT barrier drop for `JSR (An)` op `4e90` (default-off)
+- `ebde577` `tools/fullloop-drop-validate.sh` — full SCSI-loop barrier-drop boot harness
+- `b8b9829` `tools/interp-nextbus-probe.sh` — pure-interp NextBus/kernel-reachability reference
+
+The production-ON flip of the drops remains gated on lockstep certification of the
+BSR/RTS/JSR control-transfer path.
+
+### Full investigation record
+
+The complete, self-corrected probe-by-probe chain (including the reverted diagnostic patches
+and exact log signatures) is maintained in the workspace note
+`notes/case1-scsi-spin-finding.md`.

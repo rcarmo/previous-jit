@@ -16,6 +16,14 @@ codebase recognizable.
 
 This is still **experimental bring-up work**, not a finished high-performance JIT release.
 
+The **pure-JIT, zero-interpreter-fallback** path is the harder ongoing goal. Its current
+frontier — and a complete, probe-confirmed diagnosis of the boot-critical recompile churn
+(plus the selected fix) — is documented in
+[`docs/boot-frontier-scsi-hang.md`](docs/boot-frontier-scsi-hang.md) (see the 2026-06-22
+section). A pure-interpreter boot is confirmed to reach the kernel handoff region
+(`0x050542A0`), so the goal is empirically reachable; the JIT path stalls earlier on a
+stale chain-target trampoline, whose fix (a self-resolving chain thunk) is specified there.
+
 As it stands today, headless NeXTSTEP boots cleanly to the Workspace desktop on AArch64 under the conservative RTE-fault interpreter handoff oracle:
 
 ![NeXTSTEP Workspace desktop reached headlessly on AArch64](docs/desktop-headless-boot.png)
@@ -85,6 +93,8 @@ Right now the project is at the stage where:
 - `tools/headless-jit-bridge-smoke.sh` — full bridge smoke test
 - `tools/uae2026-opcode-harness.sh` — interpreter vs JIT opcode equivalence harness
 - `tools/uae2026-opcode-vectors.sh` — curated risky/missing opcode vectors
+- `tools/fullloop-drop-validate.sh` — full SCSI-loop barrier-drop boot harness (pure-JIT frontier)
+- `tools/interp-nextbus-probe.sh` — pure-interp NextBus/kernel-reachability reference
 
 ### Docs
 
@@ -94,6 +104,7 @@ Right now the project is at the stage where:
 - `docs/aarch64-jit-port-audit.md`
 - `docs/uae2026-opcode-harness.md`
 - `docs/uae2026-compemu-inline-assembly-plan.md`
+- `docs/boot-frontier-scsi-hang.md` — pure-JIT boot frontier: SCSI/NextBus-checksum recompile-churn diagnosis + fix plan
 
 ## Build
 

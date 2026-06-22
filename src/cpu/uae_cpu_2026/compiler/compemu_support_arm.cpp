@@ -1799,8 +1799,20 @@ static inline uintptr jit_canonicalize_target_pc(uintptr pc)
     /* If a guest Mac PC leaked into a const-target path, convert it back
        to the host fetch pointer expected by PC_P / blockinfo. */
     uae_u32 guest = (uae_u32)pc;
-    if ((guest & 1) == 0 && guest < (uae_u32)(RAMSize + ROMSize + 0x1000000))
+    if ((guest & 1) == 0 && guest < (uae_u32)(RAMSize + ROMSize + 0x1000000)) {
+        /* RAM/MMU code mode: the runtime derives pc_p via the 68040 code-MMU
+           translation (execute_normal mmu_code_path / get_n_addr_jmp_mmu).
+           Compile-time canonicalization must use the SAME translation, or the
+           const-successor pc_p stored at block exit is a physical pointer that
+           the dispatcher/check_for_cache_miss rejects (invalid-host-pc) and
+           hard-flushes every iteration.  Match the runtime path. */
+        if (jit_allow_ram_dispatch_env() && regs.mmu_enabled) {
+            uintptr h = (uintptr)Uae2026JitMmuXlateCodeHost(guest);
+            if (h)
+                return h;
+        }
         return (uintptr)get_real_address(guest, 0, sz_word);
+    }
     return pc;
 }
 

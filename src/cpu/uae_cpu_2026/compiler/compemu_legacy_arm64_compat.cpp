@@ -1566,7 +1566,7 @@ void execute_normal(void)
 			 * empty => no effect; NOBCC remains a backward-compatible alias for
 			 * dropping bcc. The drop is still scoped to jit_lockstep_window_pc, so
 			 * the spot-check fires exactly at the newly-compiled barrier block. */
-			enum { DROP_BCC = 1, DROP_DBCC = 2, DROP_RET = 4, DROP_LINK = 8 };
+			enum { DROP_BCC = 1, DROP_DBCC = 2, DROP_RET = 4, DROP_LINK = 8, DROP_BSR = 16 };
 			static int ls_nobcc = -1;
 			static int ls_dropmask = -1;
 			if (ls_nobcc < 0) ls_nobcc = getenv("B2_JIT_LOCKSTEP_NOBCC") ? 1 : 0;
@@ -1578,6 +1578,7 @@ void execute_normal(void)
 					if (strstr(dl, "dbcc")) ls_dropmask |= DROP_DBCC;
 					if (strstr(dl, "rts") || strstr(dl, "rte") || strstr(dl, "ret")) ls_dropmask |= DROP_RET;
 					if (strstr(dl, "link") || strstr(dl, "unlk")) ls_dropmask |= DROP_LINK;
+					if (strstr(dl, "bsr"))  ls_dropmask |= DROP_BSR;
 				}
 			}
 			const bool in_ls_window = jit_lockstep_window_pc(pc_before_op);
@@ -1594,11 +1595,22 @@ void execute_normal(void)
 				if (_hi && *_hi) prod_hi = (uae_u32)strtoul(_hi, 0, 0);
 			}
 			const bool prod_drop_here = prod_drop_bcc && pc_before_op >= prod_lo && pc_before_op <= prod_hi;
+			/* Per-class production drops (scoped to [prod_lo,prod_hi]) so the SCSI loop's
+			 * full barrier set (link/bsr/bcc/ret) can compile for the promotion plateau
+			 * test. Default-off. */
+			static int prod_drop_link = -1, prod_drop_ret = -1, prod_drop_bsr = -1;
+			if (prod_drop_link < 0) prod_drop_link = getenv("B2_JIT_DROP_LINK_PROD") ? 1 : 0;
+			if (prod_drop_ret  < 0) prod_drop_ret  = getenv("B2_JIT_DROP_RET_PROD")  ? 1 : 0;
+			if (prod_drop_bsr  < 0) prod_drop_bsr  = getenv("B2_JIT_DROP_BSR_PROD")  ? 1 : 0;
+			const bool prod_link_here = prod_drop_link && pc_before_op >= prod_lo && pc_before_op <= prod_hi;
+			const bool prod_ret_here  = prod_drop_ret  && pc_before_op >= prod_lo && pc_before_op <= prod_hi;
+			const bool prod_bsr_here  = prod_drop_bsr  && pc_before_op >= prod_lo && pc_before_op <= prod_hi;
 			const bool drop_bcc  = (((ls_nobcc || (ls_dropmask & DROP_BCC)) && in_ls_window) || prod_drop_here);
 			const bool drop_dbcc = ((ls_dropmask & DROP_DBCC) && in_ls_window);
-			const bool drop_ret  = ((ls_dropmask & DROP_RET)  && in_ls_window);
-			const bool drop_link = ((ls_dropmask & DROP_LINK) && in_ls_window);
-			const bool trace_barrier_op = (current_is_bcc && !drop_bcc) || current_is_bsr || (current_is_dbcc && !drop_dbcc) || current_is_stack_pop_move || current_is_stack_push_pea || (current_is_return && !drop_ret) || (current_is_link_unlk && !drop_link) || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp;
+			const bool drop_ret  = (((ls_dropmask & DROP_RET)  && in_ls_window) || prod_ret_here);
+			const bool drop_link = (((ls_dropmask & DROP_LINK) && in_ls_window) || prod_link_here);
+			const bool drop_bsr  = (((ls_dropmask & DROP_BSR) && in_ls_window) || prod_bsr_here);
+			const bool trace_barrier_op = (current_is_bcc && !drop_bcc) || (current_is_bsr && !drop_bsr) || (current_is_dbcc && !drop_dbcc) || current_is_stack_pop_move || current_is_stack_push_pea || (current_is_return && !drop_ret) || (current_is_link_unlk && !drop_link) || current_is_immediate_bitop || current_is_ethernet_reset_island || current_is_jsr_jmp;
 			if (trace_barrier_op) {
 				/* B2_JIT_BARRIER_STATS: per-barrier-type bailout frequency ranking
 				 * (default-off). Names which trace_barrier dominates the boot path
@@ -1649,6 +1661,7 @@ void execute_normal(void)
 			if ((drop_bcc && current_is_bcc) ||
 			    (drop_dbcc && current_is_dbcc) ||
 			    (drop_ret && current_is_return) ||
+			    (drop_bsr && current_is_bsr) ||
 			    (drop_link && current_is_link_unlk))
 				must_end = true;
 			if (!must_end && end_block(opcode)) {

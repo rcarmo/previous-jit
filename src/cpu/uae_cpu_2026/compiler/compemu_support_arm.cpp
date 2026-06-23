@@ -2729,6 +2729,14 @@ STATIC_INLINE void jit_end_write_window(void)
 
 uae_u32 m68k_pc_offset;
 
+/* Guest PC (instruction start) of the instruction currently being compiled.
+   Set per-instruction in the translate loop. jit_sync_fault_pc_for_bank_helper
+   publishes THIS as regs.pc/fault_pc before a native bank helper that can fault,
+   so the 040 access-error frame stacks the precise faulting-instruction PC
+   instead of the advanced decode position (comp_pc_p + m68k_pc_offset), which
+   points past the consumed opcode/extension words to the next instruction. */
+static uae_u32 jit_compile_current_insn_pc;
+
 /* Some arithmetic operations can be optimized away if the operands
  * are known to be constant. But that's only a good idea when the
  * side effects they would have on the flags are not important. This
@@ -4994,8 +5002,13 @@ static inline void jit_sync_fault_pc_for_bank_helper(void)
     /* Previous's 040 MMU/bus-error path reads regs.pc/fault_pc, while the
        vendored JIT tracks the live PC in PC_P/m68k_pc_offset.  Before any
        native bank helper that can fault, publish the current instruction PC
-       (not the post-extension PC) so Exception() builds a restartable frame. */
-    const uae_u32 pc = get_virtual_address(comp_pc_p + m68k_pc_offset);
+       (not the post-extension PC) so Exception() builds a restartable frame.
+       comp_pc_p + m68k_pc_offset is the advanced decode position (past this
+       instruction's opcode/extension words) and yields the NEXT instruction's
+       PC for single-word ops; that off-by-one corrupts the 040 access-error
+       frame (NextBus slot-probe handler decodes the wrong instruction and
+       resumes to garbage). Use the instruction-start PC the loop computed. */
+    const uae_u32 pc = jit_compile_current_insn_pc;
     compemu_raw_mov_l_mi((uintptr)&regs.pc, pc);
     compemu_raw_mov_l_mi((uintptr)&regs.fault_pc, pc);
     compemu_raw_mov_l_mi((uintptr)&Uae2026JitLastInstructionPc, pc);
@@ -6673,6 +6686,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                 compop_func** comptbl;
                 uae_u32 opcode = DO_GET_OPCODE(pc_hist[i].location);
                 const uae_u32 op_m68k_pc = block_m68k_pc + (uae_u32)((uintptr)pc_hist[i].location - (uintptr)pc_hist[0].location);
+                /* Publish instruction-start PC for jit_sync_fault_pc_for_bank_helper. */
+                jit_compile_current_insn_pc = op_m68k_pc;
                 needed_flags = (liveflags[i + 1] & prop[cft_map(opcode)].set_flags);
 #ifdef UAE
                 special_mem = pc_hist[i].specmem;

@@ -15,7 +15,7 @@ declare -a TEST_ORDER=(
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
   chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
   jsr_an_call_return bsr_word_call_return seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_movem_restore_full_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
-  pack_dn_edge unpk_dn_edge moves_write_read movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip
+  pack_dn_edge unpk_dn_edge moves_write_read move_l_imm_special_long movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip
 )
 
 declare -a FAULT_TEST_ORDER=(
@@ -37,6 +37,11 @@ declare -A CODE_FAULT_ADDR
 declare -A DATA_FAULT_ADDR
 declare -A DATA_FAULT_SIZE
 declare -A DATA_FAULT_WRITE
+# Optional per-vector flag: force every store through the special-memory bank-write
+# path (B2_JIT_ALL_SPECIAL_MEM=1 on the JIT run). Exercises writemem_special ->
+# Uae2026JitBankWriteByOffset (size-selector + 3-arg call), which the default
+# writemem_real path doesn't cover.
+declare -A ALL_SPECIAL
 
 TESTS[ori_sr_hardfail]="007C 0700"
 TESTS[andi_sr_hardfail]="027C 27FF"
@@ -140,6 +145,15 @@ DUMP_MEM_LONGS[seam_byte_copy_postinc_fault_shape]="0400A000 0400A010"
 TESTS[pack_dn_edge]="203C 0000 1234 8140 0000"
 TESTS[unpk_dn_edge]="203C 0000 0012 8180 0000"
 TESTS[moves_write_read]="41F9 0400 A000 203C DEAD BEEF 0E90 0800 2010"
+# Regression guard for the special-memory long-store truncation class (the
+# NeXTBus card-probe bug fixed in f9167ac): move.l #imm32,(d16,An) into memory,
+# forced through the bank-write path (ALL_SPECIAL). Pre-fix the JIT truncated the
+# long to a byte (0x84 into the BE MSB -> 0x84000000); interp and the fixed JIT
+# both store the full 0x01001c84. lea 0x0400A000,a0; move.l #0x01001c84,0(a0);
+# move.l (a0),d0.
+TESTS[move_l_imm_special_long]="41F9 0400 A000 217C 0100 1C84 0000 2010"
+ALL_SPECIAL[move_l_imm_special_long]=1
+DUMP_MEM_LONGS[move_l_imm_special_long]="0400A000"
 TESTS[movec_vbr_roundtrip]="203C 1234 0000 4E7B 0801 4E7A 1801"
 TESTS[movec_sfc_roundtrip]="7005 4E7B 0000 4E7A 1000"
 TESTS[movec_dfc_roundtrip]="7003 4E7B 0001 4E7A 1001"

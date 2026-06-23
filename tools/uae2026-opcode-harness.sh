@@ -200,6 +200,7 @@ run_case() {
   local data_fault_addr="${DATA_FAULT_ADDR[$name]:-}"
   local data_fault_size="${DATA_FAULT_SIZE[$name]:-}"
   local data_fault_write="${DATA_FAULT_WRITE[$name]:-}"
+  local all_special="${ALL_SPECIAL[$name]:-}"
   local wait_sec="$INTERP_WAIT_SEC"
   local rc=0
   local dump_count
@@ -254,6 +255,12 @@ run_case() {
   if [[ "$use_jit" == "jit" ]]; then
     wait_sec="$JIT_WAIT_SEC"
     env_vars+=(PREVIOUS_UAE2026_JIT=1 B2_JIT_FORCE_TRANSLATE=1)
+    # Per-vector: force every store through the special-memory bank-write path
+    # (writemem_special -> Uae2026JitBankWriteByOffset). Exercises the bank
+    # size-selector + 3-arg call path that the normal writemem_real tests miss.
+    if [[ -n "$all_special" && "$all_special" != "0" ]]; then
+      env_vars+=(B2_JIT_ALL_SPECIAL_MEM=1)
+    fi
   else
     env_vars+=(PREVIOUS_UAE2026_JIT=0)
   fi

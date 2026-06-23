@@ -5547,15 +5547,6 @@ int check_for_cache_miss(void)
 #endif
             return 1;
         }
-#if defined(CPU_AARCH64)
-        if (bi->status == BI_ACTIVE &&
-            cache_tags[cl].handler == bi->handler_to_use &&
-            bi->handler_to_use != (cpuop_func*)popall_execute_normal &&
-            bi->handler_to_use != (cpuop_func*)popall_recompile_block) {
-            jit_diag_execute_normal_cache_hit++;
-            return 1;
-        }
-#endif
     }
     return 0;
 }

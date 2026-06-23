@@ -858,3 +858,21 @@ BSR/RTS/JSR control-transfer path.
 The complete, self-corrected probe-by-probe chain (including the reverted diagnostic patches
 and exact log signatures) is maintained in the workspace note
 `notes/case1-scsi-spin-finding.md`.
+
+## CORRECTION (2026-06-23): 9ecfc74/e04d965 IS the SCSI chain fix, not "pending"
+
+The commit message for 9ecfc74 ("eliminate recompile-churn") labeled itself a re-dispatch SAFETY NET with
+"fast-path chain resolution still pending." A runtime region-split of check_for_cache_miss calls (with the fix
+in) corrects that: scoped-SCSI shows scsi(0x04382xxx)=0, other(0x0100xxxx)=1.8e9 slow-path calls. The SCSI
+region hits the slow path ZERO times => it FAST-CHAINS on the inline path.
+
+So 9ecfc74 IS the chain fix for compiled regions, not a band-aid: recompiling a valid BI_ACTIVE block every
+iteration was invalidating its create_jmpdep chains (recompile -> new handler -> predecessor's emitted branch
+stale -> popall -> execute_normal -> recompile). Stopping the needless recompile keeps the chains valid so they
+resolve to the fast path. Validated: recomp 62581->0, scsi=0 slow-path, boot past SCSI, opcode 75/75, mmu-fast
+32/32.
+
+The set_dhtu / guard / ordering hypotheses were all refuted by parity diff + measurement (byte-identical to
+BasiliskII); the lever was the recompile, not set_dhtu. The REMAINING grind (0x010068fa / 0x01007e52) is pure
+REGION COVERAGE — non-scoped ROM regions running interp barriers — NOT chaining. Next frontier = the SEPARATE
+early-ROM 0x010005xx bad-pc_p hang under global native-compile (distinct bug). Chain bug: CLOSED + validated.

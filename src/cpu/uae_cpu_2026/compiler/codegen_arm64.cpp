@@ -392,10 +392,19 @@ LENDFUNC(WRITE,RMW,1,compemu_raw_inc_m,(MEMRW d))
 
 STATIC_INLINE void compemu_raw_call(uintptr t)
 {
-	LOAD_U64(REG_WORK1, t);
+	/* Materialise the call target into x18 (R18_INDEX), NOT REG_WORK1 (x2).
+	 * x2 is the AArch64 3rd-argument register: any 3-arg JIT helper (e.g.
+	 * jnf_MEM_WRITEMEMBANK(adr,source,offset)) passes arg3 in x2, and loading
+	 * the call target into x2 here clobbered that arg before the blr -> the
+	 * bank-write helper received a garbage offset and fell through to its
+	 * default byte store, truncating long stores (low byte into the BE MSB).
+	 * x18 is reserved (always_used) and otherwise unused, so it is a safe,
+	 * non-argument scratch for the transient load-then-blr call target,
+	 * protecting every multi-arg helper without touching the register pool. */
+	LOAD_U64(R18_INDEX, t);
 
 	STR_xXpre(RLR_INDEX, RSP_INDEX, -16);
-	BLR_x(REG_WORK1);
+	BLR_x(R18_INDEX);
 	LDR_xXpost(RLR_INDEX, RSP_INDEX, 16);
 }
 

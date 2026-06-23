@@ -103,6 +103,15 @@
 #define X64_MSVC_ASSEMBLY
 #define CPU_64_BIT
 #define SIZEOF_VOID_P 8
+#elif defined(__LP64__) || defined(_LP64) || (defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 8)
+/* 64-bit non-Windows (e.g. AArch64/x86-64 Linux): host pointers are 8 bytes.
+ * The original code only set 8 for WIN64 and defaulted everything else to 4,
+ * which is wrong on LP64. SIZEOF_VOID_P is used as the host-pointer size for
+ * bank-helper offset selectors (writemem_special/Uae2026JitBankWriteByOffset)
+ * and pointer-array indexing; a value of 4 made long/word special-memory
+ * stores mis-select the bank handler and truncate to a byte store. */
+#define CPU_64_BIT
+#define SIZEOF_VOID_P 8
 #else
 #define SIZEOF_VOID_P 4
 #endif

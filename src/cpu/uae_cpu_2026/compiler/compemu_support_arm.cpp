@@ -263,6 +263,16 @@ static inline int jit_max_optlev(void)
 	return value;
 }
 
+static inline bool jit_grindprobe_env(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("B2_JIT_GRINDPROBE");
+		cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+	}
+	return cached != 0;
+}
+
 static inline bool jit_force_optlev0_block_exact(uae_u32 pc)
 {
 #if defined(CPU_AARCH64)
@@ -6849,6 +6859,21 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             optlev = 1;
         }
 #endif
+        if (jit_grindprobe_env()) {
+            const uae_u32 _gp = block_m68k_pc;
+            const uae_u32 _gpn = (_gp & 0xff000000u) == 0x01000000u ? (_gp & 0x00ffffffu) : _gp;
+            if (_gpn == 0x00007e52u || _gpn == 0x000068fau || _gpn == 0x000024f0u) {
+                fprintf(stderr, "GRINDPROBE pc=%08x optlev=%d blocklen=%d mmu=%d",
+                    (unsigned)_gp, optlev, blocklen, (int)regs.mmu_enabled);
+                for (int _di = 0; _di < blocklen && _di < 24; _di++) {
+                    const uae_u16 _op = (uae_u16)DO_GET_OPCODE(pc_hist[_di].location);
+                    fprintf(stderr, " %04x/%c%c", (unsigned)_op,
+                        compfunctbl[_op] ? 'c' : '-', nfcompfunctbl[_op] ? 'n' : '-');
+                }
+                fprintf(stderr, "\n");
+                fflush(stderr);
+            }
+        }
         bool forced_interpreter_barrier = false;
         if (optlev == 0) { /* No need to actually translate */
 #if defined(CPU_AARCH64)

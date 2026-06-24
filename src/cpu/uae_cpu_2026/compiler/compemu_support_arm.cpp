@@ -2895,6 +2895,181 @@ static inline void adjust_jmpdep(dependency* d, cpuop_func* a)
  * Soft flush handling support functions                            *
  ********************************************************************/
 
+/* ===================================================================
+ * STEP 0: stable direct-edge promotion (ported from BasiliskII B2
+ * compemu_support_arm.cpp). PURELY ADDITIVE; master-gated OFF by
+ * B2_JIT_ENABLE_STABLE_DIRECT_EDGES (default 0 => DARK, byte-identical
+ * machine code). When enabled, a block's dominant control-flow exit
+ * edge is promoted to a DIRECT host chain so compiled control-flow
+ * blocks are reused instead of round-tripping the dispatcher.
+ *
+ * NeXT-DELTA (the one loose end, RESOLVED): B2 confines rom-only
+ * promotion to src/tgt pc < ROMBaseMac. Previous DOES define ROMBaseMac
+ * (the NeXT ROM base, 0x01000000) in this translation unit, so the
+ * guard is kept VERBATIM against ROMBaseMac rather than dropped. This
+ * confines first-bring-up promotion to immutable ROM code; widen past
+ * ROM only with a NeXT-correct guard.
+ *
+ * DARK-SAFETY DEVIATION FROM B2: the per-edge exec-count increment and
+ * the promote call are emitted ONLY under jit_enable_stable_direct_edges_env()
+ * (B2 always emits the inc for always-on profiling). This makes the
+ * env-off path emit ZERO extra instructions => strictly byte-identical
+ * STEP 0. The optional JITEDGE/JITDIRECT debug-trace helpers are omitted.
+ * =================================================================== */
+
+static inline uae_u32 jit_stable_edge_min_exec_env(void)
+{
+    static uae_u32 value = 0;
+    static bool init = false;
+    if (!init) {
+        const char *env = getenv("B2_JIT_STABLE_EDGE_MIN_EXEC");
+        value = env && *env ? (uae_u32)strtoul(env, NULL, 0) : 32;
+        init = true;
+    }
+    return value;
+}
+
+static inline uae_u32 jit_stable_edge_min_pct_env(void)
+{
+    static uae_u32 value = 0;
+    static bool init = false;
+    if (!init) {
+        const char *env = getenv("B2_JIT_STABLE_EDGE_MIN_PCT");
+        value = env && *env ? (uae_u32)strtoul(env, NULL, 0) : 80;
+        if (value > 100)
+            value = 100;
+        init = true;
+    }
+    return value;
+}
+
+static inline uae_u32 jit_stable_edge_profile_exec_env(void)
+{
+    static uae_u32 value = 0;
+    static bool init = false;
+    if (!init) {
+        const char *env = getenv("B2_JIT_STABLE_EDGE_PROFILE_EXEC");
+        value = env && *env ? (uae_u32)strtoul(env, NULL, 0) : 16;
+        if (value < 1)
+            value = 1;
+        if (value < jit_stable_edge_min_exec_env())
+            value = jit_stable_edge_min_exec_env();
+        init = true;
+    }
+    return value;
+}
+
+static inline bool jit_enable_stable_direct_edges_env(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+        cached = (getenv("B2_JIT_ENABLE_STABLE_DIRECT_EDGES") && *getenv("B2_JIT_ENABLE_STABLE_DIRECT_EDGES") && strcmp(getenv("B2_JIT_ENABLE_STABLE_DIRECT_EDGES"), "0") != 0) ? 1 : 0;
+    return cached != 0;
+}
+
+static inline bool jit_stable_direct_rom_only_env(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("B2_JIT_STABLE_DIRECT_ROM_ONLY");
+#if defined(CPU_AARCH64)
+        cached = (!env || !*env || strcmp(env, "0") != 0) ? 1 : 0;
+#else
+        cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+#endif
+    }
+    return cached != 0;
+}
+
+static inline int jit_dominant_edge_index(const blockinfo *bi)
+{
+    if (!bi)
+        return -1;
+    if (bi->edge_exec_count[0] > bi->edge_exec_count[1])
+        return 0;
+    if (bi->edge_exec_count[1] > bi->edge_exec_count[0])
+        return 1;
+    return -1;
+}
+
+static inline bool jit_dominant_edge_stable(const blockinfo *bi)
+{
+    if (!bi)
+        return false;
+    const uae_u32 total = bi->edge_exec_count[0] + bi->edge_exec_count[1];
+    const int dominant = jit_dominant_edge_index(bi);
+    if (dominant < 0 || total == 0)
+        return false;
+    const uae_u32 dom_count = bi->edge_exec_count[dominant];
+    if (dom_count < jit_stable_edge_min_exec_env())
+        return false;
+    return (uae_u64)dom_count * 100 >= (uae_u64)total * jit_stable_edge_min_pct_env();
+}
+
+static inline void jit_commit_edge_summary_for_rebuild(blockinfo *bi)
+{
+    if (!bi)
+        return;
+    bi->stable_edge_mask = 0;
+    bi->stable_edge_pc[0] = 0;
+    bi->stable_edge_pc[1] = 0;
+    const int dominant = jit_dominant_edge_index(bi);
+    if (dominant < 0 || !jit_dominant_edge_stable(bi))
+        return;
+    if (bi->edge_target_pc[dominant] == 0)
+        return;
+    bi->stable_edge_mask = (uae_u8)(1u << dominant);
+    bi->stable_edge_pc[dominant] = bi->edge_target_pc[dominant];
+}
+
+static inline bool jit_source_edge_prefers_direct(const blockinfo *source_bi, int edge_slot, uintptr hostpc)
+{
+    if (!source_bi || edge_slot < 0 || edge_slot > 1)
+        return false;
+    if (!jit_enable_stable_direct_edges_env())
+        return false;
+    const uae_u8 mask = (uae_u8)(1u << edge_slot);
+    if ((source_bi->stable_edge_mask & mask) == 0)
+        return false;
+    const uae_u32 target_pc = jit_hostpc_to_macpc(hostpc);
+    if (source_bi->stable_edge_pc[edge_slot] != target_pc)
+        return false;
+    if (jit_stable_direct_rom_only_env()) {
+        /* NeXT-DELTA: Previous's ROM base is ROMBaseMac (0x01000000). */
+        const uae_u32 src_pc = jit_hostpc_to_macpc((uintptr)source_bi->pc_p);
+        if (src_pc < ROMBaseMac || target_pc < ROMBaseMac)
+            return false;
+    }
+    return true;
+}
+
+static void jit_maybe_promote_stable_edge(blockinfo *source_bi, uae_u32 edge_slot)
+{
+    if (!source_bi || edge_slot > 1 || !jit_enable_stable_direct_edges_env())
+        return;
+    dependency *dep = &source_bi->dep[edge_slot];
+    blockinfo *target_bi = dep->target;
+    if (!dep->jmp_off || !target_bi || !target_bi->pc_p)
+        return;
+    const uintptr target_hostpc = (uintptr)target_bi->pc_p;
+    if (!jit_dominant_edge_stable(source_bi) || jit_dominant_edge_index(source_bi) != (int)edge_slot)
+        return;
+    if (!jit_source_edge_prefers_direct(source_bi, (int)edge_slot, target_hostpc))
+        return;
+    const uae_u8 mask = (uae_u8)(1u << edge_slot);
+    const uae_u32 target_pc = jit_hostpc_to_macpc(target_hostpc);
+    if (dep->prefer_direct && (source_bi->stable_edge_mask & mask) &&
+        source_bi->stable_edge_pc[edge_slot] == target_pc)
+        return;
+    source_bi->stable_edge_mask = mask;
+    source_bi->stable_edge_pc[edge_slot] = target_pc;
+    dep->prefer_direct = 1;
+    cpuop_func *chosen = target_bi->direct_handler ? target_bi->direct_handler : target_bi->direct_handler_to_use;
+    if (!chosen)
+        return;
+    write_jmp_target(dep->jmp_off, (uintptr)chosen);
+}
+
 static inline void set_dhtu(blockinfo* bi, cpuop_func* dh)
 {
     jit_log2("bi is %p", bi);
@@ -2907,7 +3082,10 @@ static inline void set_dhtu(blockinfo* bi, cpuop_func* dh)
             jit_log2("x->prev_p is %p", x->prev_p);
 
             if (x->jmp_off) {
-                adjust_jmpdep(x, dh);
+                /* STEP 0: keep a promoted edge pointed at the direct handler
+                   across recompiles; dark when prefer_direct stays 0. */
+                cpuop_func *dep_handler = (x->prefer_direct && bi->direct_handler) ? bi->direct_handler : dh;
+                adjust_jmpdep(x, dep_handler);
             }
             x = x->next;
         }
@@ -2930,11 +3108,14 @@ void invalidate_block(blockinfo* bi)
     for (i = 0; i < 2; i++) {
         bi->dep[i].jmp_off = NULL;
         bi->dep[i].target = NULL;
+        bi->dep[i].prefer_direct = 0;
+        bi->stable_edge_pc[i] = 0;
     }
+    bi->stable_edge_mask = 0;
     remove_deps(bi);
 }
 
-static inline void create_jmpdep(blockinfo* bi, int i, uae_u32* jmpaddr, uintptr target)
+static inline void create_jmpdep(blockinfo* bi, int i, uae_u32* jmpaddr, uintptr target, bool prefer_direct)
 {
     blockinfo* tbi = get_blockinfo_addr((void*)target);
 
@@ -2944,11 +3125,13 @@ static inline void create_jmpdep(blockinfo* bi, int i, uae_u32* jmpaddr, uintptr
     bi->dep[i].jmp_off = jmpaddr;
     bi->dep[i].source = bi;
     bi->dep[i].target = tbi;
+    bi->dep[i].prefer_direct = prefer_direct ? 1 : 0;
     bi->dep[i].next = tbi->deplist;
     if (bi->dep[i].next)
         bi->dep[i].next->prev_p = &(bi->dep[i].next);
     bi->dep[i].prev_p = &(tbi->deplist);
     tbi->deplist = &(bi->dep[i]);
+    bi->edge_target_pc[i] = jit_hostpc_to_macpc((uintptr)tbi->pc_p);
 }
 
 static inline void block_need_recompile(blockinfo* bi)
@@ -4891,14 +5074,26 @@ void register_possible_exception(void)
 /* Note: get_handler may fail in 64 Bit environments, if direct_handler_to_use is
  *       outside 32 bit
  */
-static uintptr get_handler(uintptr addr)
+static uintptr get_handler_for_edge(const blockinfo *source_bi, int edge_slot, uintptr addr)
 {
     addr = jit_canonicalize_target_pc(addr);
     if (jit_force_execute_normal_successor_env() || jit_force_execute_normal_target_env(addr))
         return (uintptr)popall_execute_normal;
     blockinfo* bi = get_blockinfo_addr_new((void*)(uintptr)addr);
+    /* STEP 0: promoted dominant edge -> direct host chain. Dark when the
+       master env is off (jit_source_edge_prefers_direct returns false). */
+    if (jit_source_edge_prefers_direct(source_bi, edge_slot, addr)) {
+        uintptr hd = (uintptr)(bi->direct_handler ? bi->direct_handler : bi->direct_handler_to_use);
+        if (hd)
+            return hd;
+    }
     uintptr h = (uintptr)(jit_force_nondirect_handler_env() ? bi->handler_to_use : bi->direct_handler_to_use);
     return h ? h : (uintptr)popall_execute_normal;
+}
+
+static uintptr get_handler(uintptr addr)
+{
+    return get_handler_for_edge(NULL, -1, addr);
 }
 
 /* This version assumes that it is writing *real* memory, and *will* fail
@@ -5958,7 +6153,12 @@ static void prepare_block(blockinfo* bi)
     for (i = 0; i < 2; i++) {
         bi->dep[i].prev_p = NULL;
         bi->dep[i].next = NULL;
+        bi->dep[i].prefer_direct = 0;
+        bi->edge_exec_count[i] = 0;
+        bi->edge_target_pc[i] = 0;
+        bi->stable_edge_pc[i] = 0;
     }
+    bi->stable_edge_mask = 0;
     bi->status = BI_INVALID;
     bi->needed_flags = FLAG_ALL;
 }
@@ -6460,6 +6660,9 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
         bi = get_blockinfo_addr_new(pc_hist[0].location);
         bi2 = get_blockinfo(cl);
 
+        /* STEP 0: capture invalid-state before status mutates so the first
+           native ROM generation can run a bounded profile window. */
+        const bool bi_was_invalid = (bi->status == BI_INVALID);
         optlev = bi->optlevel;
 #if defined(CPU_AARCH64)
         /* When cpu_compatible is set, force blocks to interpreter mode */
@@ -6497,7 +6700,16 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                 if (isinrom((uintptr)pc_hist[0].location)) {
                     /* ROM: immediate L2 native codegen (immutable code) */
                     optlev = max_optlev;
-                    bi->count = -2;
+                    /* STEP 0: when stable direct-edge profiling is enabled,
+                       let the first native generation run a bounded number of
+                       times before one rebuild. That rebuild is the only point
+                       where edge_exec_count[]/edge_target_pc[] are summarized
+                       into stable_edge_* for the next generation. Dark (==-2)
+                       when the master env is off. */
+                    if (jit_enable_stable_direct_edges_env() && bi_was_invalid)
+                        bi->count = (int)jit_stable_edge_profile_exec_env();
+                    else
+                        bi->count = -2;
                 } else if (jit_allow_ram_dispatch_env()) {
                     /* Experimental: translate RAM after syncing NEXTRam into
                        the JIT shadow at the ROM->RAM dispatch boundary. */
@@ -6541,11 +6753,18 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             }
         }
 
+        /* STEP 0: summarize last incarnation's edge profile into stable_edge_*
+           BEFORE remove_deps clears the dep targets; dark/no-op when counts
+           are zero (master env off). */
+        jit_commit_edge_summary_for_rebuild(bi);
         remove_deps(bi); /* We are about to create new code */
         bi->optlevel = optlev;
         bi->pc_p = (uae_u8*)pc_hist[0].location;
         free_checksum_info_chain(bi->csi);
         bi->csi = NULL;
+        bi->edge_exec_count[0] = bi->edge_exec_count[1] = 0;
+        bi->edge_target_pc[0] = bi->edge_target_pc[1] = 0;
+        bi->dep[0].prefer_direct = bi->dep[1].prefer_direct = 0;
 
         liveflags[blocklen] = successor_flags; /* Use successor info if available, else FLAG_ALL */
         i = blocklen;
@@ -7419,9 +7638,15 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     jit_emit_backedge_tick(blocklen);
                 /* Use endblock_pc_isconst for ALL blocks (including DBF)
                    to enable countdown + direct chaining. */
+                if (jit_enable_stable_direct_edges_env()) {
+                    compemu_raw_inc_m((uintptr)&bi->edge_exec_count[0]);
+                    compemu_raw_mov_l_ri(REG_PAR1, (uintptr)bi);
+                    compemu_raw_mov_l_ri(REG_PAR2, 0);
+                    compemu_raw_call((uintptr)jit_maybe_promote_stable_edge);
+                }
                 tba = compemu_raw_endblock_pc_isconst(scaled_cycles(totcycles), ct1);
-                write_jmp_target(tba, get_handler(ct1));
-                create_jmpdep(bi, 0, tba, ct1);
+                write_jmp_target(tba, get_handler_for_edge(bi, 0, ct1));
+                create_jmpdep(bi, 0, tba, ct1, jit_source_edge_prefers_direct(bi, 0, ct1));
 
                 /* not-predicted outcome */
                 write_jmp_target(branchadd, (uintptr)get_target());
@@ -7442,9 +7667,15 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                    edge — for ARM64 this is taken_pc_p, the usual loop back-edge. */
                 if (jit_backedge_tick_enabled() && ct2 <= block_start_canon)
                     jit_emit_backedge_tick(blocklen);
+                if (jit_enable_stable_direct_edges_env()) {
+                    compemu_raw_inc_m((uintptr)&bi->edge_exec_count[1]);
+                    compemu_raw_mov_l_ri(REG_PAR1, (uintptr)bi);
+                    compemu_raw_mov_l_ri(REG_PAR2, 1);
+                    compemu_raw_call((uintptr)jit_maybe_promote_stable_edge);
+                }
                 tba = compemu_raw_endblock_pc_isconst(scaled_cycles(totcycles), ct2);
-                write_jmp_target(tba, get_handler(ct2));
-                create_jmpdep(bi, 1, tba, ct2);
+                write_jmp_target(tba, get_handler_for_edge(bi, 1, ct2));
+                create_jmpdep(bi, 1, tba, ct2, jit_source_edge_prefers_direct(bi, 1, ct2));
             } else if (!forced_interpreter_barrier) {
                 if (was_comp) {
                     flush(1);
@@ -7485,9 +7716,15 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 #if defined(USE_DATA_BUFFER)
                     data_check_end(4, 64);
 #endif
+                    if (jit_enable_stable_direct_edges_env()) {
+                        compemu_raw_inc_m((uintptr)&bi->edge_exec_count[0]);
+                        compemu_raw_mov_l_ri(REG_PAR1, (uintptr)bi);
+                        compemu_raw_mov_l_ri(REG_PAR2, 0);
+                        compemu_raw_call((uintptr)jit_maybe_promote_stable_edge);
+                    }
                     tba = compemu_raw_endblock_pc_isconst(scaled_cycles(totcycles), cv);
-                    write_jmp_target(tba, get_handler(cv));
-                    create_jmpdep(bi, 0, tba, cv);
+                    write_jmp_target(tba, get_handler_for_edge(bi, 0, cv));
+                    create_jmpdep(bi, 0, tba, cv, jit_source_edge_prefers_direct(bi, 0, cv));
                     }
 #else /* !CPU_AARCH64 */
                     {

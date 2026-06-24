@@ -1217,6 +1217,7 @@ void exec_nostats(void)
 			jit_trace_table_log("TRACEWINJTAB", trace_count + 1, before_pc);
 		}
 		(*cpufunctbl[opcode])(opcode);
+		jit_execprof_tick(before_pc, opcode, 1);
 		Uae2026JitCanonicalizePcAfterFallback();
 		if (trace_this) {
 			uae_u32 after_pc = m68k_getpc();
@@ -1514,6 +1515,7 @@ void execute_normal(void)
 				legacy_maybe_begin_return_pop_txn(pc_before_op, (uae_u16)opcode);
 			if (!helper_callsite) {
 				(*cpufunctbl[opcode])(opcode);
+				jit_execprof_tick(pc_before_op, opcode, 0);
 				Uae2026JitCanonicalizePcAfterFallback();
 			}
 			jit_interpreted_op_check_ticks();

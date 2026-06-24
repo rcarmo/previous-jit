@@ -1569,6 +1569,64 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 
 	return false;
 }
+
+/* Execution-weighted interp-opcode profiler (B2_JIT_EXECPROF, dark by default).
+   Counts every opcode actually dispatched through the interpreter loops
+   (exec_nostats + execute_normal) so the zero-fallback frontier can be ranked
+   by EXECUTION weight, not compile-time fallback-site count. Non-destructive
+   periodic dump to /workspace/tmp/execprof.txt every ~2M ops. */
+static unsigned long g_execprof_op[65536];
+static unsigned long g_execprof_total = 0;
+static unsigned long g_execprof_nostats = 0;
+static unsigned long g_execprof_normal = 0;
+static uae_u32 g_execprof_furthest = 0;
+static inline bool jit_execprof_env(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *e = getenv("B2_JIT_EXECPROF");
+		cached = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
+	}
+	return cached != 0;
+}
+static void jit_execprof_dump(void)
+{
+	static unsigned long scratch[65536];
+	memcpy(scratch, g_execprof_op, sizeof(scratch));
+	FILE *f = fopen("/workspace/tmp/execprof.txt", "w");
+	if (!f)
+		return;
+	fprintf(f, "EXECPROF total=%lu nostats=%lu normal=%lu furthest_pc=%08x\n",
+		g_execprof_total, g_execprof_nostats, g_execprof_normal,
+		(unsigned)g_execprof_furthest);
+	for (int rank = 0; rank < 48; rank++) {
+		unsigned long best = 0; long bo = -1;
+		for (long o = 0; o < 65536; o++)
+			if (scratch[o] > best) { best = scratch[o]; bo = o; }
+		if (bo < 0 || best == 0)
+			break;
+		fprintf(f, "EXECPROF rank=%d op=%04x mnemo=%d count=%lu pct=%.2f barrier_ramdisp=%d nostats_force=%d\n",
+			rank, (unsigned)bo, (int)table68k[bo].mnemo, best,
+			g_execprof_total ? 100.0 * best / g_execprof_total : 0.0,
+			jit_force_interpreter_barrier_opcode((uae_u16)bo) ? 1 : 0,
+			jit_force_exact_exec_nostats_opcode((uae_u16)bo) ? 1 : 0);
+		scratch[bo] = 0;
+	}
+	fclose(f);
+}
+static inline void jit_execprof_tick(uae_u32 op_pc, uae_u32 opcode, int is_nostats)
+{
+	if (!jit_execprof_env())
+		return;
+	g_execprof_op[opcode & 0xffff]++;
+	g_execprof_total++;
+	if (is_nostats) g_execprof_nostats++; else g_execprof_normal++;
+	if (op_pc > g_execprof_furthest)
+		g_execprof_furthest = op_pc;
+	if ((g_execprof_total & 0x3ffffUL) == 0)
+		jit_execprof_dump();
+}
+
 static inline bool jit_flush_each_op_env(void)
 {
 	static int cached = -1;

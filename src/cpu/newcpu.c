@@ -1518,6 +1518,8 @@ static void interp_lowpc_trace_log(const char *phase, unsigned long *count, uaec
    driver/SCSI region where that overhead is highest. Decoupled from the JIT. */
 static unsigned long g_ip_execprof[65536];
 static unsigned long g_ip_total;
+static unsigned long g_ip_forcerange;   /* exec in any jit_force_exact_exec_nostats_pc range (whole-block sterilized) */
+static unsigned long g_ip_force04077;   /* exec in the 0x04077xxx kernel VM/page-table walker ranges */
 static uae_u32 g_ip_furthest;
 static int g_ip_enabled = -1;
 static int ip_execprof_on(void) {
@@ -1546,9 +1548,11 @@ static void ip_execprof_dump(void) {
 	}
 	f = fopen("/workspace/tmp/interp_execprof.txt", "w");
 	if (!f) return;
-	fprintf(f, "INTERP_EXECPROF total=%lu furthest_pc=%08x mmu_region=%lu mmu_region_pct=%.2f\n",
+	fprintf(f, "INTERP_EXECPROF total=%lu furthest_pc=%08x mmu_region=%lu mmu_region_pct=%.2f forcerange=%lu forcerange_pct=%.3f force04077=%lu force04077_pct=%.3f\n",
 		g_ip_total, (unsigned)g_ip_furthest, mmu_region,
-		g_ip_total ? 100.0 * mmu_region / g_ip_total : 0.0);
+		g_ip_total ? 100.0 * mmu_region / g_ip_total : 0.0,
+		g_ip_forcerange, g_ip_total ? 100.0 * g_ip_forcerange / g_ip_total : 0.0,
+		g_ip_force04077, g_ip_total ? 100.0 * g_ip_force04077 / g_ip_total : 0.0);
 	for (rank = 0; rank < 48; rank++) {
 		unsigned long best = 0; long bo = -1;
 		for (o = 0; o < 65536; o++) if (scratch[o] > best) { best = scratch[o]; bo = o; }
@@ -1560,10 +1564,21 @@ static void ip_execprof_dump(void) {
 	}
 	fclose(f);
 }
+static int ip_in_forcerange(uae_u32 pc) {
+	/* mirror jit_force_exact_exec_nostats_pc ranges (whole-block-interp due to stale-An on postinc/predec) */
+	uae_u32 rp = (pc < 0x00020000u) ? (pc | 0x01000000u) : pc;
+	if (rp >= 0x0100a000u && rp <= 0x0100a700u) return 1;
+	if (rp >= 0x010024ccu && rp <= 0x010024fcu) return 1;
+	if (rp >= 0x01008e4au && rp <= 0x01008e94u) return 1;
+	if (pc >= 0x04077180u && pc <= 0x04077220u) return 2; /* kernel VM/page-table */
+	if (pc >= 0x04077480u && pc <= 0x040775a0u) return 2;
+	return 0;
+}
 static void ip_execprof_tick(uae_u32 pc, uae_u16 op) {
 	if (!ip_execprof_on()) return;
 	g_ip_execprof[op]++;
 	g_ip_total++;
+	{ int fr = ip_in_forcerange(pc); if (fr) { g_ip_forcerange++; if (fr == 2) g_ip_force04077++; } }
 	if (pc > g_ip_furthest) g_ip_furthest = pc;
 	if ((g_ip_total & 0x7ffffUL) == 0) ip_execprof_dump();
 }

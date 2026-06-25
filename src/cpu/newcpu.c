@@ -1520,6 +1520,14 @@ static unsigned long g_ip_execprof[65536];
 static unsigned long g_ip_total;
 static unsigned long g_ip_forcerange;   /* exec in any jit_force_exact_exec_nostats_pc range (whole-block sterilized) */
 static unsigned long g_ip_force04077;   /* exec in the 0x04077xxx kernel VM/page-table walker ranges */
+/* Control-flow trace_barrier fragmentation: dynamic basic-block length between
+   trace-barrier ops (Bcc/BSR/DBcc/RTS-family/LINK-UNLK/JSR-JMP) = the block size
+   the JIT trace_barrier produces. Small avg = high fragmentation. */
+static unsigned long g_cf_total;        /* trace-barrier op count (barrier-op-weight) */
+static unsigned long g_cf_runlen;       /* instructions since last trace-barrier op */
+static unsigned long g_cf_blocks;       /* number of dynamic blocks closed */
+static unsigned long g_cf_blocklen_sum; /* sum of block lengths (for average) */
+static unsigned long g_cf_hist[8];      /* block-len buckets: 1,2,3-4,5-8,9-16,17-32,33-64,65+ */
 static uae_u32 g_ip_furthest;
 static int g_ip_enabled = -1;
 static int ip_execprof_on(void) {
@@ -1553,6 +1561,10 @@ static void ip_execprof_dump(void) {
 		g_ip_total ? 100.0 * mmu_region / g_ip_total : 0.0,
 		g_ip_forcerange, g_ip_total ? 100.0 * g_ip_forcerange / g_ip_total : 0.0,
 		g_ip_force04077, g_ip_total ? 100.0 * g_ip_force04077 / g_ip_total : 0.0);
+	fprintf(f, "INTERP_CONTROLFLOW cf_ops=%lu cf_pct=%.2f blocks=%lu avg_blocklen=%.2f hist_1=%lu 2=%lu 3-4=%lu 5-8=%lu 9-16=%lu 17-32=%lu 33-64=%lu 65+=%lu\n",
+		g_cf_total, g_ip_total ? 100.0 * g_cf_total / g_ip_total : 0.0,
+		g_cf_blocks, g_cf_blocks ? (double)g_cf_blocklen_sum / g_cf_blocks : 0.0,
+		g_cf_hist[0], g_cf_hist[1], g_cf_hist[2], g_cf_hist[3], g_cf_hist[4], g_cf_hist[5], g_cf_hist[6], g_cf_hist[7]);
 	for (rank = 0; rank < 48; rank++) {
 		unsigned long best = 0; long bo = -1;
 		for (o = 0; o < 65536; o++) if (scratch[o] > best) { best = scratch[o]; bo = o; }
@@ -1563,6 +1575,20 @@ static void ip_execprof_dump(void) {
 		scratch[bo] = 0;
 	}
 	fclose(f);
+}
+static int ip_is_controlflow(uae_u16 op) {
+	int mn = table68k[op].mnemo;
+	return (mn == i_Bcc || mn == i_BSR || mn == i_DBcc ||
+	        mn == i_RTS || mn == i_RTE || mn == i_RTR || mn == i_RTD ||
+	        mn == i_JSR || mn == i_JMP || mn == i_LINK || mn == i_UNLK);
+}
+static void ip_cf_record(unsigned long blocklen) {
+	int b;
+	g_cf_blocks++; g_cf_blocklen_sum += blocklen;
+	if (blocklen <= 1) b = 0; else if (blocklen == 2) b = 1; else if (blocklen <= 4) b = 2;
+	else if (blocklen <= 8) b = 3; else if (blocklen <= 16) b = 4; else if (blocklen <= 32) b = 5;
+	else if (blocklen <= 64) b = 6; else b = 7;
+	g_cf_hist[b]++;
 }
 static int ip_in_forcerange(uae_u32 pc) {
 	/* mirror jit_force_exact_exec_nostats_pc ranges (whole-block-interp due to stale-An on postinc/predec) */
@@ -1579,6 +1605,8 @@ static void ip_execprof_tick(uae_u32 pc, uae_u16 op) {
 	g_ip_execprof[op]++;
 	g_ip_total++;
 	{ int fr = ip_in_forcerange(pc); if (fr) { g_ip_forcerange++; if (fr == 2) g_ip_force04077++; } }
+	g_cf_runlen++;
+	if (ip_is_controlflow(op)) { g_cf_total++; ip_cf_record(g_cf_runlen); g_cf_runlen = 0; }
 	if (pc > g_ip_furthest) g_ip_furthest = pc;
 	if ((g_ip_total & 0x7ffffUL) == 0) ip_execprof_dump();
 }

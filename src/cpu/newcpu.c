@@ -1511,6 +1511,63 @@ static void interp_lowpc_trace_log(const char *phase, unsigned long *count, uaec
 		(unsigned)regs.isp, (unsigned)regs.usp, (unsigned)regs.spcflags);
 }
 
+/* Pure-interp execution-weighted opcode profiler (B2_INTERP_EXECPROF, dark by
+   default). Classifies MMU-region mem ops (postinc/predec addressing +
+   MOVES/MMUOP/PFLUSH/PTEST/MOVE16) to rebuild the MMU-region EXECUTION fraction
+   over a full interpreter boot, which passes the JIT MO-wall and reaches the
+   driver/SCSI region where that overhead is highest. Decoupled from the JIT. */
+static unsigned long g_ip_execprof[65536];
+static unsigned long g_ip_total;
+static uae_u32 g_ip_furthest;
+static int g_ip_enabled = -1;
+static int ip_execprof_on(void) {
+	if (g_ip_enabled < 0) {
+		const char *e = getenv("B2_INTERP_EXECPROF");
+		g_ip_enabled = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
+	}
+	return g_ip_enabled;
+}
+static int ip_is_mmuregion(uae_u16 op) {
+	int sm = table68k[op].smode, dm = table68k[op].dmode, mn = table68k[op].mnemo;
+	if (sm == Aipi || sm == Apdi || dm == Aipi || dm == Apdi) return 1;
+	if (mn == i_MOVES || mn == i_MOVE16) return 1;
+	if (mn == i_MMUOP030 || mn == i_PFLUSH || mn == i_PFLUSHA || mn == i_PFLUSHN ||
+	    mn == i_PFLUSHAN || mn == i_PTESTR || mn == i_PTESTW) return 1;
+	return 0;
+}
+static void ip_execprof_dump(void) {
+	static unsigned long scratch[65536];
+	unsigned long mmu_region = 0;
+	int o, rank;
+	FILE *f;
+	for (o = 0; o < 65536; o++) {
+		scratch[o] = g_ip_execprof[o];
+		if (g_ip_execprof[o] && ip_is_mmuregion((uae_u16)o)) mmu_region += g_ip_execprof[o];
+	}
+	f = fopen("/workspace/tmp/interp_execprof.txt", "w");
+	if (!f) return;
+	fprintf(f, "INTERP_EXECPROF total=%lu furthest_pc=%08x mmu_region=%lu mmu_region_pct=%.2f\n",
+		g_ip_total, (unsigned)g_ip_furthest, mmu_region,
+		g_ip_total ? 100.0 * mmu_region / g_ip_total : 0.0);
+	for (rank = 0; rank < 48; rank++) {
+		unsigned long best = 0; long bo = -1;
+		for (o = 0; o < 65536; o++) if (scratch[o] > best) { best = scratch[o]; bo = o; }
+		if (bo < 0 || !best) break;
+		fprintf(f, "INTERP rank=%d op=%04x mnemo=%d smode=%d dmode=%d count=%lu pct=%.2f mmuregion=%d\n",
+			rank, (unsigned)bo, table68k[bo].mnemo, table68k[bo].smode, table68k[bo].dmode,
+			best, g_ip_total ? 100.0 * best / g_ip_total : 0.0, ip_is_mmuregion((uae_u16)bo));
+		scratch[bo] = 0;
+	}
+	fclose(f);
+}
+static void ip_execprof_tick(uae_u32 pc, uae_u16 op) {
+	if (!ip_execprof_on()) return;
+	g_ip_execprof[op]++;
+	g_ip_total++;
+	if (pc > g_ip_furthest) g_ip_furthest = pc;
+	if ((g_ip_total & 0x7ffffUL) == 0) ip_execprof_dump();
+}
+
 /* Aranym MMU 68040  */
 static void m68k_run_mmu040 (void)
 {
@@ -1551,6 +1608,7 @@ static void m68k_run_mmu040 (void)
 			mmu_opcode = opcode = x_prefetch (0);
 			interp_lowpc_trace_log("BEFORE", &interp_lowpc_trace_count, pc, opcode, 0);
 			cpu_cycles = (*cpufunctbl[opcode])(opcode);
+			ip_execprof_tick(pc, (uae_u16)opcode);
 			interp_lowpc_trace_log("AFTER", &interp_lowpc_trace_count, pc, opcode, 0);
             M68000_AddCycles(cpu_cycles);
             

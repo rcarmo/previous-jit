@@ -5825,9 +5825,18 @@ int check_for_cache_miss(void)
         }
 #if defined(CPU_AARCH64)
         if (bi->status == BI_ACTIVE &&
+            bi->count >= 0 &&
             cache_tags[cl].handler == bi->handler_to_use &&
             bi->handler_to_use != (cpuop_func*)popall_execute_normal &&
             bi->handler_to_use != (cpuop_func*)popall_recompile_block) {
+            /* e04d965: re-dispatch a VALID block to its cached handler. Gated on
+               count>=0: a block whose interpreter-warmup COUNTDOWN HAS EXPIRED
+               (count<0) must NOT be re-dispatched here -- it must fall through to
+               execute_normal->compile_block to ESCALATE (count==-1 -> optlev++).
+               Without this gate the recompile_block->execute_normal escalation
+               path is short-circuited, blocks never escalate past optlev 0
+               (opt>0=0) and spin re-dispatching forever (count -> deeply negative;
+               recompile_block ~= cache_hit churn). */
             jit_diag_execute_normal_cache_hit++;
             return 1;
         }

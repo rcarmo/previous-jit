@@ -106,6 +106,19 @@ int m68k_do_specialties(void)
 #define PREV_SPCFLAG_INT        0x008
 #define PREV_SPCFLAG_BRK        0x010
 #define PREV_SPCFLAG_MODE_CHG   0x800
+#define PREV_SPCFLAG_JIT_EXEC_RETURN 0x8000
+
+    /* JIT_EXEC_RETURN is set by flush_icache_hard() to force execution out of
+     * compiled code (e.g. after a code-cache fill/flush).  It must be cleared
+     * once we have reached this toplevel dispatch recovery point, otherwise the
+     * dispatcher bails to do_nothing(), re-enters compiled code, bails again,
+     * and spins forever with PC frozen (spc=8000).  The vendored uae_cpu_2026
+     * newcpu.cpp clears it (gated on m68k_execute_depth==0) but that file is
+     * NOT linked; this stub is the active m68k_do_specialties.  Previous's JIT
+     * boot enters via m68k_compile_execute (which never increments
+     * m68k_execute_depth), so this dispatch is always the depth==0 toplevel. */
+    if (regs.spcflags & PREV_SPCFLAG_JIT_EXEC_RETURN)
+        regs.spcflags &= ~PREV_SPCFLAG_JIT_EXEC_RETURN;
 
     if (regs.spcflags & PREV_SPCFLAG_DOTRACE)
         Exception(9, 0);

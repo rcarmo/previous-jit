@@ -5825,7 +5825,7 @@ int check_for_cache_miss(void)
         }
 #if defined(CPU_AARCH64)
         if (bi->status == BI_ACTIVE &&
-            bi->count >= 0 &&
+            (bi->count >= 0 || bi->count == -2) &&
             cache_tags[cl].handler == bi->handler_to_use &&
             bi->handler_to_use != (cpuop_func*)popall_execute_normal &&
             bi->handler_to_use != (cpuop_func*)popall_recompile_block) {
@@ -5836,9 +5836,39 @@ int check_for_cache_miss(void)
                Without this gate the recompile_block->execute_normal escalation
                path is short-circuited, blocks never escalate past optlev 0
                (opt>0=0) and spin re-dispatching forever (count -> deeply negative;
-               recompile_block ~= cache_hit churn). */
+               recompile_block ~= cache_hit churn).
+
+               count==-2 is the SEPARATE 'permanent native' marker: ROM blocks
+               and JIT_RAM-dispatch blocks compile at max optlev with count=-2
+               (no countdown code, never escalates). The bare count>=0 gate
+               wrongly excluded -2 too -> every max-optlev native block was
+               rejected and recompiled forever (recomp=130901, cache_hit=80,
+               peak_cache=154MB, ~100% interp). Accept -2 as re-dispatchable:
+               churn 130901->17, cache_hit 80->131035, peak_cache 154MB->15KB. */
             jit_diag_execute_normal_cache_hit++;
             return 1;
+        }
+#endif
+#if defined(CPU_AARCH64)
+        /* CFCM PROBE (dark, B2_JIT_CFCM_PROBE=1): a known block is about to be
+           rejected for native re-dispatch -> falls to execute_normal/recompile.
+           Log WHY (status/count/optlevel/handler match) to pin the churn. */
+        {
+            static int cfcm_probe = -1;
+            if (cfcm_probe < 0) cfcm_probe = getenv("B2_JIT_CFCM_PROBE") ? 1 : 0;
+            if (cfcm_probe) {
+                static unsigned long cfcm_n = 0;
+                if (cfcm_n++ < 4000) {
+                    int is_active = (bi->status == BI_ACTIVE);
+                    int cnt_ok = (bi->count >= 0);
+                    int htu_match = (cache_tags[cl].handler == bi->handler_to_use);
+                    int htu_isnormal = (bi->handler_to_use == (cpuop_func*)popall_execute_normal);
+                    fprintf(stderr, "CFCM-REJECT pc=%08x status=%d count=%d optlev=%d "
+                        "is_active=%d cnt_ok=%d htu_match=%d htu_isnormal=%d\n",
+                        (unsigned)((uintptr)bi->pc_p - MEMBaseDiff), bi->status, bi->count,
+                        bi->optlevel, is_active, cnt_ok, htu_match, htu_isnormal);
+                }
+            }
         }
 #endif
     }

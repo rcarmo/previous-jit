@@ -59,7 +59,12 @@ extern const uae_u32 ARM_CCR_MAP[] = { 0, ARM_C_FLAG, // 1 C
       CSET_xc(x, NATIVE_CC_CC);     \
     else                            \
       CSET_xc(x, NATIVE_CC_CS);     \
-    LSL_wwi(x, x, 29);              \
+    /* In-register FLAGX is 0/1 (JIT format): consumers (ADDX/SUBX/ROXR/ROXL)\
+     * read bit 0, tomem/jit_flush convert 0/1 -> bit-29 for the interpreter,\
+     * and do_load_reg converts bit-29 -> 0/1 on reload. The 32-bit ARM\
+     * DUPLICACTE_CARRY also leaves 0/1. A prior LSL_wwi(x,x,29) here left\
+     * bit-29 in-register, which a same-trace consumer (e.g. ROXR.B reading\
+     * bit 0) saw as X=0 -> broke CRC bit-feedback (d0 degenerated to 0). */\
     unlock2(x);                     \
   }
 

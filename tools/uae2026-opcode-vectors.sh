@@ -12,6 +12,7 @@ declare -a TEST_ORDER=(
   mull_32_hardfail divl_32_hardfail mull_unsigned_32 mull_signed_32 divl_unsigned_32 divl_signed_32
   mull_u64 mull_s32_neg divl_u32_rem divl_s32_neg divl_u32_max divl_s32_neg_divisor mull_s64_neg divl_same_dq_dr divl_u64 divl_s64
   aslw_mem_hardfail lsrw_mem_hardfail rolw_mem_hardfail asrw_mem_edge roxlw_mem_edge roxrw_mem_edge
+  addx_l_reg_xset subx_l_reg_xset negx_l_reg_xset addx_l_reg_xclr addx_l_predec_xset
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
   chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
   jsr_an_call_return bsr_word_call_return seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_movem_restore_full_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
@@ -89,6 +90,18 @@ TESTS[rolw_mem_hardfail]="41F9 0400 A000 30FC 8001 E7D0 3010"
 TESTS[asrw_mem_edge]="41F9 0400 A000 30FC 8001 E0D0 3010"
 TESTS[roxlw_mem_edge]="41F9 0400 A000 30FC 0001 003C 0010 E5D0 3010"
 TESTS[roxrw_mem_edge]="41F9 0400 A000 30FC 8000 003C 0010 E4D0 3010"
+
+# Extend-arithmetic carry/X vectors (gate coverage for the 513b75c fallback
+# flag-spill). ori.b #$10,ccr sets X; andi.b #$EF,ccr clears X. Register-form
+# checks flags_carry_inverted threading; addx_l_predec_xset routes addx.l
+# -(a1),-(a0) through the interpreter FALLBACK (predec (An) stays on fallback
+# per compemu_support_arm.cpp:1550) -> the exact seam 513b75c patches, for
+# carry/X instead of Z. Result loaded back to d0 for the register-dump compare.
+TESTS[addx_l_reg_xset]="203C 0000 0001 223C 0000 0002 003C 0010 D181"
+TESTS[subx_l_reg_xset]="203C 0000 0005 223C 0000 0002 003C 0010 9181"
+TESTS[negx_l_reg_xset]="203C 0000 0001 003C 0010 4080"
+TESTS[addx_l_reg_xclr]="203C 0000 0001 223C 0000 0002 023C 00EF D181"
+TESTS[addx_l_predec_xset]="41F9 0400 A010 20BC 0000 0002 43F9 0400 A020 22BC 0000 0001 5888 5889 003C 0010 D189 2010"
 
 TESTS[bfextu_reg_edge]="203C ABCD EF01 E9C0 0200"
 TESTS[bfexts_reg_edge]="203C ABCD EF01 EBC0 0200"

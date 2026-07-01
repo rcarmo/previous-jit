@@ -7573,13 +7573,13 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                        interpreted flag consumer reads regflags.nzcv (stale),
                        and block entry reloads host NZCV from it, clobbering the
                        correct flags. Persist host NZCV -> regflags.nzcv after any
-                       flag-setting fallback. Confirmed to fix the early-ROM
-                       memtest verify (0x01002c18 cmp.l (a1)+,d1): production
-                       broad-drop furthest pc 0x01002586 -> 0x0100832a.
-                       Env-gated pending the opcode 76/76 + mmu-fast 32/32
-                       regression gate; flip to default-on once it passes. */
-                    if (getenv("B2_JIT_FALLBACK_FLAG_SPILL") &&
-                        prop[cft_map(opcode)].set_flags) {
+                       flag-setting fallback (raw_flags_to_reg mirrors the block-
+                       entry reload, normalizing flags_carry_inverted). Fixes the
+                       F1 memtest verify seam (0x01002c18 cmp.l (a1)+,d1).
+                       Default-on: regression-validated (opcode 81/81 both ways
+                       incl. addx/subx/negx carry vectors, mmu-fast 32/32); inert
+                       in stock (~14 compiled blocks), unblocks the F1 native path. */
+                    if (prop[cft_map(opcode)].set_flags) {
                         raw_flags_to_reg(REG_WORK1);
                     }
                     if (fallback_call_push_txn)

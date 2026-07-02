@@ -13,6 +13,7 @@ declare -a TEST_ORDER=(
   mull_u64 mull_s32_neg divl_u32_rem divl_s32_neg divl_u32_max divl_s32_neg_divisor mull_s64_neg divl_same_dq_dr divl_u64 divl_s64
   aslw_mem_hardfail lsrw_mem_hardfail rolw_mem_hardfail asrw_mem_edge roxlw_mem_edge roxrw_mem_edge
   addx_l_reg_xset subx_l_reg_xset negx_l_reg_xset addx_l_reg_xclr addx_l_predec_xset
+  cmpm_l_equal tst_l_postinc_neg neg_l_postinc negx_l_postinc_xset cmp_l_postinc_d1_eq and_l_postinc_d0
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
   chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
   jsr_an_call_return bsr_word_call_return seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_movem_restore_full_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
@@ -102,6 +103,16 @@ TESTS[subx_l_reg_xset]="203C 0000 0005 223C 0000 0002 003C 0010 9181"
 TESTS[negx_l_reg_xset]="203C 0000 0001 003C 0010 4080"
 TESTS[addx_l_reg_xclr]="203C 0000 0001 223C 0000 0002 023C 00EF D181"
 TESTS[addx_l_predec_xset]="41F9 0400 A010 20BC 0000 0002 43F9 0400 A020 22BC 0000 0001 5888 5889 003C 0010 D189 2010"
+
+# 513b75c SAFETY PROBE (uncovered flag-setting fallback ops, N/Z/C/V/X spread):
+# if fix-ON jit == interp for these, the fallback flag-spill does not clobber
+# any software-flag handler these exercise. Not in the 81-gate by design.
+TESTS[cmpm_l_equal]="41F9 0400 A010 43F9 0400 A020 20BC 0000 0007 22BC 0000 0007 B388 2010"
+TESTS[tst_l_postinc_neg]="43F9 0400 A010 22BC FFFF FFFF 4A99 2029 FFFC"
+TESTS[neg_l_postinc]="43F9 0400 A010 22BC 0000 0001 4499 2029 FFFC"
+TESTS[negx_l_postinc_xset]="43F9 0400 A010 22BC 0000 0000 003C 0010 4099 2029 FFFC"
+TESTS[cmp_l_postinc_d1_eq]="43F9 0400 A010 22BC 0000 0042 223C 0000 0042 B299"
+TESTS[and_l_postinc_d0]="43F9 0400 A010 22BC 0000 000F 203C 0000 00FF C099"
 
 TESTS[bfextu_reg_edge]="203C ABCD EF01 E9C0 0200"
 TESTS[bfexts_reg_edge]="203C ABCD EF01 EBC0 0200"

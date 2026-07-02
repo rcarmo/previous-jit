@@ -1396,6 +1396,21 @@ MIDFUNC(1,dbf_dec_test_ne_w,(RW4 d))
 }
 MENDFUNC(1,dbf_dec_test_ne_w,(RW4 d))
 
+/* DBcc (cc>=2) in-place low-word decrement (cross-apply of @basilisk c32216e8).
+   Preserves the high word and does NOT touch NZCV (the following cmov reads the
+   loop's live condition flags). Aliasing-immune by construction: no scratch-dest
+   virtual register that the legacy allocator could alias onto src's host reg
+   (the gencomp:2371 scratch-vs-dirty-architectural hazard that the old
+   lea_l_brr(scratchie,src,-1)/mov_w_rr(src,scratchie) pattern was subject to). */
+MIDFUNC(1,dbcc_dec_w,(RW4 d))
+{
+	d = rmw(d);
+	SUB_wwi(REG_WORK1, d, 1);
+	BFXIL_xxii(d, REG_WORK1, 0, 16);
+	unlock2(d);
+}
+MENDFUNC(1,dbcc_dec_w,(RW4 d))
+
 /* Conditional move for DBcc terminal test: if src.W != 0, set d = s.
    Does NOT modify hardware NZCV or regflags.nzcv.
    Uses UXTH + CBNZ + MOV sequence that preserves all flags. */

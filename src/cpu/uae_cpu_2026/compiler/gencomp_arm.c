@@ -2405,8 +2405,10 @@ static void gen_dbcc(uae_u32 opcode, struct instr *curi, const char* ssize) {
 	case 14:
 	case 15:
 		comprintf("\tmov_l_rr(nsrc,src);\n");
-		comprintf("\tlea_l_brr(scratchie,src,(uae_s32)-1);\n"
-				"\tmov_w_rr(src,scratchie);\n");
+		/* cross-apply @basilisk c32216e8: aliasing-immune in-place low-word decrement
+		   replaces lea_l_brr(scratchie,src,-1)/mov_w_rr(src,scratchie) (destroyed src's
+		   high word when the allocator aliased scratchie onto src). */
+		comprintf("\tdbcc_dec_w(src);\n");
 		comprintf("\tcmov_l_rr(offs,PC_P,%d);\n", cond_codes[curi->cc]);
 		comprintf("\tcmov_l_rr(src,nsrc,%d);\n", cond_codes[curi->cc]);
 		/* OK, now for cc=true, we have src==nsrc and offs==PC_P,

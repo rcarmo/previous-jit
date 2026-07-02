@@ -554,12 +554,13 @@ static inline bool jit_pc_in_env_ranges(const char *env_name, uae_u32 pc)
 		int range_count;
 		range_pair ranges[64];
 	};
-	static cache_entry caches[5] = {
+	static cache_entry caches[6] = {
 		{"B2_JIT_VERIFY_PCS", 0, 0, {}},
 		{"B2_JIT_FLUSH_OP_PCS", 0, 0, {}},
 		{"B2_JIT_TRACE_PCS", 0, 0, {}},
 		{"B2_JIT_EXACT_EXEC_PCS", 0, 0, {}},
 		{"B2_JIT_LOCKSTEP_PCS", 0, 0, {}},
+		{"B2_JIT_DUMP_PCS", 0, 0, {}},
 	};
 	cache_entry *cache = NULL;
 	for (size_t ci = 0; ci < sizeof(caches) / sizeof(caches[0]); ci++) {
@@ -1097,25 +1098,10 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     tick_inhibit = true;
 #endif
 
-    /* Re-run the exact interpreter block from the true entry state so the
-       verifier compares whole-block semantics, not a post-trace side state. */
-    jit_block_verify_snapshot_restore(&jit_block_verify_entry_state);
-    regs.spcflags = 0;
-    InterruptFlags = 0;
-    for (int i = 0; i < blocklen; i++) {
-        uae_u32 opcode = get_opcode_cft_map((uae_u16)*pc_hist[i].location);
-        (*cpufunctbl[opcode])(opcode);
-    }
-    if (!jit_block_verify_snapshot_capture(&interp)) {
-#if defined(CPU_AARCH64)
-        tick_inhibit = saved_tick_inhibit;
-#endif
-        jit_block_verify_snapshot_restore(&resume);
-        jit_block_verify_snapshot_free(&resume);
-        jit_block_verify_entry_reset();
-        return;
-    }
-
+    /* === NATIVE FIRST ===
+       Compile the sandbox block (edge-override forces the one-block bound) and
+       run it, capturing its NATURAL stop PC. We run native before interp so
+       the interpreter reference can be stepped to the exact same stop point. */
     jit_block_verify_snapshot_restore(&jit_block_verify_entry_state);
     regs.spcflags = 0;
     InterruptFlags = 0;
@@ -1129,16 +1115,79 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     const bool actual_is_nzcv = !jit_block_verify_actual_exact_exec;
     /* No entry conversion (Fix B dropped): a native block that reads its entry
        CCR after an interpreter predecessor genuinely mis-reads cznv-as-nzcv in
-       REAL execution too. The verifier must REPORT that, not mask it. Fix A
-       (exec-mode-aware CCR compare) decodes 'actual' per its real layout. */
+       REAL execution too. The verifier must REPORT that, not mask it. */
 
     countdown = -1;
     jit_block_verify_reentrant = true;
     ((jit_compiled_handler)pushall_call_handler)();
     jit_block_verify_reentrant = false;
 
-    if (jit_block_verify_snapshot_capture(&native)) {
-        jit_block_verify_compare(&interp, &native, block_pc, blocklen, actual_is_nzcv);
+    if (!jit_block_verify_snapshot_capture(&native)) {
+#if defined(CPU_AARCH64)
+        tick_inhibit = saved_tick_inhibit;
+#endif
+        jit_block_verify_snapshot_restore(&resume);
+        jit_block_verify_snapshot_free(&resume);
+        jit_block_verify_entry_reset();
+        return;
+    }
+    const uae_u32 native_stop_pc = (uae_u32)native.regs.pc;
+
+    /* === INTERP REFERENCE, control-flow-following ===
+       Step the real interpreter from the SAME entry state, FOLLOWING actual
+       control flow (bpl/dbf taken as the flags dictate), until it reaches
+       native's natural stop PC (or a step cap). This replaces the old
+       blocklen-static-ops reference, which executed `blocklen` fixed ops while
+       ignoring branches -- so it diverged from native purely because native
+       followed real control flow (ran the dbf back-edge / eori). With both now
+       stopping at the SAME PC, any residual reg/flag delta is GENUINE per-block
+       codegen divergence, not an over-run artifact. */
+    jit_block_verify_snapshot_restore(&jit_block_verify_entry_state);
+    regs.spcflags = 0;
+    InterruptFlags = 0;
+    {
+        const int maxsteps = blocklen * 16 + 64;
+        int steps = 0;
+        for (;;) {
+            uae_u32 opcode = get_opcode_cft_map((uae_u16)*(uae_u16*)regs.pc_p);
+            (*cpufunctbl[opcode])(opcode);
+            if ((uae_u32)m68k_getpc() == native_stop_pc) break;
+            if (++steps >= maxsteps) break;
+        }
+    }
+    const bool interp_reached_stop = ((uae_u32)m68k_getpc() == native_stop_pc);
+    if (!jit_block_verify_snapshot_capture(&interp)) {
+#if defined(CPU_AARCH64)
+        tick_inhibit = saved_tick_inhibit;
+#endif
+        jit_block_verify_snapshot_restore(&resume);
+        jit_block_verify_snapshot_free(&resume);
+        jit_block_verify_snapshot_free(&native);
+        jit_block_verify_entry_reset();
+        return;
+    }
+
+    {
+        /* DARK PROBE: settle block extent + d2 entry/exit + matched stop PC. */
+        if (block_pc == 0x01002c76u || block_pc == 0x01002c74u) {
+            fprintf(stderr, "JITVPROBE block=%08x len=%d reached=%d locs=", (unsigned)block_pc, blocklen, interp_reached_stop?1:0);
+            for (int i = 0; i < blocklen; i++)
+                fprintf(stderr, "%08x ", (unsigned)((uintptr)pc_hist[i].location & 0xffffffffu));
+            fprintf(stderr, "| d2 entry=%08x interp=%08x native=%08x | stop_pc=%08x interp_pc=%08x\n",
+                (unsigned)jit_block_verify_entry_state.regs.regs[2],
+                (unsigned)interp.regs.regs[2], (unsigned)native.regs.regs[2],
+                (unsigned)native_stop_pc, (unsigned)interp.regs.pc);
+        }
+        /* APPLES-TO-APPLES GUARD: only compare when the interpreter reference
+           actually stopped at native's stop PC. If interp free-ran past native's
+           one-iteration bound (e.g. native edge-override stopped at a loop
+           back-edge while interp continued), the states are at different points
+           and any delta is a bounding artifact, NOT codegen divergence. */
+        if (interp_reached_stop)
+            jit_block_verify_compare(&interp, &native, block_pc, blocklen, actual_is_nzcv);
+        else
+            fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d SKIP-NOREACH interp_pc=%08x native_pc=%08x\n",
+                (unsigned)block_pc, blocklen, (unsigned)interp.regs.pc, (unsigned)native_stop_pc);
         jit_block_verify_snapshot_free(&native);
     }
 
@@ -1339,6 +1388,34 @@ static void op_move_l_d8anxn_absw_comp_ff(uae_u32 opcode);
 static void op_move_l_reg_d16an_comp_ff(uae_u32 opcode);
 extern "C" void jit_trace_add(uae_u32 pc, uae_u32 opcode);
 extern "C" void jit_trace_pc_hit(uae_u32 pc, uae_u32 tagged_opcode);
+
+/* Env-gated memtest verify-cmp probe: runs immediately after the interpreter
+ * fallback for cmp.l (a1)+,d1 (0xb299). Reads the interpreter's post-cmp
+ * regstruct state (a1 already post-incremented, d1, the just-read longword,
+ * and regflags.nzcv) to answer: does the interpreter see equal operands and
+ * set Z=1, and does that flag survive to the compiled bne? INERT unless
+ * B2_JIT_MEMTEST_PROBE is set. */
+extern "C" void jit_memtest_probe(uae_u32 pc, uae_u32 opcode)
+{
+    uae_u32 hostnzcv;
+    __asm__ volatile("mrs %0, nzcv" : "=r"(hostnzcv));
+    static int n = 0;
+    uae_u32 a1 = (uae_u32)regs.regs[9];
+    uae_u32 d1 = (uae_u32)regs.regs[1];
+    uae_u32 memval = get_long(a1 - 4);
+    uae_u32 nzcv = regflags.nzcv;
+    int z = (int)((nzcv >> 30) & 1);
+    int hz = (int)((hostnzcv >> 30) & 1);
+    if (getenv("B2_JIT_MEMTEST_FIXTEST"))
+        regflags.nzcv = hostnzcv;
+    if (a1 >= 0x0b000010u && a1 <= 0x0b000048u && n < 60) {
+        n++;
+        fprintf(stderr, "MEMTEST_PROBE pc=%08x op=%04x a1post=%08x read@%08x mem=%08x d1=%08x memZ=%d hostnzcv=%08x hostZ=%d %s\n",
+            pc, opcode, a1, a1 - 4, memval, d1, z, hostnzcv, hz,
+            (memval == d1 && hz == 0) ? "<<< EQUAL-BUT-hostZ0-BUG" : "");
+        fflush(stderr);
+    }
+}
 extern "C" bool jit_op_rom_delay_bsr_callsite(uae_u32 pc, uae_u32 retpc);
 extern "C" bool jit_op_rom_vbr_global_lookup_callsite(uae_u32 pc, uae_u32 retpc);
 extern "C" bool jit_op_rom_rtc_read_byte_callsite(uae_u32 pc, uae_u32 retpc);
@@ -1470,6 +1547,32 @@ static inline bool jit_low_virtual_prefetch_guard_pc(uae_u32 pc)
 
 static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 {
+	/* TEST-ONLY (B2_JIT_BARRIER_FAMILY=<hex nibble>): force a whole opcode family
+	   (top nibble of op) through the interpreter. Bisects which family's codegen
+	   introduces the L1-opt wall. Dark unless the env is set. */
+	{
+		static int _bf = -2;
+		if (_bf == -2) { const char *e = getenv("B2_JIT_BARRIER_FAMILY"); _bf = (e && *e) ? (int)strtol(e, NULL, 0) : -1; }
+		if (_bf >= 0 && (int)((op >> 12) & 0xf) == _bf) return true;
+	}
+	/* TEST-ONLY (B2_JIT_BARRIER_OP8=<hex byte>): force opcodes whose high byte
+	   (op>>8) matches, for finer-than-nibble bisect. Dark unless set. */
+	{
+		static int _b8 = -2;
+		if (_b8 == -2) { const char *e = getenv("B2_JIT_BARRIER_OP8"); _b8 = (e && *e) ? (int)strtol(e, NULL, 0) : -1; }
+		if (_b8 >= 0 && (int)((op >> 8) & 0xff) == _b8) return true;
+	}
+	/* TEST-ONLY (B2_JIT_BARRIER_MASK/VAL): force opcodes where (op & MASK)==VAL.
+	   Finest bisect. Dark unless both set. */
+	{
+		static int _bm = -2, _bv = 0;
+		if (_bm == -2) {
+			const char *m = getenv("B2_JIT_BARRIER_MASK"); const char *v = getenv("B2_JIT_BARRIER_VAL");
+			_bm = (m && *m) ? (int)strtol(m, NULL, 0) : -1;
+			_bv = (v && *v) ? (int)strtol(v, NULL, 0) : 0;
+		}
+		if (_bm >= 0 && (int)(op & (uae_u16)_bm) == _bv) return true;
+	}
 	/* ARM64: zero hardcoded barriers.
 	   MOVE16 uses readlong/writelong in gencomp.c.
 	   EMUL_OP has compiled handler op_emulop_comp_ff.
@@ -2350,7 +2453,8 @@ static void jit_diag_maybe_print(void)
     fprintf(stderr,
         "JIT_DIAG t=%lus dispatch=%lu exec_normal=%lu (cache_hit=%lu) compile=%lu (fresh=%lu recomp=%lu opt0=%lu opt>0=%lu) "
         "do_nothing=%lu exec_nostats=%lu cache_miss=%lu recompile_block=%lu check_checksum=%lu (good=%lu bad=%lu) flush_hard=%lu "
-        "avg_block=%.1f insn avg_code=%.1fB code_per_insn=%.2fB peak_cache=%.1fKB max_block=%lu insn/%lu cyc/%luB pc=0x%08x\n",
+        "avg_block=%.1f insn avg_code=%.1fB code_per_insn=%.2fB peak_cache=%.1fKB max_block=%lu insn/%lu cyc/%luB pc=0x%08x "
+        "spcflags=0x%05x intflags=0x%x intmask=%d INT_pending=%d\n",
         elapsed, jit_diag_dispatch_count,
         jit_diag_execute_normal_calls, jit_diag_execute_normal_cache_hit,
         jit_diag_compile_block_calls, jit_diag_compile_block_fresh, jit_diag_compile_block_recomp,
@@ -2362,7 +2466,9 @@ static void jit_diag_maybe_print(void)
         avg_blocklen, avg_block_bytes, bytes_per_insn,
         (double)jit_diag_peak_cache_bytes / 1024.0,
         jit_diag_max_blocklen, jit_diag_max_block_cycles, jit_diag_max_block_bytes,
-        (unsigned)m68k_getpc());
+        (unsigned)m68k_getpc(),
+        (unsigned)regs.spcflags, (unsigned)InterruptFlags, (int)regs.intmask,
+        (int)((regs.spcflags & (SPCFLAG_INT|SPCFLAG_DOINT|SPCFLAG_INT3|SPCFLAG_INT5)) != 0));
     fflush(stderr);
 }
 #else
@@ -3113,17 +3219,29 @@ static inline bool jit_source_edge_prefers_direct(const blockinfo *source_bi, in
 
 static void jit_maybe_promote_stable_edge(blockinfo *source_bi, uae_u32 edge_slot)
 {
+    if (getenv("B2_JIT_PROMOTE_PROBE")) {
+        static int ep = 0;
+        if (ep < 20) { ep++;
+            fprintf(stderr, "PROMOTE_ENTRY src_bi=%p slot=%u\n", (void*)source_bi, edge_slot);
+            fflush(stderr); }
+    }
     if (!source_bi || edge_slot > 1 || !jit_enable_stable_direct_edges_env())
         return;
     dependency *dep = &source_bi->dep[edge_slot];
     blockinfo *target_bi = dep->target;
-    if (!dep->jmp_off || !target_bi || !target_bi->pc_p)
+    if (!dep->jmp_off || !target_bi || !target_bi->pc_p) {
+        if (getenv("B2_JIT_PROMOTE_PROBE")) { static int r=0; if(r<10){r++;
+            fprintf(stderr,"PROMOTE_RET2 jmp_off=%p target_bi=%p pc_p=%p\n",(void*)dep->jmp_off,(void*)target_bi,(void*)(target_bi?target_bi->pc_p:0)); fflush(stderr);} }
         return;
+    }
     const uintptr target_hostpc = (uintptr)target_bi->pc_p;
     if (!jit_dominant_edge_stable(source_bi) || jit_dominant_edge_index(source_bi) != (int)edge_slot)
         return;
-    if (!jit_source_edge_prefers_direct(source_bi, (int)edge_slot, target_hostpc))
+    if (!jit_source_edge_prefers_direct(source_bi, (int)edge_slot, target_hostpc)) {
+        if (getenv("B2_JIT_PROMOTE_PROBE")) { static int r=0; if(r<10){r++;
+            fprintf(stderr,"PROMOTE_RET4 prefers_direct=0 tgt_hostpc=%p\n",(void*)target_hostpc); fflush(stderr);} }
         return;
+    }
     const uae_u8 mask = (uae_u8)(1u << edge_slot);
     const uae_u32 target_pc = jit_hostpc_to_macpc(target_hostpc);
     if (dep->prefer_direct && (source_bi->stable_edge_mask & mask) &&
@@ -3135,6 +3253,17 @@ static void jit_maybe_promote_stable_edge(blockinfo *source_bi, uae_u32 edge_slo
     cpuop_func *chosen = target_bi->direct_handler ? target_bi->direct_handler : target_bi->direct_handler_to_use;
     if (!chosen)
         return;
+    if (getenv("B2_JIT_PROMOTE_PROBE")) {
+        static int pp = 0;
+        if (pp < 40) { pp++;
+            fprintf(stderr, "PROMOTE src_pc=%08x tgt_pc=%08x tgt_hostpc=%p bi_pcp=%p direct_handler=%p dhtu=%p chosen=%p jmp_off=%p canon=%p\n",
+                (unsigned)jit_hostpc_to_macpc((uintptr)source_bi->pc_p), (unsigned)target_pc,
+                (void*)target_hostpc, (void*)target_bi->pc_p,
+                (void*)target_bi->direct_handler, (void*)target_bi->direct_handler_to_use,
+                (void*)chosen, (void*)dep->jmp_off,
+                (void*)jit_canonicalize_target_pc((uintptr)target_bi->pc_p));
+            fflush(stderr); }
+    }
     write_jmp_target(dep->jmp_off, (uintptr)chosen);
 }
 
@@ -3185,6 +3314,15 @@ void invalidate_block(blockinfo* bi)
 
 static inline void create_jmpdep(blockinfo* bi, int i, uae_u32* jmpaddr, uintptr target, bool prefer_direct)
 {
+    /* WHOLE-BLOCK VERIFIER bound: in the sandbox compile do NOT record any
+       outgoing chain dependency. get_handler_for_edge already wrote
+       popall_do_nothing into the edge slot; recording a dep would let a later
+       resolution pass (or an already-resolved target block, e.g. the dbf@c86
+       from production) overwrite that slot with a direct host chain and let
+       native run past the block. Skipping keeps the one-block bound exact.
+       Sandbox-only: zero production codegen impact. */
+    if (jit_block_verify_compile_active)
+        return;
     blockinfo* tbi = get_blockinfo_addr((void*)target);
 
     Dif(!tbi) {
@@ -3789,6 +3927,209 @@ static inline int isinreg(int r)
     return live.state[r].status == CLEAN || live.state[r].status == DIRTY;
 }
 
+/* ---------------------------------------------------------------------------
+ * Emit-time host-register-exclusion checker (report-only, env-gated).
+ * AArch64 register allocator instance (compemu_support_arm.cpp).
+ *
+ * Predicate: at an emit-time write to host reg `dest_hostreg` (writing target
+ * vreg `target_vreg`, or -1 for a raw/unbound write), FIRE if that host reg
+ * co-holds a LIVE DIRTY-ARCHITECTURAL vreg (index 0..15, status==DIRTY) other
+ * than the intended target. The write clobbers a value that is still needed.
+ *
+ * Spill-exclusion falls out of iterating holds[] for free: a safely-evicted
+ * dirty-arch becomes INMEM and leaves holds[], so a genuinely live dirty-arch
+ * that was safely spilled never appears here. Size-agnostic + shape-agnostic:
+ * catches scratchie-onto-dirty, dbcc narrow-field, and MUL.L arch-dest
+ * src-writes alike, because it keys on co-residence, not the write shape.
+ * ------------------------------------------------------------------------- */
+#define HRE_ARCH_VREG_MAX 16   /* vregs 0..15 = M68K Dn/An (architectural) */
+#define HRE_PRESSURE_BINS 17   /* 0..16 live dirty-arch = local pressure */
+
+typedef struct {
+    const char *name;
+    unsigned long writes, fires, holds_fires, realreg_fires, realreg_only;
+    unsigned long excl_nholds1, coresident_benign, realreg_mismatch;
+    unsigned long writes_by_pressure[HRE_PRESSURE_BINS];
+    unsigned long fires_by_pressure[HRE_PRESSURE_BINS];
+} hre_site;
+static hre_site g_hre_emit  = { "EMIT" };   /* writereg/rmw hook (make_exclusive-mediated) */
+static hre_site g_hre_alloc = { "ALLOC" };  /* alloc_reg_hinted hook (alloc-time) */
+static int g_hre_spotdump_budget = -2;              /* -2 = uninit, else remaining dumps (shared) */
+
+static void jit_hostreg_excl_report(void);          /* fwd decl (atexit target) */
+
+static inline int jit_hostreg_excl_enabled(void)
+{
+    static int en = -1;
+    if (en < 0) {
+        en = (getenv("B2_JIT_HOSTREG_EXCL_CHECK") && *getenv("B2_JIT_HOSTREG_EXCL_CHECK")) ? 1 : 0;
+        if (en)
+            atexit(jit_hostreg_excl_report);
+    }
+    return en;
+}
+
+/* Local register pressure = number of arch vregs currently live in a host reg
+ * with a DIRTY (uncommitted) value. The fire-fraction must MOVE with this to
+ * prove allocation-awareness (not structural pattern-match). */
+static inline int jit_hre_local_pressure(void)
+{
+    int p = 0, v;
+    for (v = 0; v < HRE_ARCH_VREG_MAX; v++)
+        if (live.state[v].status == DIRTY && live.state[v].realreg >= 0)
+            p++;
+    return p;
+}
+
+static void jit_checker_note_write(int dest_hostreg, int width_bytes, int target_vreg, hre_site *st)
+{
+    if (!jit_hostreg_excl_enabled())
+        return;
+    if (dest_hostreg < 0 || dest_hostreg >= N_REGS)
+        return;
+
+    int pressure = jit_hre_local_pressure();
+    int pbin = pressure < HRE_PRESSURE_BINS ? pressure : HRE_PRESSURE_BINS - 1;
+    st->writes++;
+    st->writes_by_pressure[pbin]++;
+    if (st->writes == 1) {
+        fprintf(stderr, "HRE-ALIVE site=%s first note_write hostreg=%d target_vreg=%d\n",
+            st->name, dest_hostreg, target_vreg);
+        fflush(stderr);
+    }
+    if ((st->writes % 2000000UL) == 0)
+        jit_hostreg_excl_report();
+
+    n_status *nat = &live.nat[dest_hostreg];
+    int i;
+
+    /* DETECTOR 1 (holds[]-scan): the model records co-residence in dest's holds[] list. */
+    int holds_victim = -1;
+    for (i = 0; i < nat->nholds; i++) {
+        int w = nat->holds[i];
+        if (w == target_vreg) continue;                 /* intended write target */
+        if (w < 0 || w >= HRE_ARCH_VREG_MAX) continue;   /* not architectural */
+        if (live.state[w].status != DIRTY) continue;     /* safely spilled/clean => benign */
+        holds_victim = w;
+        break;
+    }
+
+    /* DETECTOR 2 (realreg-scan, @auditor's third path): a per-vreg realreg pointing at dest,
+     * EVEN IF holds[] does not list it (holds[] stale). Catches the collision the holds[]
+     * model misses when alloc/copy paths reassign realreg without updating holds[]. */
+    int realreg_victim = -1;
+    for (i = 0; i < HRE_ARCH_VREG_MAX; i++) {
+        if (i == target_vreg) continue;
+        if (live.state[i].realreg != dest_hostreg) continue;
+        if (live.state[i].status != DIRTY) continue;
+        realreg_victim = i;
+        break;
+    }
+
+    int holds_fire = (holds_victim >= 0);
+    int realreg_fire = (realreg_victim >= 0);
+
+    if (!holds_fire && !realreg_fire) {
+        /* TRICHOTOMY 3 territory on a KNOWN bug: both models silent. On a random write this is
+         * just the normal no-collision case; partitioned so the base is provable, not assumed. */
+        if (nat->nholds <= 1)
+            st->excl_nholds1++;
+        else
+            st->coresident_benign++;
+        return;
+    }
+
+    st->fires++;
+    st->fires_by_pressure[pbin]++;
+    if (holds_fire) st->holds_fires++;
+    if (realreg_fire) st->realreg_fires++;
+    if (realreg_fire && !holds_fire) st->realreg_only++;   /* outcome-2 signal */
+
+    /* STAGE-1 GROUND-TRUTH: a genuine holds[] co-residence means the victim's own realreg maps
+     * back to THIS host reg. If not, holds[] and realreg disagree = holds-fire not real co-residence. */
+    if (holds_fire && live.state[holds_victim].realreg != dest_hostreg)
+        st->realreg_mismatch++;
+
+    if (g_hre_spotdump_budget == -2)
+        g_hre_spotdump_budget = getenv("B2_JIT_HOSTREG_EXCL_DUMP")
+            ? atoi(getenv("B2_JIT_HOSTREG_EXCL_DUMP")) : 0;
+    if (g_hre_spotdump_budget > 0) {
+        g_hre_spotdump_budget--;
+        fprintf(stderr,
+            "HRE-FIRE site=%s hostreg=%d width=%d target_vreg=%d detector=%s holds_victim=%d realreg_victim=%d nholds=%d pressure=%d holds=[",
+            st->name, dest_hostreg, width_bytes, target_vreg,
+            (holds_fire && realreg_fire) ? "BOTH" : (holds_fire ? "HOLDS" : "REALREG-ONLY"),
+            holds_victim, realreg_victim, nat->nholds, pressure);
+        for (i = 0; i < nat->nholds; i++)
+            fprintf(stderr, "%s%d(st%d)", i ? "," : "",
+                nat->holds[i], live.state[nat->holds[i]].status);
+        fprintf(stderr, "]\n");
+        fflush(stderr);
+    }
+}
+
+/* Shared cross-tree signature (@basilisk cont58). dest_hostreg = host reg being written,
+ * width_bytes = write width (1/2/4/8), target_vreg = intended target EXCLUDED from firing
+ * (TARGET_NONE=-1 = raw write not bound to a managed virtual: any co-held live dirty victim fires).
+ * Returns the victim vreg on a collision, else -1.
+ * On AArch64 the holds[]/nholds path is structurally silent (nholds always <=1), so the operative
+ * detector is the realreg-scan; holds-scan is retained as the co-detector the acid test reads. */
+#define TARGET_NONE (-1)
+static int g_coheld_last_detector = 0;   /* 0=none, 1=HOLDS(C), 2=REALREG(D) — lets the ring key the fire */
+static int coheld_last_detector(void) { return g_coheld_last_detector; }
+static int coheld_collision_check(int dest_hostreg, int width_bytes, int target_vreg)
+{
+    (void)width_bytes;   /* width-overwrite test is trivially true for holds[] co-residence (shared bits) */
+    g_coheld_last_detector = 0;
+    if (dest_hostreg < 0 || dest_hostreg >= N_REGS)
+        return -1;
+    n_status *nat = &live.nat[dest_hostreg];
+    int i;
+    /* holds[]-scan = candidate C (model-records-collision path; @basilisk's copy-tracking tree) */
+    for (i = 0; i < nat->nholds; i++) {
+        int w = nat->holds[i];
+        if (w == target_vreg) continue;
+        if (w < 0 || w >= HRE_ARCH_VREG_MAX) continue;
+        if (live.state[w].status != DIRTY) continue;
+        g_coheld_last_detector = 1;
+        return w;
+    }
+    /* realreg-scan = candidate D (third path; operative on AArch64 where holds[]/nholds is dead) */
+    for (i = 0; i < HRE_ARCH_VREG_MAX; i++) {
+        if (i == target_vreg) continue;
+        if (live.state[i].realreg != dest_hostreg) continue;
+        if (live.state[i].status != DIRTY) continue;
+        g_coheld_last_detector = 2;
+        return i;
+    }
+    return -1;
+}
+
+static void jit_hostreg_excl_report(void)
+{
+    hre_site *sites[2] = { &g_hre_emit, &g_hre_alloc };
+    int s;
+    for (s = 0; s < 2; s++) {
+        hre_site *st = sites[s];
+        fprintf(stderr, "HRE-REPORT[%s] writes=%lu fires=%lu fraction=%.4f%% | TRICHOTOMY holds_fires=%lu realreg_fires=%lu realreg_ONLY(holds-stale)=%lu | silent_exclusive=%lu silent_coresident_benign=%lu | realreg_mismatch=%lu\n",
+            st->name, st->writes, st->fires,
+            st->writes ? (100.0 * (double)st->fires / (double)st->writes) : 0.0,
+            st->holds_fires, st->realreg_fires, st->realreg_only,
+            st->excl_nholds1, st->coresident_benign, st->realreg_mismatch);
+        int b;
+        for (b = 0; b < HRE_PRESSURE_BINS; b++) {
+            if (st->writes_by_pressure[b] == 0 && st->fires_by_pressure[b] == 0)
+                continue;
+            fprintf(stderr, "HRE-PRESSURE[%s] p=%d writes=%lu fires=%lu rate=%.4f%%\n",
+                st->name, b, st->writes_by_pressure[b], st->fires_by_pressure[b],
+                st->writes_by_pressure[b]
+                    ? (100.0 * (double)st->fires_by_pressure[b] / (double)st->writes_by_pressure[b])
+                    : 0.0);
+        }
+    }
+    fflush(stderr);
+}
+
 static void tomem(int r)
 {
     int rr = live.state[r].realreg;
@@ -4030,6 +4371,7 @@ static int alloc_reg_hinted(int r, int willclobber, int hint)
     live.nat[bestreg].holds[0] = r;
     live.nat[bestreg].nholds = 1;
 
+    jit_checker_note_write(bestreg, 4, r, &g_hre_alloc);
     return bestreg;
 }
 
@@ -4162,6 +4504,7 @@ static int writereg(int r)
     live.nat[answer].touched = touchcnt++;
     live.state[r].val = 0;
     set_status(r, DIRTY);
+    jit_checker_note_write(answer, 4, r, &g_hre_emit);
     return answer;
 }
 
@@ -4186,6 +4529,7 @@ static int rmw(int r)
     live.nat[answer].locked++;
     live.nat[answer].touched = touchcnt++;
 
+    jit_checker_note_write(answer, 4, r, &g_hre_emit);
     return answer;
 }
 
@@ -5132,6 +5476,16 @@ void register_branch(uintptr not_taken, uintptr taken, uae_u8 cond)
     next_pc_p = not_taken;
     taken_pc_p = taken;
     branch_cc = cond;
+    /* DARK: when compiling a Bcc in the misroute region, log its computed
+       fall-through + taken m68k targets so we can compare to the ROM-expected
+       targets (decode-correct?) vs a data-driven wrong-direction (correct
+       target, wrong branch outcome). B2_JIT_DIAG-gated. */
+    if (jit_diag_enabled()) {
+        uae_u32 nt = (uae_u32)jit_hostpc_to_macpc(not_taken);
+        if (nt >= 0x01002c00u && nt < 0x01002de0u)
+            fprintf(stderr, "BCCREG nt_mac=%08x taken_mac=%08x cond=%u\n",
+                nt, (uae_u32)jit_hostpc_to_macpc(taken), (unsigned)cond);
+    }
 }
 
 void register_possible_exception(void)
@@ -5145,6 +5499,16 @@ void register_possible_exception(void)
 static uintptr get_handler_for_edge(const blockinfo *source_bi, int edge_slot, uintptr addr)
 {
     addr = jit_canonicalize_target_pc(addr);
+    /* WHOLE-BLOCK VERIFIER bound: when compiling the target block under the
+       sandbox (jit_block_verify_compile_active), force every block-exit edge
+       to popall_do_nothing so native runs EXACTLY one block then returns to C
+       via do_nothing(). This delivers the clean blocklen-vs-blocklen compare
+       the verifier needs; count=-2 blocks otherwise chain unconditionally to
+       the successor (e.g. dbf back-edge), confounding the diff. Sandbox-only:
+       compile_active is set ONLY around the verifier's compile_block call, so
+       production codegen is unaffected. */
+    if (jit_block_verify_compile_active)
+        return (uintptr)popall_do_nothing;
     if (jit_force_execute_normal_successor_env() || jit_force_execute_normal_target_env(addr))
         return (uintptr)popall_execute_normal;
     blockinfo* bi = get_blockinfo_addr_new((void*)(uintptr)addr);
@@ -5152,6 +5516,16 @@ static uintptr get_handler_for_edge(const blockinfo *source_bi, int edge_slot, u
        master env is off (jit_source_edge_prefers_direct returns false). */
     if (jit_source_edge_prefers_direct(source_bi, edge_slot, addr)) {
         uintptr hd = (uintptr)(bi->direct_handler ? bi->direct_handler : bi->direct_handler_to_use);
+        if (getenv("B2_JIT_EDGE_PROBE")) {
+            static int ep = 0;
+            if (ep < 40) { ep++;
+                fprintf(stderr, "EDGEPROBE slot=%d addr_in=%p canon=%p direct_handler=%p to_use=%p edge_tgt[%d]=%08x bi_pcp=%p\n",
+                    edge_slot, (void*)(uintptr)addr, (void*)(uintptr)jit_canonicalize_target_pc(addr),
+                    (void*)(bi?bi->direct_handler:0), (void*)(bi?bi->direct_handler_to_use:0),
+                    edge_slot>=0&&source_bi?edge_slot:0,
+                    (source_bi&&edge_slot>=0)?(unsigned)source_bi->edge_target_pc[edge_slot]:0u,
+                    (void*)(bi?bi->pc_p:0)); }
+        }
         if (hd)
             return hd;
     }
@@ -6767,6 +7141,30 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
         bi = get_blockinfo_addr_new(pc_hist[0].location);
         bi2 = get_blockinfo(cl);
 
+#if defined(CPU_AARCH64)
+        /* WHOLE-BLOCK VERIFIER wiring (B2_JIT_VERIFY_PCS): for a target block,
+           capture the entry state and run jit_block_verify_run, which re-runs the
+           block in the interpreter and in freshly-compiled native from the same
+           entry state and reports any whole-block divergence (e.g. a CRC d0
+           corrupted by an internal branch/loop the per-op oracle is blind to).
+           run() internally calls compile_block (compile_active guard prevents
+           re-entry) and is fully sandboxed (captures+restores regs/flags/RAM), so
+           after it returns the block is compiled identically to production; we
+           return early. Inert when B2_JIT_VERIFY_PCS is unset (target_pc=false). */
+        if (!jit_block_verify_compile_active && !jit_block_verify_reentrant) {
+            const uae_u32 _vpc = (uae_u32)((uintptr)pc_hist[0].location - MEMBaseDiff);
+            if (jit_verify_target_pc(_vpc)) {
+                static int _vb_fires = 0;
+                if (_vb_fires < 8) {
+                    _vb_fires++;
+                    jit_block_verify_entry_capture(_vpc);
+                    jit_block_verify_run(pc_hist, blocklen, totcycles, _vpc);
+                    return;
+                }
+            }
+        }
+#endif
+
         /* STEP 0: capture invalid-state before status mutates so the first
            native ROM generation can run a bounded profile window. */
         const bool bi_was_invalid = (bi->status == BI_INVALID);
@@ -7048,6 +7446,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     }
                 }
                 const int retired_cycles = scaled_cycles((i + 1) * 4 * CYCLE_UNIT);
+                if (getenv("B2_JIT_FORCE_FLAG_FALLBACK") && (opcode & 0xffff) == 0xb299)
+                    needed_flags = prop[cft_map(opcode)].set_flags;
                 if (!needed_flags && currprefs.compnf) {
 #ifdef NOFLAGS_SUPPORT_GENCOMP
                     cputbl = nfcpufunctbl;
@@ -7261,6 +7661,21 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                                 fclose(f);
                                 fprintf(stderr, "JIT_DUMP: wrote %ld bytes to %s\n", (long)(_after - _before), fname);
                                 dump_count++;
+                            }
+                        }
+                        /* PC-targeted per-op dump (B2_JIT_DUMP_PCS range): emit the
+                           ARM for every op whose m68k PC is in the window, named by
+                           guest PC, so a specific block's branch/loop codegen can be
+                           disassembled. Dark unless B2_JIT_DUMP_PCS set. */
+                        if ((_after - _before) > 0 && jit_pc_in_env_ranges("B2_JIT_DUMP_PCS", op_m68k_pc)) {
+                            static int tdump = 0;
+                            if (tdump < 200) {
+                                char fn[256];
+                                snprintf(fn, sizeof(fn), "/workspace/tmp/jitdump/pc%08x_op%04x_%d.bin", (unsigned)op_m68k_pc, opcode, tdump);
+                                FILE *tf = fopen(fn, "wb");
+                                if (tf) { fwrite(_before, 1, _after - _before, tf); fclose(tf);
+                                    fprintf(stderr, "JIT_TDUMP pc=%08x op=%04x bytes=%ld -> %s\n", (unsigned)op_m68k_pc, opcode, (long)(_after - _before), fn);
+                                    tdump++; }
                             }
                         }
                     }
@@ -7582,6 +7997,11 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     if (prop[cft_map(opcode)].set_flags) {
                         raw_flags_to_reg(REG_WORK1);
                     }
+                    if ((opcode & 0xffff) == 0xb299 && getenv("B2_JIT_MEMTEST_PROBE")) {
+                        compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
+                        compemu_raw_mov_l_ri(REG_PAR2, opcode & 0xffff);
+                        compemu_raw_call((uintptr)jit_memtest_probe);
+                    }
                     if (fallback_call_push_txn)
                         jit_emit_fallback_call_push_txn_commit((uae_u16)opcode);
                     else if (jit_return_pop_txn_opcode((uae_u16)opcode))
@@ -7779,7 +8199,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     compemu_raw_inc_m((uintptr)&bi->edge_exec_count[0]);
                     compemu_raw_mov_l_ri(REG_PAR1, (uintptr)bi);
                     compemu_raw_mov_l_ri(REG_PAR2, 0);
-                    compemu_raw_call((uintptr)jit_maybe_promote_stable_edge);
+                    if(!getenv("B2_JIT_PROMOTE_CALL_OFF") && !getenv("B2_JIT_COLD_PROMOTE")) compemu_raw_call((uintptr)jit_maybe_promote_stable_edge);
                 }
                 tba = compemu_raw_endblock_pc_isconst(scaled_cycles(totcycles), ct1);
                 write_jmp_target(tba, get_handler_for_edge(bi, 0, ct1));
@@ -7808,7 +8228,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     compemu_raw_inc_m((uintptr)&bi->edge_exec_count[1]);
                     compemu_raw_mov_l_ri(REG_PAR1, (uintptr)bi);
                     compemu_raw_mov_l_ri(REG_PAR2, 1);
-                    compemu_raw_call((uintptr)jit_maybe_promote_stable_edge);
+                    if(!getenv("B2_JIT_PROMOTE_CALL_OFF") && !getenv("B2_JIT_COLD_PROMOTE")) compemu_raw_call((uintptr)jit_maybe_promote_stable_edge);
                 }
                 tba = compemu_raw_endblock_pc_isconst(scaled_cycles(totcycles), ct2);
                 write_jmp_target(tba, get_handler_for_edge(bi, 1, ct2));
@@ -7857,7 +8277,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         compemu_raw_inc_m((uintptr)&bi->edge_exec_count[0]);
                         compemu_raw_mov_l_ri(REG_PAR1, (uintptr)bi);
                         compemu_raw_mov_l_ri(REG_PAR2, 0);
-                        compemu_raw_call((uintptr)jit_maybe_promote_stable_edge);
+                        if(!getenv("B2_JIT_PROMOTE_CALL_OFF") && !getenv("B2_JIT_COLD_PROMOTE")) compemu_raw_call((uintptr)jit_maybe_promote_stable_edge);
                     }
                     tba = compemu_raw_endblock_pc_isconst(scaled_cycles(totcycles), cv);
                     write_jmp_target(tba, get_handler_for_edge(bi, 0, cv));
@@ -7910,6 +8330,24 @@ endblock_done:
 
         /* This is the non-direct handler */
         bi->handler = bi->handler_to_use = (cpuop_func*)get_target();
+        /* DARK: whole-block emitted-ARM dump for the CRC d0-carry pin. Dumps
+           direct_handler(body+epilogue)..here so we can disassemble and check
+           whether the block-exit flush emits str d0 [x28+0] vs d4 [x28+16].
+           Gated on B2_JIT_BLOCKDUMP; inert otherwise. */
+        if ((block_m68k_pc == 0x01002c76u || (block_m68k_pc >= 0x01002c00u && block_m68k_pc <= 0x01002c38u)) && getenv("B2_JIT_BLOCKDUMP")) {
+            static int _bd = 0;
+            if (_bd < 40) {
+                _bd++;
+                uae_u8* s = (uae_u8*)bi->direct_handler;
+                uae_u8* e = (uae_u8*)get_target();
+                char fn[160];
+                snprintf(fn, sizeof(fn), "/workspace/tmp/jitdump/blk_%08x_%d.bin", (unsigned)block_m68k_pc, _bd);
+                FILE* f = fopen(fn, "wb");
+                if (f) { fwrite(s, 1, (size_t)(e - s), f); fclose(f);
+                    fprintf(stderr, "BLOCKDUMP[%d] m68kpc=%08x start=%p end=%p bytes=%ld -> %s\n",
+                        _bd, (unsigned)block_m68k_pc, (void*)s, (void*)e, (long)(e - s), fn); fflush(stderr); }
+            }
+        }
         compemu_raw_cmp_pc((uintptr)pc_hist[0].location);
         compemu_raw_maybe_cachemiss();
         comp_pc_p = (uae_u8*)pc_hist[0].location;

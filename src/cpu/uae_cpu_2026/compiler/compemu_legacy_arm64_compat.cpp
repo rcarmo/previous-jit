@@ -174,7 +174,11 @@ static inline void legacy_copy_carry_to_flagx(void)
 		CSET_xc(x, NATIVE_CC_CC);
 	else
 		CSET_xc(x, NATIVE_CC_CS);
-	LSL_wwi(x, x, 29);
+	/* In-register FLAGX is 0/1 (JIT format); consumers read bit 0 and
+	 * tomem/jit_flush convert 0/1 -> bit-29 for the interpreter. A prior
+	 * LSL_wwi(x,x,29) here left bit-29 in-register, which a same-trace
+	 * consumer (e.g. ROXR.B reading bit 0) saw as X=0. Twin of the
+	 * DUPLICACTE_CARRY fix (18737bf); this is the legacy-path copy. */
 	unlock2(x);
 }
 
@@ -1162,6 +1166,20 @@ void exec_nostats(void)
 #endif
 		uae_u32 before_pc = m68k_getpc();
 		uae_u32 opcode = jit_fetch_opcode_for_current_pc(before_pc);
+		{
+			static int _seenENS = 0;
+			if (!_seenENS && before_pc == 0x010001b0u) {
+				_seenENS = 1;
+				fprintf(stderr, "RAMTEST_ENTRY(ns) pc=%08x d0=%08x d1=%08x d4=%08x "
+					"a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x sr=%04x\n",
+					(unsigned)before_pc,
+					(unsigned)regs.regs[0],(unsigned)regs.regs[1],(unsigned)regs.regs[4],
+					(unsigned)regs.regs[8],(unsigned)regs.regs[9],(unsigned)regs.regs[10],(unsigned)regs.regs[11],
+					(unsigned)regs.regs[12],(unsigned)regs.regs[13],(unsigned)regs.regs[14],(unsigned)regs.regs[15],
+					(unsigned)regs.sr);
+				fflush(stderr);
+			}
+		}
 		Uae2026JitMmuTxnCommit();
 		Uae2026JitPublishFallbackState(before_pc, opcode);
 		if (Uae2026OpcodeTestModeActive() && (uae_u16)opcode == 0x4e72u) {
@@ -1196,6 +1214,18 @@ void exec_nostats(void)
 		else
 			legacy_maybe_begin_return_pop_txn(before_pc, (uae_u16)opcode);
 		bool trace_this = trace_count < jit_tracewin_limit() && jit_tracewin_match(before_pc);
+		/* DARK ONE-SHOT: does the INTERP fallback ever reach the 0x010025xx
+		   hw-pulse routine, and with what intmask? Splits upstream-misroute (1)
+		   vs SR/intmask codegen (2). Negligible cost (static short-circuit). */
+		{
+			static int _seen25 = 0;
+			if (!_seen25 && before_pc >= 0x01002c70u && before_pc < 0x01002c90u) {
+				_seen25 = 1;
+				fprintf(stderr, "INTERP_REACH_25xx pc=%08x intmask=%d intflags=0x%x sr=0x%04x [PROBE-VALIDATION-CRC]\n",
+					(unsigned)before_pc, (int)regs.intmask, (unsigned)InterruptFlags, (unsigned)regs.sr);
+				fflush(stderr);
+			}
+		}
 		if (trace_this) {
 			fprintf(stderr,
 				"TRACEWINJ BEFORE step=%lu pc=%08x op=%04x regs.pc=%08x pc_p=%p oldp=%p d0=%08x d1=%08x a0=%08x a1=%08x a2=%08x a7=%08x sr=%04x nzcv=%08x x=%08x\n",
@@ -1252,6 +1282,25 @@ void execute_normal(void)
 #if defined(CPU_AARCH64)
 	jit_diag_execute_normal_calls++;
 	jit_diag_dispatch_count++;
+	if (getenv("B2_JIT_EXECN_HIST")) {
+		static unsigned long _eh = 0;
+		if ((_eh++ & 0x1fffUL) == 0) {
+			fprintf(stderr, "EXECN_PC %08x\n", (unsigned)(regs.pc & ~1u));
+			fflush(stderr);
+		}
+		uae_u32 _hp = regs.pc & ~1u;
+		if (_hp == 0x01007342u || _hp == 0x010072a8u || _hp == 0x0100832au) {
+			static int _hc = 0;
+			if (_hc++ < 24) {
+				blockinfo *_hb = regs.pc_p ? get_blockinfo_addr(regs.pc_p) : 0;
+				uae_u16 _op = regs.pc_p ? DO_GET_OPCODE((uae_u16*)regs.pc_p) : 0;
+				fprintf(stderr, "EXECN_WHY pc=%08x op=%04x bi=%p count=%d status=%d handler=%p\n",
+					_hp, _op, (void*)_hb, _hb?_hb->count:-999, _hb?_hb->status:-999,
+					(void*)(_hb?_hb->handler_to_use:0));
+				fflush(stderr);
+			}
+		}
+	}
 	/* If quit_program is set (e.g. M68K_EXEC_RETURN), skip everything
 	   and return immediately. Running further instructions would
 	   execute random memory past the test code boundary. */
@@ -1265,6 +1314,90 @@ void execute_normal(void)
 
 	jit_diag_maybe_print();
 	jit_canonicalize_code_pc_if_ram_mmu();
+	if (getenv("B2_JIT_SUCC_LOG")) {
+		uae_u32 _pc = regs.pc & ~1u;
+		if (_pc == 0x01002c32u || _pc == 0x01002c34u || _pc == 0x0100253eu) {
+			static int _mt = 0;
+			if (_mt++ < 4) {
+				fprintf(stderr, "MEMTEST pc=%08x d0=%08x d1=%08x a1=%08x a2=%08x a3=%08x\n",
+					_pc, (unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[9],
+					(unsigned)regs.regs[10], (unsigned)regs.regs[11]);
+				if (_pc == 0x0100253eu) {
+					uae_u32 base = (uae_u32)regs.regs[10]; /* a2 */
+					for (int i = 8; i < 16; i++)
+						fprintf(stderr, "  MEM[%08x] = %08x (expect %08x)\n",
+							(unsigned)(base + i*4), (unsigned)get_long(base + i*4), (unsigned)i);
+				}
+			}
+		}
+		if (_pc >= 0x01002c76u && _pc <= 0x01002ca0u) {
+			static int _sl = 0;
+			/* Always log the CRC loop-exit/finalize PCs (c8e not.l, c9c move.l d1,d0);
+			   bound the hot inner-loop PCs. */
+			bool _fin = (_pc == 0x01002c8eu || _pc == 0x01002c9cu);
+			if (_fin || _sl++ < 40)
+				fprintf(stderr, "SUCC%s en=%08x d0=%08x d1=%08x d2=%08x d3=%08x\n",
+					_fin ? "FIN" : "", _pc, (unsigned)regs.regs[0], (unsigned)regs.regs[1],
+					(unsigned)regs.regs[2], (unsigned)regs.regs[3]);
+		}
+		/* A0-TRACTABILITY: capture A0 (jump target) + A5(base) + D0/D1 across the
+		   CRC-finalize block, esp. JMP(A0)@0x01002cb4 and the device MOVE.L
+		   @0x01002c9e/cac (extension 0200 d000). Names whether A0 is corrupt and
+		   whether the device read is involved. */
+		if (_pc == 0x01002c9eu || _pc == 0x01002cacu || _pc == 0x01002cb4u ||
+		    _pc == 0x01002c60u || _pc == 0x01002c76u) {
+			static int _al = 0;
+			if (_al++ < 30) {
+				uae_u32 fld = get_long(0x0b03f99cu);
+				fprintf(stderr, "A0TRACE pc=%08x a0=%08x a5=%08x d0=%08x d1=%08x [0x0b03f99c]=%08x\n",
+					_pc, (unsigned)regs.regs[8], (unsigned)regs.regs[13],
+					(unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)fld);
+			}
+		}
+		/* CHANGE-DETECTOR: name the store that writes [0x0b03f99c]. Log the PC the
+		   first times the field's value transitions (esp. 0 -> 0x0000fe67). The store
+		   is just upstream of the logged PC. */
+		{
+			static uae_u32 _last99c = 0xffffffffu;
+			static int _chg = 0;
+			uae_u32 cur = get_long(0x0b03f99cu);
+			if (cur != _last99c && _chg < 20) {
+				_chg++;
+				fprintf(stderr, "F99C_CHG pc=%08x old=%08x new=%08x d0=%08x d1=%08x a1=%08x\n",
+					(unsigned)_pc, (unsigned)_last99c, (unsigned)cur,
+					(unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[9]);
+				fflush(stderr);
+			}
+			_last99c = cur;
+		}
+		/* CURRENT-WALL tractability: the stuck loop 0x0100_72xx-83xx. Log all regs +
+		   the polled memory at the loop entry (LINK) and the BSR.L poll point, to
+		   name whether the loop waits on a device read (hard) or a miscomputed reg
+		   (tractable). */
+		if (_pc == 0x010072a8u || _pc == 0x0100832au || _pc == 0x01007342u) {
+			static int _wl = 0;
+			if (_wl++ < 24) {
+				uae_u32 a0v = (unsigned)regs.regs[8];
+				uae_u32 memA0 = (a0v && !(a0v & 1)) ? (unsigned)get_long(a0v) : 0xDEADBEEF;
+				fprintf(stderr, "WALL pc=%08x d0=%08x d1=%08x d2=%08x a0=%08x a1=%08x a2=%08x mem[a0]=%08x sr=%04x\n",
+					_pc, (unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[2],
+					a0v, (unsigned)regs.regs[9], (unsigned)regs.regs[10], memA0, (unsigned)regs.sr);
+				fflush(stderr);
+			}
+		}
+		/* SKIP-GATE: does the JIT reach the init gate 0x01000c04/c08 (TST.L (0x10,A6);
+		   BNE skip)? log the tested value + flags + branch reach, both configs. */
+		if (_pc == 0x01000c04u || _pc == 0x01000c08u || _pc == 0x01000c0cu || _pc == 0x01000c8eu) {
+			static int _sg = 0;
+			if (_sg++ < 24) {
+				uae_u32 a6 = (unsigned)regs.regs[14];
+				uae_u32 t = (a6 && !((a6+0x10)&1)) ? (unsigned)get_long(a6+0x10) : 0xDEADBEEF;
+				fprintf(stderr, "SKIPGATE pc=%08x [a6+0x10]=%08x a6=%08x sr=%04x nzcv=%08x\n",
+					_pc, t, a6, (unsigned)regs.sr, (unsigned)regflags.nzcv);
+				fflush(stderr);
+			}
+		}
+	}
 	/* If pc_p is outside valid Mac memory range (corrupt), re-derive it. */
 	{
 		uintptr pcp = (uintptr)regs.pc_p;
@@ -1484,6 +1617,21 @@ void execute_normal(void)
 			pc_hist[blocklen++].location = pre_fetch_pcp;
 			int trace_index = blocklen - 1;
 			uae_u32 pc_before_op = m68k_getpc();
+			{
+				static int _seenEN = 0;
+				if (!_seenEN && pc_before_op == 0x010001b0u) {
+					_seenEN = 1;
+					fprintf(stderr, "RAMTEST_ENTRY pc=%08x d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
+						"a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x sr=%04x\n",
+						(unsigned)pc_before_op,
+						(unsigned)regs.regs[0],(unsigned)regs.regs[1],(unsigned)regs.regs[2],(unsigned)regs.regs[3],
+						(unsigned)regs.regs[4],(unsigned)regs.regs[5],(unsigned)regs.regs[6],(unsigned)regs.regs[7],
+						(unsigned)regs.regs[8],(unsigned)regs.regs[9],(unsigned)regs.regs[10],(unsigned)regs.regs[11],
+						(unsigned)regs.regs[12],(unsigned)regs.regs[13],(unsigned)regs.regs[14],(unsigned)regs.regs[15],
+						(unsigned)regs.sr);
+					fflush(stderr);
+				}
+			}
 			uae_u32 opcode = jit_fetch_opcode_for_current_pc(pc_before_op);
 #if defined(CPU_AARCH64)
 			jit_lowpc_compile_trace_record(trace_index, pc_before_op, opcode, (uintptr)pre_fetch_pcp, (uintptr)regs.pc_p);
@@ -1704,6 +1852,13 @@ void execute_normal(void)
 					static int trace_log = 0;
 					if (0 && trace_log++ < 50)
 						fprintf(stderr, "TRACE_END blk=%08x len=%d\n", block_pc, blocklen);
+					static int tseq = 0;
+					if (getenv("B2_JIT_TRACE_SEQ") && block_pc >= 0x01002c00 && block_pc <= 0x01002d00 && tseq++ < 20) {
+						fprintf(stderr, "TRACESEQ blk=%08x len=%d:", block_pc, blocklen);
+						for (int q = 0; q < blocklen; q++)
+							fprintf(stderr, " %08x", (unsigned)get_virtual_address((uae_u8*)pc_hist[q].location));
+						fprintf(stderr, " must_end_bcc=%d dropbcc=%d\n", (drop_bcc && current_is_bcc) ? 1 : 0, drop_bcc);
+					}
 				}
 				if (verify_this_block) {
 					jit_block_verify_run(pc_hist, blocklen, total_cycles, block_pc);

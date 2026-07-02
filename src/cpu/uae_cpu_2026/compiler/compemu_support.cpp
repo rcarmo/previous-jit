@@ -33,6 +33,8 @@
 
 #if defined(CPU_aarch64) || defined(CPU_AARCH64)
 #define flush_icache arm_flush_icache_impl
+unsigned long g_endblk_inreg = 0;
+unsigned long g_endblk_isconst = 0;
 #include "compemu_support_arm.cpp"
 #undef flush_icache
 
@@ -1129,6 +1131,42 @@ void m68k_do_compile_execute(void)
 		}
 #endif
 		_dc++;
+		/* COLD-HOOK: promote stable direct edges from this call-safe C context
+		 * instead of an emitted compemu_raw_call at conditional-block-exit (that
+		 * bare LR-only call clobbers caller-saved x0-x18 the endblock needs).
+		 * Throttled walk of the active list; jit_maybe_promote_stable_edge
+		 * self-guards (stability + prefer_direct + dedup) so re-scanning is safe. */
+		{
+			static int cold_promote = -1;
+			if (cold_promote < 0) {
+				const char *e = getenv("B2_JIT_COLD_PROMOTE");
+				cold_promote = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
+			}
+			if (cold_promote && (_dc & 0x3F) == 0) {
+				blockinfo *cb = active;
+				int budget = 512;
+				static int census = -1;
+				if (census < 0) { const char *e=getenv("B2_JIT_PROMOTE_PROBE"); census = (e&&*e&&strcmp(e,"0"))?0:99; }
+				int n_total=0, n_edges=0, n_stable=0;
+				while (cb && budget-- > 0) {
+					n_total++;
+					if (cb->edge_exec_count[0] || cb->edge_exec_count[1]) n_edges++;
+					if (jit_dominant_edge_stable(cb)) {
+						n_stable++;
+						int slot = jit_dominant_edge_index(cb);
+						if (slot >= 0) {
+							jit_commit_edge_summary_for_rebuild(cb);
+							jit_maybe_promote_stable_edge(cb, (uae_u32)slot);
+						}
+					}
+					cb = cb->next;
+				}
+				if (census < 8) { census++;
+					extern unsigned long g_endblk_inreg, g_endblk_isconst;
+					fprintf(stderr, "COLD_CENSUS total=%d with_edges=%d stable=%d endblk_inreg=%lu endblk_isconst=%lu\n", n_total, n_edges, n_stable, g_endblk_inreg, g_endblk_isconst);
+					fflush(stderr); }
+			}
+		}
 		{
 			static unsigned long rom_exc_trace = 0;
 			static int rom_exc_trace_enabled = -1;
@@ -6942,8 +6980,11 @@ extern "C" void jit_trace_pc_hit(uae_u32 pc, uae_u32 tagged_opcode)
     if (tc >= 400)
         return;
     MakeSR();
+    uae_u32 a6 = (uae_u32)regs.regs[14];
+    uae_u32 gate_op = get_long(a6 + 0x10);   /* TST.L (0x10,A6) operand at init gate 0x01000c04 */
+    int zflag = (int)((regflags.nzcv >> 30) & 1);
     fprintf(stderr,
-        "JITPCHIT[%lu] kind=%s pc=%08x op=%04x regs.pc=%08x regs.pc_p=%p oldp=%p sr=%04x intmask=%u d0=%08x d1=%08x d2=%08x a0=%08x a1=%08x a2=%08x a7=%08x spc=%08x\n",
+        "JITPCHIT[%lu] kind=%s pc=%08x op=%04x regs.pc=%08x regs.pc_p=%p oldp=%p sr=%04x intmask=%u d0=%08x d1=%08x d2=%08x a0=%08x a1=%08x a2=%08x a6=%08x a7=%08x gate[a6+10]=%08x Z=%d spc=%08x\n",
         ++tc,
         kind_name,
         (unsigned)pc,
@@ -6959,7 +7000,10 @@ extern "C" void jit_trace_pc_hit(uae_u32 pc, uae_u32 tagged_opcode)
         (unsigned)regs.regs[8],
         (unsigned)regs.regs[9],
         (unsigned)regs.regs[10],
+        (unsigned)a6,
         (unsigned)regs.regs[15],
+        (unsigned)gate_op,
+        zflag,
         (unsigned)regs.spcflags);
 }
 #endif

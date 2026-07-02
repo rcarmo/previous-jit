@@ -669,6 +669,7 @@ LENDFUNC(NONE,NONE,1,compemu_raw_init_r_regstruct,(IMPTR s))
 // Handle end of compiled block
 LOWFUNC(NONE,NONE,2,compemu_raw_endblock_pc_inreg,(RR4 rr_pc, IM32 cycles))
 {
+	if (getenv("B2_JIT_COLD_PROMOTE")) { extern unsigned long g_endblk_inreg; g_endblk_inreg++; }
 	/* Increment global counter (for diagnostics) */
 	{
 		extern int32_t jit_endblock_inreg_count;
@@ -763,6 +764,7 @@ LENDFUNC(NONE,NONE,2,compemu_raw_endblock_pc_inreg,(RR4 rr_pc, IM32 cycles))
 
 STATIC_INLINE uae_u32* compemu_raw_endblock_pc_isconst(IM32 cycles, IMPTR v)
 {
+	if (getenv("B2_JIT_COLD_PROMOTE")) { extern unsigned long g_endblk_isconst; g_endblk_isconst++; }
 	/* v is always >= NATMEM_OFFSET and < NATMEM_OFFSET + max. Amiga mem */
 	uae_u32* tba;
 

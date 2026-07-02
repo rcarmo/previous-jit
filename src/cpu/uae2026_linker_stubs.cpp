@@ -595,6 +595,11 @@ extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr)
 extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value)
 {
     uae_u32 off = 0;
+    if (getenv("B2_JIT_WP99C") && addr >= 0x0b03f99cu && addr <= 0x0b03f99fu) {
+        extern uae_u32 Uae2026JitLastInstructionPc;
+        static int _wpB = 0;
+        if (_wpB++ < 40) { fprintf(stderr, "WP99C putB addr=%08x val=%08x lastpc=%08x\n", (unsigned)addr, (unsigned)value, (unsigned)Uae2026JitLastInstructionPc); fflush(stderr); }
+    }
     if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 1, &off))
         Uae2026JitLiveBankPutByte(addr, value);
     else
@@ -606,6 +611,11 @@ extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value)
 extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value)
 {
     uae_u32 off = 0;
+    if (getenv("B2_JIT_WP99C") && addr >= 0x0b03f99cu && addr <= 0x0b03f99fu) {
+        extern uae_u32 Uae2026JitLastInstructionPc;
+        static int _wpW = 0;
+        if (_wpW++ < 40) { fprintf(stderr, "WP99C putW addr=%08x val=%08x lastpc=%08x\n", (unsigned)addr, (unsigned)value, (unsigned)Uae2026JitLastInstructionPc); fflush(stderr); }
+    }
     if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 2, &off))
         Uae2026JitLiveBankPutWord(addr, value);
     else
@@ -617,6 +627,11 @@ extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value)
 extern "C" void Uae2026JitLivePutLong(uae_u32 addr, uae_u32 value)
 {
     uae_u32 off = 0;
+    if (getenv("B2_JIT_WP99C") && addr >= 0x0b03f99cu && addr <= 0x0b03f99fu) {
+        extern uae_u32 Uae2026JitLastInstructionPc;
+        static int _wpL = 0;
+        if (_wpL++ < 40) { fprintf(stderr, "WP99C putL addr=%08x val=%08x lastpc=%08x\n", (unsigned)addr, (unsigned)value, (unsigned)Uae2026JitLastInstructionPc); fflush(stderr); }
+    }
     if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 4, &off))
         Uae2026JitLiveBankPutLong(addr, value);
     else

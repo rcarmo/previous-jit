@@ -4531,6 +4531,14 @@ static int writereg(int r)
         if (_fsa && r >= S1 && r < VREGS && (_only_vreg < 0 || _only_vreg == r) &&
             _arch_vreg >= 0 && _arch_vreg < VREGS && r != _arch_vreg && isinreg(_arch_vreg)) {
             int host = live.state[_arch_vreg].realreg;
+            /* Detector liveness observable (report-only, B2_FORCE_SCRATCH_DEBUG):
+             * proves the pin EVALUATES each scratch write against the arch host and
+             * decides bind-vs-refuse (refuses when locked) -- the non-vacuous-silence
+             * self-test used by the cpustate regression harness. */
+            if (getenv("B2_FORCE_SCRATCH_DEBUG"))
+                fprintf(stderr, "PIN_ATTEMPT scratch_vreg=%d arch_vreg=%d host=%d locked=%d nholds=%d pc=%08x\n",
+                    r, _arch_vreg, host, host>=0?live.nat[host].locked:-1,
+                    host>=0?live.nat[host].nholds:-1, (unsigned)m68k_getpc());
             if (host >= 0 && !live.nat[host].locked && live.nat[host].nholds < VREGS) {
                 int ind = live.nat[host].nholds;
                 live.nat[host].holds[ind] = (uae_s8)r;

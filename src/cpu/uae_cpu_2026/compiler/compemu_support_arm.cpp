@@ -2479,6 +2479,24 @@ static inline void jit_diag_maybe_print(void) {}
 #endif
 /* ---- end JIT dispatch diagnostic counters ---- */
 
+/* NATEXEC test helper (report-only): called from compiled-handler entry (emitted
+ * in compile_block) so it fires ONLY when the native handler runs. Gated on
+ * B2_NATIVE_ASSERT_PC. Port of @basilisk's macemu two-pass native-exec assertion. */
+unsigned long b2_native_entry_count = 0;
+void b2_test_native_entry(uae_u32 pc)
+{
+    const char *env = getenv("B2_NATIVE_ASSERT_PC");
+    if (!env || !*env) return;
+    char *end = NULL;
+    unsigned long want = strtoul(env, &end, 0);
+    if (end != env && (uae_u32)want == pc) {
+        b2_native_entry_count++;
+        fprintf(stderr, "NATEXEC pc=%08x count=%lu d0=%08x d7=%08x a0=%08x a3=%08x sr=%04x\n",
+            pc, b2_native_entry_count, (unsigned)regs.regs[0], (unsigned)regs.regs[7],
+            (unsigned)regs.regs[8], (unsigned)regs.regs[11], (unsigned)regs.sr);
+    }
+}
+
 static void disable_jit_runtime(const char* reason)
 {
 	jit_log("JIT disabled: %s", reason);
@@ -4491,6 +4509,45 @@ static int readreg_specific(int r, int spec)
 static int writereg(int r)
 {
     int answer = -1;
+
+    /* FORCED-PAST-LOCK detector (report-only, env-gated). Deliberately replicate
+     * the unsafe allocation-time scratch-vs-arch aliasing cell (MULU.W/c32216e8
+     * class). When B2_FORCE_SCRATCH_ALIAS_VREG=<arch_vreg> and r is a scratch
+     * (r>=S1), bind r as an ADDITIONAL holder of the arch vreg's host WITHOUT
+     * safe eviction, so a scratch write clobbers the still-live arch value.
+     * Post-REG_WORK/INIT_REGS hardening leaves no flexible scratch to steer =>
+     * PIN silent. Optional B2_FORCE_SCRATCH_VREG=<r> narrows to one scratch. */
+    {
+        static int _fsa = -2;
+        static int _arch_vreg = -1;
+        static int _only_vreg = -1;
+        if (_fsa == -2) {
+            const char *e = getenv("B2_FORCE_SCRATCH_ALIAS_VREG");
+            _fsa = (e && *e) ? 1 : 0;
+            if (_fsa) _arch_vreg = (int)strtol(e, NULL, 0);
+            const char *o = getenv("B2_FORCE_SCRATCH_VREG");
+            _only_vreg = (o && *o) ? (int)strtol(o, NULL, 0) : -1;
+        }
+        if (_fsa && r >= S1 && r < VREGS && (_only_vreg < 0 || _only_vreg == r) &&
+            _arch_vreg >= 0 && _arch_vreg < VREGS && r != _arch_vreg && isinreg(_arch_vreg)) {
+            int host = live.state[_arch_vreg].realreg;
+            if (host >= 0 && !live.nat[host].locked && live.nat[host].nholds < VREGS) {
+                int ind = live.nat[host].nholds;
+                live.nat[host].holds[ind] = (uae_s8)r;
+                live.nat[host].nholds++;
+                live.state[r].realreg = host;
+                live.state[r].realind = (uae_u8)ind;
+                live.state[r].val = 0;
+                set_status(r, DIRTY);
+                live.nat[host].locked++;
+                live.nat[host].touched = touchcnt++;
+                fprintf(stderr, "REGPRESSURE_PIN_HIT scratch_vreg=%d aliased_onto arch_vreg=%d host=%d pc=%08x\n",
+                    r, _arch_vreg, host, (unsigned)m68k_getpc());
+                jit_checker_note_write(host, 4, r, &g_hre_emit);
+                return host;
+            }
+        }
+    }
 
     make_exclusive(r, 0);
     if (isinreg(r)) {
@@ -8330,6 +8387,19 @@ endblock_done:
 
         /* This is the non-direct handler */
         bi->handler = bi->handler_to_use = (cpuop_func*)get_target();
+        /* NATEXEC marker (report-only test infra): emit a call at compiled-handler
+         * entry so it fires ONLY when the native handler actually executes. Gated
+         * at runtime on B2_NATIVE_ASSERT_PC == this block's guest PC. Port of
+         * @basilisk's macemu two-pass native-exec assertion. Inert unless env set. */
+        {
+            extern void b2_test_native_entry(uae_u32 pc);
+            static int _nae = -1;
+            if (_nae < 0) { const char *e = getenv("B2_NATIVE_ASSERT_PC"); _nae = (e && *e) ? 1 : 0; }
+            if (_nae) {
+                compemu_raw_mov_l_ri(REG_PAR1, (uae_u32)block_m68k_pc);
+                compemu_raw_call((uintptr)b2_test_native_entry);
+            }
+        }
         /* DARK: whole-block emitted-ARM dump for the CRC d0-carry pin. Dumps
            direct_handler(body+epilogue)..here so we can disassemble and check
            whether the block-exit flush emits str d0 [x28+0] vs d4 [x28+16].

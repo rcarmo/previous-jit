@@ -616,12 +616,77 @@ void M68000_Stop(void)
 
 /*-----------------------------------------------------------------------*/
 /**
+ * Two-pass native-exec harness (port of @basilisk's macemu two-pass).
+ * After pass 1 has compiled the block, reapply the full input state and
+ * re-enter at the loop-body PC (B2_TEST_SECOND_PC) via the JIT dispatcher
+ * DIRECTLY so the compiled/native handler runs. Report-only test infra.
+ */
+static bool opcode_test_reenter_pass2(void)
+{
+	const char *two_pass = getenv("B2_TEST_TWO_PASS");
+	if (!(two_pass && *two_pass && two_pass[0] != '0'))
+		return false;
+	const char *sp = getenv("B2_TEST_SECOND_PC");
+	const char *init = getenv("B2_TEST_INIT");
+	const uaecptr stack_addr = 0x04010000;
+	Uint32 init_words[17];
+	size_t init_count = 0;
+	int i;
+
+	/* full input-state reapply (not just PC) */
+	for (i = 0; i < 8; i++) {
+		m68k_dreg(regs, i) = 0;
+		m68k_areg(regs, i) = 0;
+	}
+	m68k_areg(regs, 7) = stack_addr;
+	regs.usp = regs.isp = regs.msp = stack_addr;
+	regs.sr = 0x2700;
+	if (init && *init &&
+		opcode_test_parse_longs(init, init_words, sizeof(init_words) / sizeof(init_words[0]), &init_count) &&
+		(init_count == 16 || init_count == 17)) {
+		for (i = 0; i < 8; i++)
+			m68k_dreg(regs, i) = init_words[i];
+		for (i = 0; i < 8; i++)
+			m68k_areg(regs, i) = init_words[8 + i];
+		if (init_count == 17)
+			regs.sr = (uae_u16)(init_words[16] & 0xffff);
+		regs.usp = regs.isp = regs.msp = m68k_areg(regs, 7);
+	}
+	MakeFromSR();
+	regs.stopped = 0;
+	unset_special(SPCFLAG_STOP | SPCFLAG_BRK | SPCFLAG_DOTRACE | SPCFLAG_TRACE | SPCFLAG_DEBUGGER);
+
+	uaecptr second_addr = (sp && *sp) ? (uaecptr)strtoul(sp, NULL, 0) : m68k_getpc();
+	m68k_setpc(second_addr);
+	return true;
+}
+
+/*-----------------------------------------------------------------------*/
+/**
  * Start 680x0 emulation
  */
 void M68000_Start(void)
 {
 	if (Uae2026OpcodeTestModeSetup()) {
-		m68k_go(true);
+		m68k_go(true);				/* pass 1: compile the block */
+		if (opcode_test_reenter_pass2()) {
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+			/* pass 2: direct JIT dispatcher re-entry (NOT the m68k_go loop);
+			 * bounded dispatch until STOP trailer / stopped. */
+			for (int _s2 = 0; _s2 < 100000; _s2++) {
+				if (Uae2026OpcodeTestModeHandleStopTrailer())
+					break;
+				if (regs.stopped || (regs.spcflags & (SPCFLAG_STOP | SPCFLAG_BRK)))
+					break;
+				if (Uae2026JitBridgeIsActive())
+					Uae2026JitBridgeCompileExecute();
+				else
+					break;
+			}
+#else
+			m68k_go(true);
+#endif
+		}
 		Uae2026OpcodeTestModeFinish();
 		_Exit(0);
 	}

@@ -2157,6 +2157,16 @@ void m68k_do_execute (void)
 #ifdef FLIGHT_RECORDER
 	m68k_record_step(m68k_getpc(), cft_map(opcode));
 #endif
+	{
+		static int _iop = -1;
+		static uae_u32 _iop_pc = 0;
+		if (_iop < 0) { const char *e = getenv("B2_INTERPOP_PC"); _iop = (e && *e) ? 1 : 0; if (_iop) _iop_pc = (uae_u32)strtoul(e, NULL, 0); }
+		if (_iop && (uae_u32)pc == _iop_pc) {
+			static unsigned long _iopc = 0;
+			_iopc++;
+			fprintf(stderr, "INTERPOP pc=%08x count=%lu op=%04x\n", (unsigned)pc, _iopc, (unsigned)opcode);
+		}
+	}
 	(*cpufunctbl[opcode])(opcode);
 	if (trace_a995_pending && trace_a995_step < 64) {
 		MakeSR();

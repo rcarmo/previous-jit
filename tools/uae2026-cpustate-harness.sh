@@ -172,6 +172,12 @@ cell "move.l d0,4(a0)"      "2140 0004" "$SI" "$PRE" "4003004" 0x01001000
 cell "move.l d0,(0,a0,d1.l)" "2180 1800" "$SIx" "$PRE" "4003004" 0x01001000
 cell "move.w d0,2(a0)"      "3140 0002" "$SI"  "$PRE" "4003000" 0x01001000
 
+# MOVEM (An) control-mode An-preservation (guards ba61f17 / macemu 126c959f port):
+# movem.l (a2),a3/a4 then move.l a2,(0x04003000).L. Control-mode MOVEM mem->reg must NOT
+# modify the arch An; pre-fix native walked srca==A2 and clobbered it 04018200->04018208.
+# NATEXEC-gated on the movem PC so it is proven on the compiled path, not interp-fallback.
+cell "movem.l (a2) An-preserve" "4CD2 1800 23CA 0400 3000" "0 0 0 0 0 0 0 0 0 0 4018200 0 0 0 0 4018100" "4018200 11111111 4018204 22222222" "4003000" 0x01001000
+
 echo "=== REG-ALLOC native-exec + forced-past-lock detector self-validation ==="
 # native-exec core: mulu.w+dbf loop compiles native (NATEXEC>0) under LOCKSTEP_DROP
 NAT=$(timeout "$WAIT" env HOME="$WORK/home" SDL_AUDIODRIVER=dummy DISPLAY="$DISP" \

@@ -267,3 +267,21 @@ DATA_FAULT_ADDR[movem_predec_write_fault]="0400A01C"
 DATA_FAULT_SIZE[movem_predec_write_fault]=L
 DATA_FAULT_WRITE[movem_predec_write_fault]=1
 DUMP_MEM_LONGS[movem_predec_write_fault]="0400A018 0400A01C"
+
+# --- setcc carry-convention coverage (2026-07-04): guards the setcc/cmov_l_rr
+# FIX_INVERTED_CARRY-adjacent path. setcc(compemu_legacy_arm64_compat.cpp)=CSET after
+# legacy_x86_cc_to_native(), no FIX_INVERTED_CARRY; jff_CMP_l sets flags_carry_inverted.
+# These prove cmp.l -> Scc(HI/LS/CC/CS) native==interp (the x86-legacy cond path is
+# self-consistent with the inverted-carry flag state). Cross-tree ref: macemu setcc has
+# the same structure; this locks in Previous's correctness on the straight Scc(carry) path.
+# D0=1,D1=2: cmp.l D1,D0 (D0-D1) => M68K carry SET (borrow), Z=0.
+TESTS[scc_hi_carry_set]="203C 0000 0001 223C 0000 0002 B081 52C2"   # SHI  C=1 => false => 0x00
+TESTS[scc_ls_carry_set]="203C 0000 0001 223C 0000 0002 B081 53C2"   # SLS  C|Z  => true  => 0xFF
+TESTS[scc_cc_carry_set]="203C 0000 0001 223C 0000 0002 B081 54C2"   # SCC/SHS !C => false => 0x00
+TESTS[scc_cs_carry_set]="203C 0000 0001 223C 0000 0002 B081 55C2"   # SCS/SLO C  => true  => 0xFF
+# D0=2,D1=1: cmp.l D1,D0 => M68K carry CLEAR, Z=0.
+TESTS[scc_hi_carry_clr]="203C 0000 0002 223C 0000 0001 B081 52C2"   # SHI  => true  => 0xFF
+TESTS[scc_ls_carry_clr]="203C 0000 0002 223C 0000 0001 B081 53C2"   # SLS  => false => 0x00
+TESTS[scc_cc_carry_clr]="203C 0000 0002 223C 0000 0001 B081 54C2"   # SCC  => true  => 0xFF
+TESTS[scc_cs_carry_clr]="203C 0000 0002 223C 0000 0001 B081 55C2"   # SCS  => false => 0x00
+TEST_ORDER+=(scc_hi_carry_set scc_ls_carry_set scc_cc_carry_set scc_cs_carry_set scc_hi_carry_clr scc_ls_carry_clr scc_cc_carry_clr scc_cs_carry_clr)

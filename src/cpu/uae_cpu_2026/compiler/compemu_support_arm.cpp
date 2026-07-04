@@ -7302,6 +7302,22 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             }
 #endif
         }
+        /* FIX (B2_JIT_RAMDISP_PERMANENT, env-gated DEFAULT-OFF; flip is Rui-gated):
+           the count==-1 -> count=-2 permanent-native assignment (above) only
+           fires on a FRESH block (count==-1). On RECOMPILE the block enters with
+           count != -1, so ROM-shadowed-as-RAM blocks (isinrom=0, ramdisp=1) retain
+           a positive warmup countdown, expire, get rejected by check_for_cache_miss
+           (cnt_ok=0), and churn to interp (recompile_block ~1070, cache_hit=1,
+           ~100% interp). Extend the count=-2 assignment to the recompile path so
+           these blocks keep the permanent-native marker across recompiles. */
+        { static int _rdp = -1;
+          if (_rdp < 0) _rdp = getenv("B2_JIT_RAMDISP_PERMANENT") ? 1 : 0;
+          if (_rdp && !currprefs.cpu_compatible && bi->count != -2 &&
+              !isinrom((uintptr)pc_hist[0].location) && jit_allow_ram_dispatch_env()) {
+            optlev = jit_max_optlev();
+            bi->count = -2;
+          }
+        }
         /* REPORT-ONLY (B2_JIT_JITCOUNTPATH, dark default): pin WHY each freshly-
            counted block gets a positive warmup countdown vs the count=-2
            permanent-native marker — the stock-boot block-retention root cause.

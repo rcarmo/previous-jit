@@ -710,19 +710,30 @@ static void genmovemel(uae_u16 opcode) {
 	/* ARM64 fix: avoid get_n_addr + mov_l_rR which caches a 64-bit host
 	   pointer in a 32-bit virtual register. Use readlong()/readword()
 	   which reconstruct the host pointer fresh each time. */
+	/* 126c959f (macemu parity): for (An) control mode, genamode maps srca
+	   directly to the architectural An (dodgy=0 for movem). Walking srca with
+	   add_l_ri would spuriously increment/clobber the arch An. MOVEM mem->reg
+	   must NOT modify An for control modes (only (An)+ writes back). Copy the
+	   EA to a scratch and walk the scratch; (An)+ (Aipi) still writes back srca. */
+	const char *movem_srca = "srca";
+	if (table68k[opcode].dmode == Aind) {
+		comprintf("\tint movem_srca=scratchie++;\n"
+				"\tmov_l_rr(movem_srca,srca);\n");
+		movem_srca = "movem_srca";
+	}
 	comprintf("\tfor (i=0;i<16;i++) {\n"
 			"\t\tif ((mask>>i)&1) {\n");
 	switch (table68k[opcode].size) {
 	case sz_long:
-		comprintf("\t\t\treadlong(srca,i,scratchie);\n"
-				"\t\t\tadd_l_ri(srca,4);\n"
-				"\t\t\toffset+=4;\n");
+		comprintf("\t\t\treadlong(%s,i,scratchie);\n"
+				"\t\t\tadd_l_ri(%s,4);\n"
+				"\t\t\toffset+=4;\n", movem_srca, movem_srca);
 		break;
 	case sz_word:
-		comprintf("\t\t\treadword(srca,i,scratchie);\n"
+		comprintf("\t\t\treadword(%s,i,scratchie);\n"
 				"\t\t\tsign_extend_16_rr(i,i);\n"
-				"\t\t\tadd_l_ri(srca,2);\n"
-				"\t\t\toffset+=2;\n");
+				"\t\t\tadd_l_ri(%s,2);\n"
+				"\t\t\toffset+=2;\n", movem_srca, movem_srca);
 		break;
 	default:
 		assert(0);

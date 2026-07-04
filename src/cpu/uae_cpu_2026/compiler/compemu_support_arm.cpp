@@ -7302,6 +7302,23 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             }
 #endif
         }
+        /* REPORT-ONLY (B2_JIT_JITCOUNTPATH, dark default): pin WHY each freshly-
+           counted block gets a positive warmup countdown vs the count=-2
+           permanent-native marker — the stock-boot block-retention root cause.
+           Logs pc, isinrom, ram-dispatch, optlev, assigned count. */
+        { static int _cp = -1;
+          if (_cp < 0) _cp = getenv("B2_JIT_JITCOUNTPATH") ? 1 : 0;
+          if (_cp) {
+            static unsigned long _cpn = 0;
+            if (_cpn++ < 3000) {
+              uae_u32 _bpc = (uae_u32)((uintptr)pc_hist[0].location - MEMBaseDiff);
+              fprintf(stderr, "JITCOUNTPATH pc=%08x isinrom=%d ramdisp=%d optlev=%d count=%d cpucompat=%d\n",
+                (unsigned)_bpc, isinrom((uintptr)pc_hist[0].location) ? 1 : 0,
+                jit_allow_ram_dispatch_env() ? 1 : 0, optlev, bi->count,
+                currprefs.cpu_compatible ? 1 : 0);
+            }
+          }
+        }
         current_block_pc_p = JITPTR pc_hist[0].location;
 
         /* Save successor needed_flags BEFORE remove_deps clears them.

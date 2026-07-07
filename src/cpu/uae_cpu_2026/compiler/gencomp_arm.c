@@ -678,22 +678,27 @@ static void gen_move16(uae_u32 opcode, struct instr *curi) {
 		comprintf("\tarm_ADD_l_ri8(dstreg+8,16);\n");
 
 	start_brace();
-	comprintf("\tint tmp=scratchie;\n");
-	comprintf("\tscratchie+=4;\n");
+	/* 01051ec3 (macemu parity): MOVE16 previously allocated 4 scratches at once
+	   (scratchie+=4, tmp+0..tmp+3); under register pressure the 4 scratches can
+	   alias live architectural regs (reg-alloc-pressure class, same family as the
+	   126c959f MOVEM and b36d5a10 fixes). Use ONE scratch, load-store-forget per
+	   longword so at most one scratch is live at a time. */
+	comprintf("\tint tmp=scratchie++;\n");
 
 	comprintf("\tget_n_addr(src,src,scratchie);\n"
 			"\tget_n_addr(dst,dst,scratchie);\n"
-			"\tmov_l_rR(tmp+0,src,0);\n"
-			"\tmov_l_rR(tmp+1,src,4);\n"
-			"\tmov_l_rR(tmp+2,src,8);\n"
-			"\tmov_l_rR(tmp+3,src,12);\n"
-			"\tmov_l_Rr(dst,tmp+0,0);\n"
-			"\tforget_about(tmp+0);\n"
-			"\tmov_l_Rr(dst,tmp+1,4);\n"
-			"\tforget_about(tmp+1);\n"
-			"\tmov_l_Rr(dst,tmp+2,8);\n"
-			"\tforget_about(tmp+2);\n"
-			"\tmov_l_Rr(dst,tmp+3,12);\n");
+			"\tmov_l_rR(tmp,src,0);\n"
+			"\tmov_l_Rr(dst,tmp,0);\n"
+			"\tforget_about(tmp);\n"
+			"\tmov_l_rR(tmp,src,4);\n"
+			"\tmov_l_Rr(dst,tmp,4);\n"
+			"\tforget_about(tmp);\n"
+			"\tmov_l_rR(tmp,src,8);\n"
+			"\tmov_l_Rr(dst,tmp,8);\n"
+			"\tforget_about(tmp);\n"
+			"\tmov_l_rR(tmp,src,12);\n"
+			"\tmov_l_Rr(dst,tmp,12);\n"
+			"\tforget_about(tmp);\n");
 	close_brace();
 #endif
 }

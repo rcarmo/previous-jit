@@ -17,7 +17,8 @@ declare -a TEST_ORDER=(
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
   chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
   jsr_an_call_return bsr_word_call_return seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_movem_restore_full_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
-  pack_dn_edge unpk_dn_edge moves_write_read move_l_imm_special_long movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip
+  pack_dn_edge unpk_dn_edge moves_write_read move_l_imm_special_long
+  movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip movec_tc_roundtrip movec_urp_roundtrip movec_srp_roundtrip movec_itt0_roundtrip movec_dtt0_roundtrip pflush_all ptest_dtt_hit
 )
 
 declare -a FAULT_TEST_ORDER=(
@@ -181,6 +182,16 @@ DUMP_MEM_LONGS[move_l_imm_special_long]="0400A000"
 TESTS[movec_vbr_roundtrip]="203C 1234 0000 4E7B 0801 4E7A 1801"
 TESTS[movec_sfc_roundtrip]="7005 4E7B 0000 4E7A 1000"
 TESTS[movec_dfc_roundtrip]="7003 4E7B 0001 4E7A 1001"
+# Translation-control matrix. TC changes only the page-size bit so execution
+# remains on the harness's direct/disabled-MMU mapping; TTR values either target
+# an unused 0xaa region or transparently identity-map the 0x04 test region.
+TESTS[movec_tc_roundtrip]="203C 0000 4000 4E7B 0003 4E7A 1003"
+TESTS[movec_urp_roundtrip]="203C 1234 5678 4E7B 0806 4E7A 1806"
+TESTS[movec_srp_roundtrip]="203C 89AB CDEF 4E7B 0807 4E7A 1807"
+TESTS[movec_itt0_roundtrip]="203C AA00 8000 4E7B 0004 4E7A 1004"
+TESTS[movec_dtt0_roundtrip]="203C 0400 8000 4E7B 0006 4E7A 1006"
+TESTS[pflush_all]="F518 7201"
+TESTS[ptest_dtt_hit]="203C 0400 8000 4E7B 0006 41F9 0400 A000 F568 4E7A 1805"
 
 TESTS[fault_bsr_target_fetch]="6106 7201 6004 702B 4E75 7402"
 INIT_REGS[fault_bsr_target_fetch]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"

@@ -2320,6 +2320,13 @@ gen_opcode (unsigned int opcode)
 	comprintf("\tpreserve_flags_before_nzcv_clobber();\n");
 	start_brace();
 	comprintf("\tuae_u32 retadd=start_pc+((char *)comp_pc_p-(char *)start_pc_p)+m68k_pc_offset;\n");
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+	comprintf("\tcompemu_raw_mov_l_ri(REG_PAR1,jit_compile_current_op_m68k_pc);\n"
+		  "\tcompemu_raw_mov_l_ri(REG_PAR2,opcode & 0xffffu);\n"
+		  "\tprepare_for_call_1();\n"
+		  "\tprepare_for_call_2();\n"
+		  "\tcompemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode);\n");
+#endif
 	comprintf("\tint ret=scratchie++;\n"
 		  "\tmov_l_ri(ret,retadd);\n"
 		  "\tsub_l_ri(SP_REG,4);\n"
@@ -2363,8 +2370,15 @@ gen_opcode (unsigned int opcode)
 	start_brace();
 	comprintf("\tuae_u32 retadd=start_pc+((char *)comp_pc_p-(char *)start_pc_p)+m68k_pc_offset;\n");
 	comprintf("\tint ret=scratchie++;\n"
-		  "\tmov_l_ri(ret,retadd);\n"
-		  "\tsub_l_ri(SP_REG,4);\n"
+		  "\tmov_l_ri(ret,retadd);\n");
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+	comprintf("\tcompemu_raw_mov_l_ri(REG_PAR1,jit_compile_current_op_m68k_pc);\n"
+		  "\tcompemu_raw_mov_l_ri(REG_PAR2,opcode & 0xffffu);\n"
+		  "\tprepare_for_call_1();\n"
+		  "\tprepare_for_call_2();\n"
+		  "\tcompemu_raw_call((uintptr)Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode);\n");
+#endif
+	comprintf("\tsub_l_ri(SP_REG,4);\n"
 		  "\twritelong_clobber(SP_REG,ret,scratchie);\n");
 	comprintf("\tadd_l_ri(src,m68k_pc_offset_thisinst+2);\n");
 	comprintf("\tm68k_pc_offset=0;\n");

@@ -47,6 +47,17 @@ extern "C" {
     void prev_fpuop_save(uae_u32)                    __asm__("fpuop_save");
     void prev_fpuop_restore(uae_u32)                 __asm__("fpuop_restore");
     uae_u32 prev_op_4e73_31_ff(uae_u32)              __asm__("op_4e73_31_ff");
+    uae_u32 prev_op_4e75_31_ff(uae_u32)              __asm__("op_4e75_31_ff");
+    uae_u32 prev_op_6100_31_ff(uae_u32)              __asm__("op_6100_31_ff");
+    uae_u32 prev_op_6101_31_ff(uae_u32)              __asm__("op_6101_31_ff");
+    uae_u32 prev_op_61ff_31_ff(uae_u32)              __asm__("op_61ff_31_ff");
+    uae_u32 prev_op_4e90_31_ff(uae_u32)              __asm__("op_4e90_31_ff");
+    uae_u32 prev_op_4ea8_31_ff(uae_u32)              __asm__("op_4ea8_31_ff");
+    uae_u32 prev_op_4eb0_31_ff(uae_u32)              __asm__("op_4eb0_31_ff");
+    uae_u32 prev_op_4eb8_31_ff(uae_u32)              __asm__("op_4eb8_31_ff");
+    uae_u32 prev_op_4eb9_31_ff(uae_u32)              __asm__("op_4eb9_31_ff");
+    uae_u32 prev_op_4eba_31_ff(uae_u32)              __asm__("op_4eba_31_ff");
+    uae_u32 prev_op_4ebb_31_ff(uae_u32)              __asm__("op_4ebb_31_ff");
 }
 
 /* The audited compiler is C++; Previous's CPU and FPU cores are C. */
@@ -66,6 +77,33 @@ void fpuop_arithmetic(uae_u32 opcode, uae_u32 extra) { prev_fpuop_arithmetic(opc
 void fpuop_save(uae_u32 opcode) { prev_fpuop_save(opcode); }
 void fpuop_restore(uae_u32 opcode) { prev_fpuop_restore(opcode); }
 void ex_rte(void) { (void)prev_op_4e73_31_ff(0x4e73); }
+extern "C" void Uae2026JitExactRts(void) { (void)prev_op_4e75_31_ff(0x4e75); }
+extern "C" void Uae2026JitExactBsr(uae_u32 opcode)
+{
+    switch ((uae_u16)opcode) {
+    case 0x6100: (void)prev_op_6100_31_ff(opcode); break;
+    case 0x61ff: (void)prev_op_61ff_31_ff(opcode); break;
+    default:     (void)prev_op_6101_31_ff(opcode); break;
+    }
+}
+extern "C" void Uae2026JitExactJsr(uae_u32 opcode)
+{
+    switch ((opcode >> 3) & 7) {
+    case 2: (void)prev_op_4e90_31_ff(opcode); break;
+    case 5: (void)prev_op_4ea8_31_ff(opcode); break;
+    case 6: (void)prev_op_4eb0_31_ff(opcode); break;
+    case 7:
+        switch (opcode & 7) {
+        case 0: (void)prev_op_4eb8_31_ff(opcode); break;
+        case 1: (void)prev_op_4eb9_31_ff(opcode); break;
+        case 2: (void)prev_op_4eba_31_ff(opcode); break;
+        case 3: (void)prev_op_4ebb_31_ff(opcode); break;
+        default: op_illg(opcode); break;
+        }
+        break;
+    default: op_illg(opcode); break;
+    }
+}
 void m68k_execute(void) { /* Return control to Previous's outer interpreter loop. */ }
 
 /* Previous bridge diagnostics consumed across the C++/C boundary. */

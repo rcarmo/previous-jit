@@ -1290,6 +1290,9 @@ static uae_u32 jit_compile_current_op_m68k_pc = 0;
 extern "C" struct flag_struct Uae2026JitLastFlags;
 extern "C" uae_u32 Uae2026JitLastInstructionPc;
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
+extern "C" void Uae2026JitExactRts(void);
+extern "C" void Uae2026JitExactBsr(uae_u32 opcode);
+extern "C" void Uae2026JitExactJsr(uae_u32 opcode);
 extern "C" uae_u32 Uae2026JitMmuGetLong(uae_u32 addr);
 extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
 
@@ -4488,29 +4491,52 @@ static void jit_runtime_mv2sr_word_full(uae_u32 opcode)
 
 static void jit_runtime_rts(uae_u32 opcode)
 {
-    (void)opcode;
-    m68k_do_rts();
+    const uae_u32 op_pc = regs.pc;
+    Uae2026JitMmuTxnBeginReturnPopCurrentA7ByOpcode(op_pc, opcode);
+    if (regs.mmu_enabled)
+        Uae2026JitExactRts();
+    else
+        m68k_do_rts();
+    Uae2026JitHelperCommitLogicalPc(regs.pc,
+        UAE2026_JIT_FLAGS_ARE_JIT);
+    Uae2026JitMmuTxnCommit();
 }
 
 static void jit_runtime_bsr(uae_u32 opcode)
 {
-    const uaecptr pc = m68k_getpc();
-    const uae_u8 disp8 = opcode & 0xff;
-    uaecptr oldpc;
-    uae_s32 offset;
-
-    if (disp8 == 0) {
-        oldpc = pc + 4;
-        offset = (uae_s32)(uae_s16)get_word(pc + 2) + 2;
-    } else if (disp8 == 0xff) {
-        oldpc = pc + 6;
-        offset = (uae_s32)get_long(pc + 2) + 2;
+    const uae_u32 op_pc = regs.pc;
+    Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(op_pc, opcode);
+    if (regs.mmu_enabled) {
+        Uae2026JitExactBsr(opcode);
     } else {
-        oldpc = pc + 2;
-        offset = (uae_s32)(uae_s8)disp8 + 2;
+        const uae_u8 disp8 = opcode & 0xff;
+        uaecptr oldpc;
+        uae_s32 offset;
+        if (disp8 == 0) {
+            oldpc = op_pc + 4;
+            offset = (uae_s32)(uae_s16)get_word(op_pc + 2) + 2;
+        } else if (disp8 == 0xff) {
+            oldpc = op_pc + 6;
+            offset = (uae_s32)get_long(op_pc + 2) + 2;
+        } else {
+            oldpc = op_pc + 2;
+            offset = (uae_s32)(uae_s8)disp8 + 2;
+        }
+        m68k_do_bsr(oldpc, offset);
     }
+    Uae2026JitHelperCommitLogicalPc(regs.pc,
+        UAE2026_JIT_FLAGS_ARE_JIT);
+    Uae2026JitMmuTxnCommit();
+}
 
-    m68k_do_bsr(oldpc, offset);
+static void jit_runtime_jsr(uae_u32 opcode)
+{
+    const uae_u32 op_pc = regs.pc;
+    Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(op_pc, opcode);
+    Uae2026JitExactJsr(opcode);
+    Uae2026JitHelperCommitLogicalPc(regs.pc,
+        UAE2026_JIT_FLAGS_ARE_JIT);
+    Uae2026JitMmuTxnCommit();
 }
 
 static void jit_runtime_trap(uae_u32 opcode)
@@ -5071,15 +5097,24 @@ static void op_cas2_comp_ff(uae_u32 opcode)
 static void op_rts_comp_ff(uae_u32 opcode)
 {
     uae_u32 m68k_pc_offset_thisinst = m68k_pc_offset;
-    jit_emit_runtime_helper_barrier((uintptr)jit_runtime_rts,
-        (uintptr)(comp_pc_p + m68k_pc_offset_thisinst), opcode, 0, false);
+    jit_emit_runtime_helper_barrier_kind((uintptr)jit_runtime_rts,
+        (uintptr)(comp_pc_p + m68k_pc_offset_thisinst), opcode, 0, false,
+        UAE2026_JIT_HELPER_RETURN);
 }
 
 static void op_bsr_comp_ff(uae_u32 opcode)
 {
     uae_u32 m68k_pc_offset_thisinst = m68k_pc_offset;
     uintptr op_pc = jit_compile_current_op_host_pc ? jit_compile_current_op_host_pc : (uintptr)(comp_pc_p + m68k_pc_offset_thisinst);
-    jit_emit_runtime_helper_barrier((uintptr)jit_runtime_bsr, op_pc, opcode, 0, false);
+    jit_emit_runtime_helper_barrier_kind((uintptr)jit_runtime_bsr, op_pc,
+        opcode, 0, false, UAE2026_JIT_HELPER_CALL);
+}
+
+static void op_jsr_mmu_comp_ff(uae_u32 opcode)
+{
+    jit_emit_runtime_helper_barrier_kind((uintptr)jit_runtime_jsr,
+        jit_compile_current_op_host_pc, opcode, 0, false,
+        UAE2026_JIT_HELPER_CALL);
 }
 
 static void jit_runtime_aline_trap(uae_u32 opcode)
@@ -5321,7 +5356,7 @@ static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr 
     live.state[PC_P].val = 0;
     set_status(PC_P, INMEM);
     jit_force_runtime_pc_endblock = true;
-    jit_force_runtime_pc_preserve_logical = helper_kind == UAE2026_JIT_HELPER_RTE;
+    jit_force_runtime_pc_preserve_logical = helper_kind != UAE2026_JIT_HELPER_GENERIC;
 }
 
 static inline void jit_emit_runtime_helper_barrier(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2)
@@ -7294,6 +7329,18 @@ void build_comp(void)
     nfcompfunctbl[cft_map(0x6101)] = op_bsr_comp_ff;
     compfunctbl[cft_map(0x61ff)] = op_bsr_comp_ff;
     nfcompfunctbl[cft_map(0x61ff)] = op_bsr_comp_ff;
+
+    /* Every legal JSR EA gets the exact Previous 68040/MMU service when RAM
+       dispatch is requested. Direct-address/non-MMU builds retain generated
+       native JSR handlers. */
+    if (jit_allow_ram_dispatch_env()) {
+        for (opcode = 0; opcode < 65536; opcode++) {
+            if (table68k[opcode].mnemo == i_JSR && table68k[opcode].clev > 0) {
+                compfunctbl[cft_map(opcode)] = op_jsr_mmu_comp_ff;
+                nfcompfunctbl[cft_map(opcode)] = op_jsr_mmu_comp_ff;
+            }
+        }
+    }
 
     /* Propagate generated handlers only through readcpu's explicit opcode
        handler chain.  Mnemonic equality is not a compatibility contract:

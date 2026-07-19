@@ -42,6 +42,10 @@ void Uae2026JitBridgeShutdown(void);
 void Uae2026JitHelperBegin(uint32_t op_pc, uint32_t descriptor);
 void Uae2026JitHelperCommitLogicalPc(uint32_t logical_pc, uint32_t flag_authority);
 void Uae2026JitHelperClear(void);
+void Uae2026JitMmuTxnBeginCallPushTarget(uint32_t pc, uint32_t target_pc);
+void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uint32_t pc, uint32_t opcode);
+void Uae2026JitMmuTxnBeginReturnPopCurrentA7ByOpcode(uint32_t pc, uint32_t opcode);
+void Uae2026JitMmuTxnCommit(void);
 #else
 static inline bool Uae2026JitBridgeCompiled(void) { return false; }
 static inline bool Uae2026JitBridgeRequested(void) { return false; }
@@ -64,6 +68,16 @@ static inline void Uae2026JitHelperCommitLogicalPc(uint32_t logical_pc, uint32_t
     (void)logical_pc; (void)flag_authority;
 }
 static inline void Uae2026JitHelperClear(void) {}
+static inline void Uae2026JitMmuTxnBeginCallPushTarget(uint32_t pc, uint32_t target_pc) {
+    (void)pc; (void)target_pc;
+}
+static inline void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uint32_t pc, uint32_t opcode) {
+    (void)pc; (void)opcode;
+}
+static inline void Uae2026JitMmuTxnBeginReturnPopCurrentA7ByOpcode(uint32_t pc, uint32_t opcode) {
+    (void)pc; (void)opcode;
+}
+static inline void Uae2026JitMmuTxnCommit(void) {}
 #endif
 
 #ifdef __cplusplus

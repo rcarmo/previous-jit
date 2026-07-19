@@ -14,6 +14,7 @@
 #include "uae2026_vendored_preamble.h"
 #include "uae2026_compiler_prefs_shim.h"
 #include "cpu_emulation.h"
+#include <cassert>
 #include <cstddef>
 
 static_assert(offsetof(struct regstruct, scratchregs) == 196, "vendored scratchregs ABI");
@@ -36,6 +37,8 @@ extern "C" {
     void    prev_doint(void)                         __asm__("doint");
     void    prev_m68k_reset(int hard)                __asm__("m68k_reset");
     void    prev_read_table68k(void)                 __asm__("read_table68k");
+    int     prev_m68k_move2c(int reg, uae_u32 *val) __asm__("m68k_move2c");
+    int     prev_m68k_movec2(int reg, uae_u32 *val) __asm__("m68k_movec2");
 
     uae_u32 prev_get_bitfield(uae_u32, uae_u32 *, int, int) __asm__("get_bitfield");
     void prev_put_bitfield(uae_u32, uae_u32 *, uae_u32, int, int) __asm__("put_bitfield");
@@ -862,73 +865,23 @@ void write_log(const TCHAR *fmt, ...)
     va_list ap; va_start(ap, fmt); vfprintf(stderr, fmt, ap); va_end(ap);
 }
 
-extern "C" void mmu_set_tc(uae_u16 tc);
-extern "C" void mmu_tt_modified(void);
-extern "C" void set_cpu_caches(bool flush);
 int m68k_move2c(int reg, uae_u32 *val)
 {
-    switch (reg) {
-    case 0: regs.sfc = *val & 7; break;
-    case 1: regs.dfc = *val & 7; break;
-    case 2:
-        regs.cacr = *val & 0x80008000u;
-        set_cpu_caches(false);
-        break;
-    case 3:
-        regs.tc = *val & 0xc000u;
-        mmu_set_tc((uae_u16)regs.tc);
-        break;
-    case 4: regs.itt0 = *val & 0xffffe364u; mmu_tt_modified(); break;
-    case 5: regs.itt1 = *val & 0xffffe364u; mmu_tt_modified(); break;
-    case 6: regs.dtt0 = *val & 0xffffe364u; mmu_tt_modified(); break;
-    case 7: regs.dtt1 = *val & 0xffffe364u; mmu_tt_modified(); break;
-    case 8: break;
-    case 0x800: regs.usp = *val; break;
-    case 0x801:
-        regs.vbr = *val;
-        if (*val && !uae2026_jit_boot_stack_vbr(*val))
-            uae2026_jit_last_non_boot_vbr = *val;
-        break;
-    case 0x802: regs.caar = *val; break;
-    case 0x803: regs.msp = *val; if (regs.m == 1) regs.regs[15] = regs.msp; break;
-    case 0x804: regs.isp = *val; if (regs.m == 0) regs.regs[15] = regs.isp; break;
-    case 0x805: regs.mmusr = *val; break;
-    case 0x806: regs.urp = *val & 0xfffffe00u; break;
-    case 0x807: regs.srp = *val & 0xfffffe00u; break;
-    case 0x808: break;
-    default:
-        op_illg(0x4e7b);
-        return 0;
-    }
-    return 1;
+    /* Use Previous's canonical legality checks, masks and MMU storage. The
+       imported compiler must not maintain an independent TC/TTR/root model. */
+    const int valid = prev_m68k_move2c(reg, val);
+    if (valid && reg == 3)
+        assert(regs.tc == regs.tcr);
+    if (valid && reg == 0x801 && *val && !uae2026_jit_boot_stack_vbr(*val))
+        uae2026_jit_last_non_boot_vbr = *val;
+    return valid;
 }
 
 int m68k_movec2(int reg, uae_u32 *val)
 {
-    switch (reg) {
-    case 0: *val = regs.sfc; break;
-    case 1: *val = regs.dfc; break;
-    case 2: *val = regs.cacr & 0x80008000u; break;
-    case 3: *val = regs.tc; break;
-    case 4: *val = regs.itt0; break;
-    case 5: *val = regs.itt1; break;
-    case 6: *val = regs.dtt0; break;
-    case 7: *val = regs.dtt1; break;
-    case 8: *val = 0; break;
-    case 0x800: *val = regs.usp; break;
-    case 0x801: *val = regs.vbr; break;
-    case 0x802: *val = regs.caar; break;
-    case 0x803: *val = regs.m == 1 ? regs.regs[15] : regs.msp; break;
-    case 0x804: *val = regs.m == 0 ? regs.regs[15] : regs.isp; break;
-    case 0x805: *val = regs.mmusr; break;
-    case 0x806: *val = regs.urp; break;
-    case 0x807: *val = regs.srp; break;
-    case 0x808: *val = 0; break;
-    default:
-        op_illg(0x4e7a);
-        return 0;
-    }
-    return 1;
+    if (reg == 3)
+        assert(regs.tc == regs.tcr);
+    return prev_m68k_movec2(reg, val);
 }
 
 #ifdef SleepAndWait

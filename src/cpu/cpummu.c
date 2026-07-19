@@ -35,6 +35,7 @@
 #include "memory.h"
 #include "newcpu.h"
 #include "cpummu.h"
+#include "uae2026_jit_bridge.h"
 
 #define MMUDUMP 0
 
@@ -251,6 +252,7 @@ void mmu_make_transparent_region(uaecptr baseaddr, uae_u32 size, int datamode)
 void mmu_tt_modified (void)
 {
     mmu_ttr_enabled = ((regs.dtt0 | regs.dtt1 | regs.itt0 | regs.itt1) & MMU_TTR_BIT_ENABLED) != 0;
+    Uae2026JitMmuTranslationChanged(0x54545200u); /* TTR */
 }
 
 #if 0
@@ -1219,6 +1221,8 @@ void REGPARAM2 mmu_op_real(uae_u32 opcode, uae_u16 extra)
 void REGPARAM2 mmu_flush_atc(uaecptr addr, bool super, bool global)
 {
     int way,type,index;
+
+    Uae2026JitMmuTranslationChanged(0x41544331u); /* ATC1 */
     
     uaecptr tag = ((super ? 0x80000000 : 0) | (addr >> 1)) & mmu_tagmask;
     if (mmu_pagesize_8k)
@@ -1240,6 +1244,8 @@ void REGPARAM2 mmu_flush_atc(uaecptr addr, bool super, bool global)
 void REGPARAM2 mmu_flush_atc_all(bool global)
 {
     unsigned int way,slot,type;
+
+    Uae2026JitMmuTranslationChanged(0x41544341u); /* ATCA */
     for (type=0;type<ATC_TYPE;type++) {
         for (way=0;way<ATC_WAYS;way++) {
             for (slot=0;slot<ATC_SLOTS;slot++) {
@@ -1263,6 +1269,10 @@ void REGPARAM2 mmu_reset(void)
 
 void REGPARAM2 mmu_set_tc(uae_u16 tc)
 {
+    /* Previous's architectural MOVEC storage is tcr. Keep the imported UAE
+     * ABI field as a read-only mirror at this single MMU boundary. */
+    regs.tcr = tc;
+    regs.tc = tc;
     regs.mmu_enabled = (tc & 0x8000) != 0;
     mmu_pagesize_8k = (tc & 0x4000) != 0;
     mmu_tagmask  = mmu_pagesize_8k ? 0xFFFF0000 : 0xFFFF8000;

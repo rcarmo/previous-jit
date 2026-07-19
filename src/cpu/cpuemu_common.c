@@ -14,6 +14,7 @@
 #include "cpummu.h"
 #include "cpummu030.h"
 #include "host.h"
+#include "uae2026_jit_bridge.h"
 
 void val_move2c2 (int regno, uae_u32 val)
 {
@@ -113,8 +114,24 @@ int m68k_move2c (int regno, uae_u32 *regp)
 		return 0;
 	} else {
 		switch (regno) {
-		case 0: regs.sfc = *regp & 7; break;
-		case 1: regs.dfc = *regp & 7; break;
+		case 0:
+			{
+				uae_u32 value = *regp & 7;
+				if (regs.sfc != value) {
+					regs.sfc = value;
+					Uae2026JitMmuTranslationChanged (0x53464300u); /* SFC */
+				}
+			}
+			break;
+		case 1:
+			{
+				uae_u32 value = *regp & 7;
+				if (regs.dfc != value) {
+					regs.dfc = value;
+					Uae2026JitMmuTranslationChanged (0x44464300u); /* DFC */
+				}
+			}
+			break;
 		case 2:
 			{
 				uae_u32 cacr_mask = 0;
@@ -153,11 +170,25 @@ int m68k_move2c (int regno, uae_u32 *regp)
 			/* 68040 only */
 		case 0x805: regs.mmusr = *regp; break;
 			/* 68040/060 */
-		case 0x806: regs.urp = *regp & 0xfffffe00; break;
+		case 0x806:
+			{
+				uae_u32 value = *regp & 0xfffffe00;
+				if (regs.urp != value) {
+					regs.urp = value;
+					Uae2026JitMmuTranslationChanged (0x55525000u); /* URP */
+				}
+			}
+			break;
 		case 0x807:
-                regs.srp = *regp & 0xfffffe00;
-                host_darkmatter(regs.srp == regs.urp);
-                break;
+			{
+				uae_u32 value = *regp & 0xfffffe00;
+				if (regs.srp != value) {
+					regs.srp = value;
+					Uae2026JitMmuTranslationChanged (0x53525000u); /* SRP */
+				}
+				host_darkmatter(regs.srp == regs.urp);
+			}
+			break;
 			/* 68060 only */
 		case 0x808:
 			{

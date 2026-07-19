@@ -34,6 +34,7 @@ extern void build_comp(void);
 extern void alloc_cache(void);
 extern void compemu_reset(void);
 extern void jit_abort(const char *fmt, ...);
+extern "C" void Uae2026CompilerFlushCacheHard(void);
 
 /* JIT execute loop (defined in uae2026_linker_stubs.cpp) */
 extern void m68k_do_compile_execute(void);
@@ -123,6 +124,7 @@ struct bridge_jit_helper_state {
 
 static bridge_jit_helper_state bridge_helper_state{};
 static uae_u32 mmu_translation_generation = 1;
+static bool compiler_initialized = false;
 }
 
 /* Bit-position conversion between Previous's legacy flag layout and the
@@ -216,6 +218,32 @@ extern "C" void Uae2026JitHelperBegin(uae_u32 op_pc, uae_u32 descriptor)
 extern "C" uae_u32 Uae2026JitMmuGeneration(void)
 {
     return mmu_translation_generation;
+}
+
+extern "C" void Uae2026JitMmuTranslationChanged(uae_u32 source)
+{
+    /* Startup/reset calls made before compiler_init() have no compiled identity
+     * to invalidate. The first live JIT context starts at generation one. */
+    if (!compiler_initialized)
+        return;
+
+    /* Generation zero is reserved for non-JIT stubs. Wrapping is practically
+     * unreachable, but skip it so no live MMU block can acquire the sentinel. */
+    if (++mmu_translation_generation == 0)
+        mmu_translation_generation = 1;
+
+    /* The first implementation is deliberately conservative: throw away every
+     * compiled translation rather than leave stale physical aliases or direct
+     * data assumptions reachable. flush_icache_hard() also sets
+     * SPCFLAG_JIT_EXEC_RETURN, terminating an active native block before its
+     * next fetch or memory operation. */
+    Uae2026CompilerFlushCacheHard();
+
+    static unsigned long change_count = 0;
+    if (++change_count <= 16 || (change_count % 1024) == 0)
+        fprintf(stderr,
+            "UAE2026 bridge: MMU translation generation=%u source=%08x count=%lu\n",
+            mmu_translation_generation, source, change_count);
 }
 
 extern "C" uintptr_t Uae2026JitPrepareMmuDispatchTarget(uae_u32 logical_pc)
@@ -321,7 +349,6 @@ static char bridge_summary[768];
 static bool bootstrap_attempted = false;
 static bool bootstrap_active = false;
 static bool compiler_prefs_applied = false;
-static bool compiler_initialized = false;
 static bool jit_active = false;
 static unsigned long block_exit_request_count = 0;
 static uae_u8 *jit_shadow_base = nullptr;
@@ -527,7 +554,6 @@ static const char *host_arch()
 }
 
 extern "C" unsigned long Uae2026JitInterpResumeCountdown;
-extern "C" void Uae2026CompilerFlushCacheHard(void);
 
 static bool env_truthy(const char *name, bool fallback)
 {

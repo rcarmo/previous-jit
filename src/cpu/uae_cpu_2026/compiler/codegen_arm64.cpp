@@ -840,6 +840,52 @@ LOWFUNC(NONE,NONE,2,compemu_raw_endblock_pc_inreg,(RR4 rr_pc, IM32 cycles))
 }
 LENDFUNC(NONE,NONE,2,compemu_raw_endblock_pc_inreg,(RR4 rr_pc, IM32 cycles))
 
+/* End a block whose logical regs.pc and translated pc_p/pc_oldp were already
+ * published independently by an MMU semantic helper.  The normal primitive
+ * derives regs.pc from host_pc-MEMBaseDiff, which is physical under aliases. */
+LOWFUNC(NONE,NONE,2,compemu_raw_endblock_canonical_pc,(RR4 rr_pc, IM32 cycles))
+{
+    LOAD_U64(REG_WORK3, (uintptr)&countdown);
+    LDR_wXi(REG_WORK1, REG_WORK3, 0);
+    const uae_u32 dispatch_cycles = cycles > 0 ? (uae_u32)cycles : 1u;
+    if (dispatch_cycles <= 0xfffu)
+        SUB_wwi(REG_WORK1, REG_WORK1, dispatch_cycles);
+    else {
+        LOAD_U32(REG_WORK2, dispatch_cycles);
+        SUB_www(REG_WORK1, REG_WORK1, REG_WORK2);
+    }
+    STR_wXi(REG_WORK1, REG_WORK3, 0);
+
+    /* Keep the separately published logical PC; only reaffirm host pointers. */
+    LOAD_U64(REG_WORK3, (uintptr)&regs.pc_p);
+    STR_xXi(rr_pc, REG_WORK3, 0);
+    LOAD_U64(REG_WORK3, (uintptr)&regs.pc_oldp);
+    STR_xXi(rr_pc, REG_WORK3, 0);
+
+    uae_u32* countdown_ok = (uae_u32*)get_target();
+    TBZ_xii(REG_WORK1, 31, 0);
+    uae_u32* countdown_exit = (uae_u32*)get_target();
+    B_i(0);
+    write_jmp_target(countdown_exit, (uintptr)popall_do_nothing);
+    write_jmp_target(countdown_ok, (uintptr)get_target());
+
+    uintptr offs = (uintptr)&regs.spcflags - (uintptr)&regs;
+    { _W(0xd5033bbf); } LDR_wXi(REG_WORK4, R_REGSTRUCT, offs);
+    CBZ_wi(REG_WORK4, 2);
+    uae_u32* spc_exit = (uae_u32*)get_target();
+    B_i(0);
+    write_jmp_target(spc_exit, (uintptr)popall_do_nothing);
+
+    MOV_xx(REG_WORK2, rr_pc);
+    UBFM_xxii(REG_WORK2, REG_WORK2, 1, 17);
+    LSL_xxi(REG_WORK2, REG_WORK2, 1);
+    offs = (uintptr)(&regs.cache_tags) - (uintptr)&regs;
+    LDR_xXi(REG_WORK1, R_REGSTRUCT, offs);
+    LDR_xXxLSLi(REG_WORK1, REG_WORK1, REG_WORK2, 3);
+    BR_x(REG_WORK1);
+}
+LENDFUNC(NONE,NONE,2,compemu_raw_endblock_canonical_pc,(RR4 rr_pc, IM32 cycles))
+
 STATIC_INLINE uae_u32* compemu_raw_endblock_pc_isconst(IM32 cycles, IMPTR v)
 {
 	/* v is always >= NATMEM_OFFSET and < NATMEM_OFFSET + max. Amiga mem */

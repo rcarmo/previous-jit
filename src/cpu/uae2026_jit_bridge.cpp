@@ -33,6 +33,7 @@ extern void compiler_exit(void);
 extern void build_comp(void);
 extern void alloc_cache(void);
 extern void compemu_reset(void);
+extern void jit_abort(const char *fmt, ...);
 
 /* JIT execute loop (defined in uae2026_linker_stubs.cpp) */
 extern void m68k_do_compile_execute(void);
@@ -63,6 +64,7 @@ extern uintptr_t jit_MEMBaseDiff;
 extern "C" uintptr_t Uae2026JitRamMmuBankTable(void);
 extern "C" void Uae2026JitSyncRamToShadow(void);
 extern "C" uae_u32 Uae2026JitMmuXlateData(uae_u32 addr);
+extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
 extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr);
@@ -95,6 +97,32 @@ extern struct flag_struct regflags;
  * Defined in uae2026_compiler_unit.cpp as a renamed 'regflags'. */
 struct jit_flag_struct { uae_u32 nzcv; uae_u32 x; };
 extern struct jit_flag_struct jit_regflags;
+
+namespace {
+enum class bridge_jit_helper_phase : uae_u32 {
+    none = 0,
+    pre_semantic = 1,
+    semantic_committed = 2,
+    target_fetch_committed = 3
+};
+
+struct bridge_jit_helper_state {
+    bool active;
+    uae_u16 kind;
+    uae_u16 opcode;
+    uae_u32 op_pc;
+    uae_u16 pre_sr;
+    uae_u32 pre_a7;
+    uae_u32 pre_jit_nzcv;
+    uae_u32 pre_jit_x;
+    uae_u32 logical_next_pc;
+    uintptr_t translated_next_host;
+    uae_u32 flag_authority;
+    bridge_jit_helper_phase phase;
+};
+
+static bridge_jit_helper_state bridge_helper_state{};
+}
 
 /* Bit-position conversion between Previous's legacy flag layout and the
  * vendored UAE2026 JIT layout.  Both structs name the field `cznv` but
@@ -136,6 +164,83 @@ static inline uae_u32 bridge_cznv_jit_to_legacy(uae_u32 jit)
 
 extern "C" uae_u32 Uae2026BridgeCznvLegacyToJit(uae_u32 v) { return bridge_cznv_legacy_to_jit(v); }
 extern "C" uae_u32 Uae2026BridgeCznvJitToLegacy(uae_u32 v) { return bridge_cznv_jit_to_legacy(v); }
+
+extern "C" void Uae2026JitHelperClear(void)
+{
+    bridge_helper_state = {};
+}
+
+extern "C" void Uae2026JitHelperBegin(uae_u32 op_pc, uae_u32 descriptor)
+{
+    if (bridge_helper_state.active)
+        jit_abort("nested JIT semantic helper old=%08x/%04x new=%08x/%04x",
+            bridge_helper_state.op_pc, bridge_helper_state.opcode,
+            op_pc, descriptor & 0xffffu);
+
+    bridge_helper_state.active = true;
+    bridge_helper_state.kind = (uae_u16)(descriptor >> 16);
+    bridge_helper_state.opcode = (uae_u16)descriptor;
+    bridge_helper_state.op_pc = op_pc;
+    bridge_helper_state.pre_sr = regs.sr;
+    bridge_helper_state.pre_a7 = m68k_areg(regs, 7);
+    bridge_helper_state.pre_jit_nzcv = jit_regflags.nzcv;
+    bridge_helper_state.pre_jit_x = jit_regflags.x;
+    bridge_helper_state.flag_authority = UAE2026_JIT_FLAGS_ARE_JIT;
+    bridge_helper_state.phase = bridge_jit_helper_phase::pre_semantic;
+
+    regs.pc = op_pc;
+    regs.fault_pc = op_pc;
+    regs.instruction_pc = op_pc;
+    regs.mmu_effective_addr = 0;
+    Uae2026JitLastInstructionPc = op_pc;
+    Uae2026JitLastSr = regs.sr;
+    Uae2026JitLastA7 = m68k_areg(regs, 7);
+    Uae2026JitLastFlags.cznv = jit_regflags.nzcv;
+    Uae2026JitLastFlags.x = jit_regflags.x;
+    mmu_restart = true;
+    mmu_opcode = bridge_helper_state.opcode;
+}
+
+extern "C" void Uae2026JitHelperCommitLogicalPc(uae_u32 logical_pc, uae_u32 flag_authority)
+{
+    if (!bridge_helper_state.active ||
+        bridge_helper_state.phase != bridge_jit_helper_phase::pre_semantic)
+        jit_abort("JIT semantic helper commit without begin pc=%08x", logical_pc);
+
+    bridge_helper_state.logical_next_pc = logical_pc;
+    bridge_helper_state.flag_authority = flag_authority;
+    bridge_helper_state.phase = bridge_jit_helper_phase::semantic_committed;
+
+    if (flag_authority == UAE2026_JIT_FLAGS_ARE_PREVIOUS) {
+        jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
+        jit_regflags.x = regflags.x;
+    } else if (flag_authority != UAE2026_JIT_FLAGS_ARE_JIT) {
+        jit_abort("invalid JIT semantic helper flag authority %u", flag_authority);
+    }
+
+    /* Publish the semantic result before target translation. If translation
+     * faults, retain the committed SR/A7/CCR and never repeat the helper's
+     * frame or stack operation. */
+    regs.pc = logical_pc;
+    regs.fault_pc = logical_pc;
+    regs.instruction_pc = logical_pc;
+    regs.mmu_effective_addr = 0;
+    Uae2026JitLastInstructionPc = logical_pc;
+    Uae2026JitLastSr = regs.sr;
+    Uae2026JitLastA7 = m68k_areg(regs, 7);
+    Uae2026JitLastFlags.cznv = jit_regflags.nzcv;
+    Uae2026JitLastFlags.x = jit_regflags.x;
+    mmu_restart = true;
+    mmu_opcode = 0xffff;
+
+    const uintptr_t host = Uae2026JitMmuXlateCodeHost(logical_pc);
+    bridge_helper_state.translated_next_host = host;
+    bridge_helper_state.phase = bridge_jit_helper_phase::target_fetch_committed;
+    regs.pc = logical_pc;
+    regs.pc_p = (uae_u8 *)host;
+    regs.pc_oldp = regs.pc_p;
+    bridge_helper_state = {};
+}
 
 /* JIT lockstep tracer support: read/seed the REAL interpreter `regflags`
  * (legacy cznv layout) in canonical M68K CCR layout (bit4=X bit3=N bit2=Z
@@ -1632,6 +1737,11 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
             prev_m68k_reset(1);
         }
     }
+
+    /* A helper fault longjmps past its normal commit/clear path.  Exception
+     * handling has consumed the saved restart phase; do not let the next
+     * helper inherit an active transaction. */
+    Uae2026JitHelperClear();
 
     /* Sync flag struct back.  If the bridge handled an MMU exception,
      * Exception() and the interpreter-side path have already updated

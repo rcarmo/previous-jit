@@ -61,6 +61,7 @@
 #include "comptbl_arm.h"
 #include "compemu_arm.h"
 #include "jit_native_helpers.h"
+#include "../../uae2026_jit_bridge.h"
 #include <SDL2/SDL.h>
 
 extern "C" void jit_op_bftst(void);
@@ -1293,6 +1294,7 @@ extern "C" uae_u32 Uae2026JitMmuGetLong(uae_u32 addr);
 extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
 
 static inline void jit_emit_runtime_helper_barrier(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2);
+static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2, uae_u32 helper_kind);
 
 static inline bool jit_force_optlev1_opcode(uae_u16 op)
 {
@@ -1991,6 +1993,7 @@ static uintptr taken_pc_p;
 static int     branch_cc;
 static int redo_current_block;
 static bool jit_force_runtime_pc_endblock = false;
+static bool jit_force_runtime_pc_preserve_logical = false;
 
 #ifdef UAE
 int segvcount = 0;
@@ -4586,6 +4589,10 @@ static void jit_runtime_system_control(uae_u32 opcode)
     }
     case 0x4e73: /* RTE */
         ex_rte();
+        /* The exact Previous 68040 handler restores the logical PC with
+           m68k_setpci() and native Previous CCR through MakeFromSR(). */
+        Uae2026JitHelperCommitLogicalPc(regs.pc,
+            UAE2026_JIT_FLAGS_ARE_PREVIOUS);
         return;
     case 0x4e7a: /* MOVEC control register to general register */
     case 0x4e7b: { /* MOVEC general register to control register */
@@ -5012,8 +5019,10 @@ static void op_trapcc_comp_ff(uae_u32 opcode)
 
 static void op_system_control_comp_ff(uae_u32 opcode)
 {
-    jit_emit_runtime_helper_barrier((uintptr)jit_runtime_system_control,
-        jit_compile_current_op_host_pc, opcode, 0, false);
+    const uae_u32 helper_kind = opcode == 0x4e73
+        ? UAE2026_JIT_HELPER_RTE : UAE2026_JIT_HELPER_GENERIC;
+    jit_emit_runtime_helper_barrier_kind((uintptr)jit_runtime_system_control,
+        jit_compile_current_op_host_pc, opcode, 0, false, helper_kind);
 }
 
 static void op_cache_control_comp_ff(uae_u32 opcode)
@@ -5283,34 +5292,42 @@ static void op_illegal_trap_comp_ff(uae_u32 opcode)
         (uintptr)(comp_pc_p + m68k_pc_offset_thisinst), opcode, 0, false);
 }
 
-static inline void jit_emit_runtime_helper_barrier(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2)
+static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2, uae_u32 helper_kind)
 {
     if (!pc)
         jit_abort("runtime semantic helper: missing exact opcode PC");
-    /* B2 helper barrier contract: flush() materializes lazy registers/flags,
-       then rebuild the full PC triple before entering C helper code. Some of
-       these helpers use m68k_getpc(), MakeSR()/MakeFromSR(), or exception
-       paths that must not observe a stale regs.pc/regs.pc_oldp pair. */
+    /* Materialize lazy registers/flags and the exact opcode PC before any
+       faultable semantic helper crosses into Previous's MMU state model. */
     flush(1);
-    compemu_raw_mov_l_ri(REG_PAR1, arg1);
-    if (has_arg2)
-        compemu_raw_mov_l_ri(REG_PAR2, arg2);
-    /* Under the NeXT MMU, reversing a translated host pointer is not a valid
-       way to recover the logical PC (aliases can collapse to the block leader).
-       The compile loop already records the exact guest opcode PC. */
     const uae_u32 op_m68k_pc = jit_compile_current_op_m68k_pc
         ? jit_compile_current_op_m68k_pc : jit_hostpc_to_macpc(pc);
     compemu_raw_set_pc_full_i(op_m68k_pc, pc);
-    /* The C helper follows the platform ABI and may clobber caller-saved
-       host registers. After flush(1), guest state is sound in memory; reset
-       allocator host-register associations before the call so forced endblock
-       code cannot later use stale clobbered host values. */
+
     prepare_for_call_2();
+    if (helper_kind != UAE2026_JIT_HELPER_GENERIC) {
+        /* Freeze the complete pre-instruction restart tuple. Packing
+           opcode/kind retains the established two-argument helper ABI. */
+        compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
+        compemu_raw_mov_l_ri(REG_PAR2,
+            UAE2026_JIT_HELPER_DESCRIPTOR(arg1, helper_kind));
+        compemu_raw_call((uintptr)Uae2026JitHelperBegin);
+    }
+
+    compemu_raw_mov_l_ri(REG_PAR1, arg1);
+    if (has_arg2)
+        compemu_raw_mov_l_ri(REG_PAR2, arg2);
     compemu_raw_call(helper);
     live.state[PC_P].realreg = -1;
     live.state[PC_P].val = 0;
     set_status(PC_P, INMEM);
     jit_force_runtime_pc_endblock = true;
+    jit_force_runtime_pc_preserve_logical = helper_kind == UAE2026_JIT_HELPER_RTE;
+}
+
+static inline void jit_emit_runtime_helper_barrier(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2)
+{
+    jit_emit_runtime_helper_barrier_kind(helper, pc, arg1, arg2, has_arg2,
+        UAE2026_JIT_HELPER_GENERIC);
 }
 
 void jit_emit_ordered_semantic_helper_call(uintptr helper, uae_u32 instruction_bytes)
@@ -7898,6 +7915,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             taken_pc_p = 0;
             branch_cc = 0; // Only to be initialized. Will be set together with next_pc_p
             jit_force_runtime_pc_endblock = false;
+            jit_force_runtime_pc_preserve_logical = false;
             bool forced_interpreter_barrier = false;
 
             comp_pc_p = (uae_u8*)pc_hist[0].location;
@@ -8117,17 +8135,19 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     }
                     jit_emitted_guest_memory_write = false;
                     if (jit_force_runtime_pc_endblock) {
-                        /* Runtime helper barriers can change guest PC/state in
-                           ways that require a fresh dispatcher entry. End the
-                           block exactly like the interpreter-side full-SR
-                           barrier path instead of just breaking out of codegen. */
+                        /* MMU semantic helpers publish the logical and host PC
+                           independently. Never reconstruct a virtual PC from a
+                           translated host pointer on their canonical exit. */
                         compemu_raw_mov_l_rm(0, (uintptr)specflags);
 #if defined(USE_DATA_BUFFER)
                         data_check_end(12, 64);
 #endif
                         compemu_raw_maybe_do_nothing(retired_cycles);
                         compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
-                        compemu_raw_endblock_pc_inreg(REG_PC_TMP, retired_cycles);
+                        if (jit_force_runtime_pc_preserve_logical)
+                            compemu_raw_endblock_canonical_pc(REG_PC_TMP, retired_cycles);
+                        else
+                            compemu_raw_endblock_pc_inreg(REG_PC_TMP, retired_cycles);
                         forced_interpreter_barrier = true;
                         break;
                     }

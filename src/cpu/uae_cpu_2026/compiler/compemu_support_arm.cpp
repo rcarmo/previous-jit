@@ -1286,6 +1286,7 @@ static void op_frestore_comp_ff(uae_u32 opcode);
 static void op_fpu_semantic_comp_ff(uae_u32 opcode);
 static uintptr jit_compile_current_op_host_pc = 0;
 static uae_u32 jit_compile_current_op_m68k_pc = 0;
+static uae_u16 jit_compile_current_opcode = 0xffff;
 
 extern "C" struct flag_struct Uae2026JitLastFlags;
 extern "C" uae_u32 Uae2026JitLastInstructionPc;
@@ -6010,40 +6011,29 @@ static inline void jit_prepare_for_mmu_helper_call(void)
 #endif
 }
 
-static inline bool jit_ram_const_direct_read_addr(uae_u32 addr, int size)
-{
-    const uae_u32 end = addr + (uae_u32)size;
-    if (end < addr)
-        return false;
-    /* Only immutable ROM-shadow reads may bypass 68040 translation and its
-       permission/used-bit side effects. */
-    if (addr < 0x00020000u && end <= 0x00020000u)
-        return true;
-    if (addr >= 0x01000000u && end <= 0x01020000u)
-        return true;
-    return false;
-}
-
 static inline bool jit_ram_use_bank_for_mem_vreg(int address, int size, bool is_write)
 {
-    if (!jit_allow_ram_dispatch_env())
-        return false;
-    if (address < 0 || address >= VREGS || is_write)
-        return true;
-    return !(live.state[address].status == ISCONST &&
-        jit_ram_const_direct_read_addr((uae_u32)live.state[address].val, size));
+    (void)address;
+    (void)size;
+    (void)is_write;
+    /* A constant logical address is not proof of an identity MMU mapping.
+       Route every RAM/MMU data access through the live bank boundary. */
+    return jit_allow_ram_dispatch_env();
 }
 
 static inline void jit_sync_fault_pc_for_bank_helper(void)
 {
 #if defined(CPU_AARCH64)
-    /* Publish the opcode-start PC before a bank helper can longjmp.  The
-       decode cursor is already at the successor and cannot form a restartable
-       68040 access-error frame. */
+    /* Publish the complete opcode-start restart tuple before a bank helper
+       can longjmp. HelperClear executes only on successful return. */
     const uae_u32 pc = jit_compile_current_op_m68k_pc;
-    compemu_raw_mov_l_mi((uintptr)&regs.pc, pc);
-    compemu_raw_mov_l_mi((uintptr)&regs.fault_pc, pc);
-    compemu_raw_mov_l_mi((uintptr)&Uae2026JitLastInstructionPc, pc);
+    jit_prepare_for_mmu_helper_call();
+    compemu_raw_mov_l_ri(REG_PAR1, pc);
+    compemu_raw_mov_l_ri(REG_PAR2,
+        UAE2026_JIT_HELPER_DESCRIPTOR(jit_compile_current_opcode,
+            UAE2026_JIT_HELPER_GENERIC));
+    prepare_for_call_2();
+    compemu_raw_call((uintptr)Uae2026JitHelperBegin);
 #endif
 }
 
@@ -6072,6 +6062,9 @@ static inline void writemem_special(int address, int source, int offset)
 {
     jit_sync_fault_pc_for_bank_helper();
     jnf_MEM_WRITEMEMBANK(address, source, offset);
+    prepare_for_call_1();
+    prepare_for_call_2();
+    compemu_raw_call((uintptr)Uae2026JitHelperClear);
 }
 
 void writebyte(int address, int source)
@@ -6158,6 +6151,9 @@ static inline void readmem_special(int address, int dest, int offset)
 {
     jit_sync_fault_pc_for_bank_helper();
     jnf_MEM_READMEMBANK(dest, address, offset);
+    prepare_for_call_1();
+    prepare_for_call_2();
+    compemu_raw_call((uintptr)Uae2026JitHelperClear);
 }
 
 void readbyte(int address, int dest)
@@ -8120,6 +8116,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 #endif
                     jit_compile_current_op_host_pc = (uintptr)pc_hist[i].location;
                     jit_compile_current_op_m68k_pc = op_m68k_pc;
+                    jit_compile_current_opcode = (uae_u16)opcode;
                     jit_emitted_guest_memory_write = false;
                     if (jit_guest_instruction_observer_enabled())
                         compemu_raw_call_observer_i((uintptr)jit_guest_path_record_native,
@@ -8127,6 +8124,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     comptbl[cft_map(opcode)](opcode);
                     jit_compile_current_op_host_pc = 0;
                     jit_compile_current_op_m68k_pc = 0;
+                    jit_compile_current_opcode = 0xffff;
 #if defined(CPU_AARCH64)
                     if (next_pc_p && taken_pc_p &&
                         branch_cc >= NATIVE_CC_F_F && branch_cc <= NATIVE_CC_F_T) {

@@ -165,6 +165,17 @@ static inline uae_u32 bridge_cznv_jit_to_legacy(uae_u32 jit)
 extern "C" uae_u32 Uae2026BridgeCznvLegacyToJit(uae_u32 v) { return bridge_cznv_legacy_to_jit(v); }
 extern "C" uae_u32 Uae2026BridgeCznvJitToLegacy(uae_u32 v) { return bridge_cznv_jit_to_legacy(v); }
 
+static inline uae_u16 bridge_sr_with_jit_flags(uae_u16 sr)
+{
+    const uae_u32 legacy = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);
+    const uae_u16 ccr = (uae_u16)(((jit_regflags.x & 1u) << 4) |
+        (((legacy >> 15) & 1u) << 3) |
+        (((legacy >> 14) & 1u) << 2) |
+        (((legacy >> 0) & 1u) << 1) |
+        ((legacy >> 8) & 1u));
+    return (uae_u16)((sr & 0xffe0u) | ccr);
+}
+
 extern "C" void Uae2026JitHelperClear(void)
 {
     bridge_helper_state = {};
@@ -193,9 +204,9 @@ extern "C" void Uae2026JitHelperBegin(uae_u32 op_pc, uae_u32 descriptor)
     regs.instruction_pc = op_pc;
     regs.mmu_effective_addr = 0;
     Uae2026JitLastInstructionPc = op_pc;
-    Uae2026JitLastSr = regs.sr;
+    Uae2026JitLastSr = bridge_sr_with_jit_flags(regs.sr);
     Uae2026JitLastA7 = m68k_areg(regs, 7);
-    Uae2026JitLastFlags.cznv = jit_regflags.nzcv;
+    Uae2026JitLastFlags.cznv = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);
     Uae2026JitLastFlags.x = jit_regflags.x;
     mmu_restart = true;
     mmu_opcode = bridge_helper_state.opcode;
@@ -226,9 +237,9 @@ extern "C" void Uae2026JitHelperCommitLogicalPc(uae_u32 logical_pc, uae_u32 flag
     regs.instruction_pc = logical_pc;
     regs.mmu_effective_addr = 0;
     Uae2026JitLastInstructionPc = logical_pc;
-    Uae2026JitLastSr = regs.sr;
+    Uae2026JitLastSr = bridge_sr_with_jit_flags(regs.sr);
     Uae2026JitLastA7 = m68k_areg(regs, 7);
-    Uae2026JitLastFlags.cznv = jit_regflags.nzcv;
+    Uae2026JitLastFlags.cznv = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);
     Uae2026JitLastFlags.x = jit_regflags.x;
     mmu_restart = true;
     mmu_opcode = 0xffff;

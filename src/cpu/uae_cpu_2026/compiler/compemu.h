@@ -59,7 +59,7 @@ extern void compiler_dumpstate(void);
 /* Now that we do block chaining, and also have linked lists on each tag,
    TAGMASK can be much smaller and still do its job. Saves several megs
    of memory! */
-#define TAGMASK 0x0000ffff
+#define TAGMASK 0x0003ffff
 #define TAGSIZE (TAGMASK+1)
 #define MAXRUN 1024
 #define cacheline(x) (((((uintptr)(x))>>1)&(TAGMASK>>1))<<1)
@@ -69,8 +69,18 @@ extern uae_u32 start_pc;
 
 struct blockinfo_t;
 
+/* The architectural 68020+ instruction encoding is at most 22 bytes. Keep an
+   exact source window per retired instruction so extension-word rewrites are
+   detected as well as opcode rewrites before a trace is compiled. */
+#define JIT_TRACE_SOURCE_BYTES 22
+
 struct cpu_history {
 	uae_u16* location;
+	/* Architectural PC cannot be reconstructed from an MMU-translated host
+	   pointer: multiple virtual aliases may resolve to the same host page. */
+	uae_u32 guest_pc;
+	uae_u16 opcode;
+	uae_u8 source[JIT_TRACE_SOURCE_BYTES];
 #ifdef UAE
 	uae_u8  specmem;
 #endif
@@ -173,6 +183,9 @@ extern void compiler_init(void);
 extern void compiler_exit(void);
 extern bool compiler_use_jit(void);
 extern void flush(int save_regs);
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+extern void jit_emit_ordered_semantic_helper_call(uintptr helper, uae_u32 instruction_bytes);
+#endif
 void flush_reg(int reg);
 extern void set_target(uae_u8* t);
 extern uae_u8* get_target(void);
@@ -488,6 +501,7 @@ extern void test_l_ri(RR4 d, IMM i);
 extern void mov_b_rr(W1 d, RR1 s);
 extern void mov_w_rr(W2 d, RR2 s);
 extern void mov_w_ri(W2 d, IMM i);
+extern void dbcc_dec_w(W2 d);
 extern void zero_extend_8_rr(W4 d, RR1 s);
 extern void zero_extend_16_rr(W4 d, RR2 s);
 extern void sign_extend_8_rr(W4 d, RR1 s);
@@ -502,9 +516,26 @@ extern void bt_l_rr(RR4 d, RR4 s);
 extern void btc_l_rr(RW4 d, RR4 s);
 extern void btr_l_rr(RW4 d, RR4 s);
 extern void bts_l_rr(RW4 d, RR4 s);
+extern void jnf_BCHG_b(RW1 d, RR4 s);
+extern void jnf_BCHG_l(RW4 d, RR4 s);
+extern void jff_BCHG_b(RW1 d, RR4 s);
+extern void jff_BCHG_l(RW4 d, RR4 s);
+extern void jnf_BCLR_b(RW1 d, RR4 s);
+extern void jnf_BCLR_l(RW4 d, RR4 s);
+extern void jff_BCLR_b(RW1 d, RR4 s);
+extern void jff_BCLR_l(RW4 d, RR4 s);
+extern void jnf_BSET_b(RW1 d, RR4 s);
+extern void jnf_BSET_l(RW4 d, RR4 s);
+extern void jff_BSET_b(RW1 d, RR4 s);
+extern void jff_BSET_l(RW4 d, RR4 s);
+extern void jff_BTST_b(RR1 d, RR4 s);
+extern void jff_BTST_l(RR4 d, RR4 s);
 extern void setcc(W1 d, IMM cc);
 extern void setcc_for_cntzero(RR4 cnt, RR4 data, int size);
+extern void fcompare_result_rr(int result, int d, int s);
 extern void cmov_l_rr(RW4 d, RR4 s, IMM cc);
+extern int jit_value_lock(int r);
+extern void jit_value_unlock(int hr);
 extern void mov_l_rR(W4 d, RR4 s, IMM offset);
 extern void mov_w_rR(W2 d, RR4 s, IMM offset);
 extern void mov_l_Rr(RR4 d, RR4 s, IMM offset);
@@ -558,6 +589,7 @@ typedef struct dep_t {
   struct blockinfo_t* source;
   struct dep_t**      prev_p;
   struct dep_t*       next;
+  uae_u8              prefer_direct;
 } dependency;
 
 typedef struct checksum_info_t {
@@ -604,6 +636,14 @@ typedef struct blockinfo_t {
 
     dependency  dep[2];  /* Holds things we depend on */
     dependency* deplist; /* List of things that depend on this */
+    /* Phase-1 profiling substrate for future trace/region work.
+       Counts are per compiled incarnation and reset on recompile. */
+    uae_u32 edge_exec_count[2];
+    uae_u32 edge_target_pc[2];
+    /* Stable-edge summary carried across recompiles so the next compiled
+       incarnation can make an explicit chain policy decision. */
+    uae_u32 stable_edge_pc[2];
+    uae_u8 stable_edge_mask;
     smallstate  env;
 
 #ifdef JIT_DEBUG

@@ -33,8 +33,6 @@
 
 #if defined(CPU_aarch64) || defined(CPU_AARCH64)
 #define flush_icache arm_flush_icache_impl
-unsigned long g_endblk_inreg = 0;
-unsigned long g_endblk_isconst = 0;
 #include "compemu_support_arm.cpp"
 #undef flush_icache
 
@@ -73,7 +71,6 @@ static const uae_u32 MIN_CACHE_SIZE = 1024;
 
 bool compiler_use_jit(void)
 {
-	fflush(stderr); fprintf(stderr, "JIT_INIT: jit=%d cs=%d\n", PrefsFindBool("jit"), PrefsFindInt32("jitcachesize"));
 	if (!PrefsFindBool("jit"))
 		return false;
 	int32 cs = PrefsFindInt32("jitcachesize");
@@ -98,1234 +95,78 @@ static bool ensure_aarch64_jit_runtime_ready(void)
 }
 
 extern void jit_one_tick(void);
-extern "C" bool mmu_restart;
-extern "C" uae_u16 mmu_opcode;
-extern "C" void Uae2026JitCpuCheckTicks(int cycles);
-extern "C" void Uae2026JitCpuChargeCyclesNoEvents(int cycles);
-extern "C" bool Uae2026OpcodeTestModeActive(void);
-extern "C" uae_u32 Uae2026JitMmuFetchOpcode(uae_u32 pc);
-extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode);
-extern "C" uae_u32 Uae2026JitPrefetchGuard(uae_u32 pc, uae_u32 opcode);
-extern "C" void Uae2026JitMmuTxnBeginCallPushPreTarget(uae_u32 pc, uae_u32 opcode, uae_u32 pre_a7, uae_u32 target_pc);
-extern "C" void Uae2026JitMmuTxnBeginCallPushTarget(uae_u32 pc, uae_u32 target_pc);
-extern "C" void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uae_u32 pc, uae_u32 opcode);
-extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7(uae_u32 pc, uae_u32 opcode, uae_u32 pop_bytes);
-extern "C" void Uae2026JitMmuTxnCommit(void);
-extern "C" void Uae2026JitSyncRamToShadow(void);
-extern "C" void Uae2026JitSyncVideoFromShadow(void);
-extern "C" uae_u32 Uae2026JitLiveGetByte(uae_u32 addr);
-extern "C" uae_u32 Uae2026JitLiveGetWord(uae_u32 addr);
-extern "C" uae_u32 Uae2026JitLiveGetLong(uae_u32 addr);
-extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
-extern uint32 InterruptFlags;
-extern uintptr jit_MEMBaseDiff;
-
-static inline void jit_poll_interrupt_pins_for_dispatch(void)
-{
-#if defined(CPU_AARCH64)
-	/* Previous's interpreter polls the interrupt pins after every instruction,
-	 * independently of SPCFLAG_INT already being set.  RAM/MMU JIT dispatch must
-	 * do the same at native block boundaries because device handlers update the
-	 * interrupt status/mask registers via set_interrupt(); they do not necessarily
-	 * set spcflags themselves. */
-	if (!jit_allow_ram_dispatch_env())
-		return;
-	static int lastintr = 0;
-	const int intr = intlev();
-	if (intr > regs.intmask || (intr == 7 && intr > lastintr)) {
-		static unsigned long trace_count = 0;
-		regs.spcflags |= 0x008u; /* Previous SPCFLAG_INT */
-		const char *env = getenv("B2_JIT_TRACE_DISPATCH_INT");
-		if (env && *env && strcmp(env, "0") != 0 && trace_count < 256) {
-			fprintf(stderr,
-				"JIT_DISPATCH_INT %lu pc=%08x intr=%d intmask=%u spc=%08x\n",
-				++trace_count, (unsigned)m68k_getpc(), intr,
-				(unsigned)regs.intmask, (unsigned)regs.spcflags);
-		}
-	}
-	lastintr = intr;
-#endif
-}
-extern "C" void Uae2026JitLivePutByte(uae_u32 addr, uae_u32 value);
-extern "C" void Uae2026JitLivePutWord(uae_u32 addr, uae_u32 value);
-extern "C" void Uae2026JitLivePutLong(uae_u32 addr, uae_u32 value);
-extern "C" uae_u32 Uae2026JitBankGetByteExport(uaecptr addr);
-extern "C" uae_u32 Uae2026JitBankGetWordExport(uaecptr addr);
-extern "C" uae_u32 Uae2026JitBankGetLongExport(uaecptr addr);
-extern "C" void Uae2026JitBankPutByteExport(uaecptr addr, uae_u32 value);
-extern "C" void Uae2026JitBankPutWordExport(uaecptr addr, uae_u32 value);
-extern "C" void Uae2026JitBankPutLongExport(uaecptr addr, uae_u32 value);
-extern "C" void Uae2026JitFastClearLongs(uae_u32 addr, uae_u32 count);
-extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count);
-extern "C" uae_u8 Uae2026JitRtcReadByte(uae_u32 addr);
-extern "C" void Uae2026JitRtcWriteByte(uae_u32 addr, uae_u32 val);
-extern "C" { uae_u32 Uae2026JitLastExceptionSp = 0; }
-
-static inline bool jit_bsr_opcode(uae_u16 opcode)
-{
-	return (opcode & 0xff00u) == 0x6100u;
-}
-
-static inline bool jit_decode_bsr_target(uae_u32 op_pc, uae_u16 opcode, uae_u32 *target_pc)
-{
-	if (!jit_bsr_opcode(opcode) || !target_pc)
-		return false;
-	uae_s32 disp = 0;
-	if ((opcode & 0xffu) == 0x00u) {
-		disp = (uae_s32)(uae_s16)Uae2026JitLiveGetWord(op_pc + 2);
-	} else if ((opcode & 0xffu) == 0xffu) {
-		disp = (uae_s32)((Uae2026JitLiveGetWord(op_pc + 2) << 16) | Uae2026JitLiveGetWord(op_pc + 4));
-	} else {
-		disp = (uae_s32)(uae_s8)(opcode & 0xffu);
-	}
-	*target_pc = op_pc + 2 + (uae_u32)disp;
-	return true;
-}
-
-static inline bool jit_call_push_txn_opcode(uae_u32 op_pc, uae_u16 opcode)
-{
-	if (jit_bsr_opcode(opcode))
-		return true;
-	/* Confirmed post-RTE/user seams where JSR pushes a return address before
-	   target code fetch can fault. Keep JSR transaction coverage narrow until
-	   all addressing modes have producer-side target metadata; a broad JSR(An)
-	   rule rolls back unrelated early boot probes and stalls before user space. */
-	return (op_pc == 0x0000003eu || op_pc == 0x00003c26u || op_pc == 0x00008334u ||
-		op_pc == 0x0000c52cu || op_pc == 0x05027706u) &&
-		((opcode & 0xffc0u) == 0x4e80u);
-}
-
-static inline void jit_maybe_prepare_fallback_call_push_txn(uae_u32 op_pc, uae_u16 opcode)
-{
-	if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled || !jit_call_push_txn_opcode(op_pc, opcode))
-		return;
-	uae_u32 target_pc = 0;
-	if (jit_decode_bsr_target(op_pc, opcode, &target_pc)) {
-		Uae2026JitMmuTxnBeginCallPushPreTarget(op_pc, opcode, m68k_areg(regs, 7), target_pc);
-		return;
-	}
-	Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(op_pc, opcode);
-}
-
-static inline void jit_maybe_begin_fallback_call_push_txn(uae_u32 op_pc, uae_u16 opcode)
-{
-	uae_u32 target_pc = 0;
-	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled && jit_decode_bsr_target(op_pc, opcode, &target_pc))
-		Uae2026JitMmuTxnBeginCallPushTarget(op_pc, target_pc);
-}
-
-static inline bool jit_dispatch_code_host_opcode_window(uae_u32 pc)
-{
-	if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled || !jit_MEMBaseDiff || !regs.pc_p)
-		return false;
-	const uintptr_t host_pc = (uintptr_t)regs.pc_p;
-	if (host_pc < jit_MEMBaseDiff)
-		return false;
-	const uae_u32 host_phys = (uae_u32)(host_pc - jit_MEMBaseDiff);
-	return host_phys != pc &&
-		((pc >= 0x05000000u && pc < 0x08000000u) ||
-		 (regs.vbr == 0x040ae61cu && pc >= 0x00003300u && pc <= 0x00003400u));
-}
-
-static inline uae_u32 jit_fetch_dispatch_opcode(uae_u32 pc)
-{
-	if (jit_dispatch_code_host_opcode_window(pc)) {
-		uae_u8 *host = regs.pc_p;
-		return ((uae_u16)host[0] << 8) | host[1];
-	}
-	return GET_OPCODE;
-}
-
-static inline uae_u32 jit_return_pop_bytes(uae_u16 opcode)
-{
-	if (opcode == 0x4e75u) /* RTS */
-		return 4;
-	if (opcode == 0x4e77u) /* RTR: PC long + CCR word */
-		return 6;
-	return 0;
-}
-
-static inline void jit_maybe_prepare_fallback_return_pop_txn(uae_u32 op_pc, uae_u16 opcode)
-{
-	const uae_u32 pop_bytes = jit_return_pop_bytes(opcode);
-	if (pop_bytes && jit_allow_ram_dispatch_env() && regs.mmu_enabled)
-		Uae2026JitMmuTxnBeginReturnPopCurrentA7(op_pc, opcode, pop_bytes);
-}
-
-extern "C" void Uae2026JitCanonicalizePcAfterFallback(void)
-{
-	const uae_u32 pc = m68k_getpc();
-	regs.pc = pc;
-	if (jit_allow_ram_dispatch_env() && (regs.mmu_enabled || Uae2026OpcodeTestModeActive())) {
-		Uae2026JitPublishFallbackState(pc, 0xffffu);
-		mmu_opcode = (uae_u16)-1;
-		regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(pc);
-	} else {
-		regs.fault_pc = pc;
-		regs.pc_p = get_real_address(pc, 0, sz_word);
-	}
-	regs.pc_oldp = regs.pc_p;
-}
-
-static inline void jit_set_guest_pc_fast(uae_u32 pc)
-{
-	regs.pc = pc;
-	if (jit_allow_ram_dispatch_env() && (regs.mmu_enabled || Uae2026OpcodeTestModeActive())) {
-		regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(pc);
-	} else {
-		regs.pc_p = get_real_address(regs.pc, 0, sz_word);
-	}
-	regs.pc_oldp = regs.pc_p;
-}
-
-static inline bool jit_fast_return_from_subroutine(void)
-{
-	uae_u32 ret = Uae2026JitLiveGetLong(regs.regs[15]);
-	regs.regs[15] += 4;
-	jit_set_guest_pc_fast(ret);
-	return true;
-}
-
-static inline void jit_charge_rom_delay_ticks(uae_u32 arg)
-{
-	if (arg <= 3u)
-		return;
-	/* The ROM argument is in microseconds on a 25 MHz system.  Feed enough
-	   cycles into Previous's timer/interrupt scheduler for SCSI/ESP polling
-	   loops to make forward progress, while bounding huge diagnostic waits. */
-	uint64_t ticks64 = (uint64_t)arg * 25u;
-	if (ticks64 < 1u)
-		ticks64 = 1u;
-	if (ticks64 > 2500u)
-		ticks64 = 2500u;
-	Uae2026JitCpuChargeCyclesNoEvents((int)ticks64);
-}
-
-extern "C" uae_u32 Uae2026JitRomVbrGlobalLookupBase(void);
-extern "C" void Uae2026JitRomVbrGlobalRemember(uae_u32 value);
-extern "C" uae_u32 Uae2026JitRomVbrGlobalCanonicalForReturn(uae_u32 value, uae_u32 retpc);
-
-static inline bool jit_emulate_rom_vbr_global_setter(uae_u32 pc)
-{
-	if (pc != 0x010003b6)
-		return false;
-	/* ROM helper: MOVEC VBR,A0; MOVE.L 4(SP),4(A0); RTS.  Keep this paired
-	   with the fast lookup helper below so the JIT always sees the canonical
-	   ROM global value even if exception/boot-stack transitions temporarily
-	   overwrite the low vector-table slot. */
-	const uae_u32 vbr = Uae2026JitRomVbrGlobalLookupBase();
-	const uae_u32 value = Uae2026JitLiveGetLong(regs.regs[15] + 4);
-	regs.regs[8] = vbr;
-	Uae2026JitLivePutLong(vbr + 4, value);
-	Uae2026JitRomVbrGlobalRemember(value);
-	return jit_fast_return_from_subroutine();
-}
-
-static inline bool jit_emulate_rom_vbr_global_lookup(uae_u32 pc)
-{
-	if (pc != 0x010003c2)
-		return false;
-	/* ROM helper: MOVEC VBR,A0; MOVE.L (A0,$0004),D0; RTS.
-	   Keep this as a native runtime helper in RAM-JIT mode because the normal
-	   compiled/fallback mixed path can keep stale A0 in the register allocator
-	   after MOVEC2 writes A0 through the canonical regs array. */
-	const uae_u32 ret = Uae2026JitLiveGetLong(regs.regs[15]);
-	const uae_u32 vbr = Uae2026JitRomVbrGlobalLookupBase();
-	const uae_u32 value = Uae2026JitRomVbrGlobalCanonicalForReturn(Uae2026JitLiveGetLong(vbr + 4), ret);
-	regs.regs[8] = vbr;
-	regs.regs[0] = value;
-	return jit_fast_return_from_subroutine();
-}
-
-extern "C" bool jit_op_rom_vbr_global_lookup_callsite(uae_u32 pc, uae_u32 retpc)
-{
-	if (!jit_allow_ram_dispatch_env())
-		return false;
-	(void)pc;
-	const uae_u32 vbr = Uae2026JitRomVbrGlobalLookupBase();
-	regs.regs[8] = vbr;
-	const uae_u32 dstpc = retpc ? retpc : (pc + 6);
-	regs.regs[0] = Uae2026JitRomVbrGlobalCanonicalForReturn(Uae2026JitLiveGetLong(vbr + 4), dstpc);
-	jit_set_guest_pc_fast(dstpc);
-	return true;
-}
-
-static inline bool jit_emulate_rom_rtc_write_byte(uae_u32 pc)
-{
-	if (pc != 0x010076c6)
-		return false;
-	const uae_u32 sp = regs.regs[15];
-	Uae2026JitRtcWriteByte(Uae2026JitLiveGetLong(sp + 4) & 0xffu, Uae2026JitLiveGetLong(sp + 8) & 0xffu);
-	return jit_fast_return_from_subroutine();
-}
-
-extern "C" bool jit_op_rom_rtc_write_byte_callsite(uae_u32 pc, uae_u32 retpc)
-{
-	if (!jit_allow_ram_dispatch_env())
-		return false;
-	const uae_u32 sp = regs.regs[15];
-	Uae2026JitRtcWriteByte(Uae2026JitLiveGetLong(sp) & 0xffu, Uae2026JitLiveGetLong(sp + 4) & 0xffu);
-	jit_set_guest_pc_fast(retpc ? retpc : (pc + 6));
-	return true;
-}
-
-static inline bool jit_emulate_rom_rtc_read_byte(uae_u32 pc)
-{
-	if (pc != 0x010077aa)
-		return false;
-	/* ROM helper: read one RTC/NVRAM byte by bit-banging SCR2.  In RAM-JIT
-	   mode, native-emitting the long SCR2 toggles is fragile because byte-lane
-	   IO side effects and the RTC serial phase must remain perfectly ordered.
-	   Preserve the visible subroutine result directly: D0 = byte, RTS with the
-	   caller's stack argument still in place. */
-	const uae_u32 arg = Uae2026JitLiveGetLong(regs.regs[15] + 4) & 0xffu;
-	const uae_u32 val = Uae2026JitRtcReadByte(arg);
-	regs.regs[0] = val;
-	regs.regs[1] = val;
-	SET_ZFLG((val & 0xffu) == 0);
-	SET_NFLG((val & 0x80u) != 0);
-	SET_VFLG(0);
-	SET_CFLG(0);
-	return jit_fast_return_from_subroutine();
-}
-
-extern "C" bool jit_op_rom_rtc_read_byte_callsite(uae_u32 pc, uae_u32 retpc)
-{
-	if (!jit_allow_ram_dispatch_env())
-		return false;
-	const uae_u32 arg = Uae2026JitLiveGetLong(regs.regs[15]) & 0xffu;
-	const uae_u32 val = Uae2026JitRtcReadByte(arg);
-	regs.regs[0] = val;
-	regs.regs[1] = val;
-	SET_ZFLG((val & 0xffu) == 0);
-	SET_NFLG((val & 0x80u) != 0);
-	SET_VFLG(0);
-	SET_CFLG(0);
-	jit_set_guest_pc_fast(retpc ? retpc : (pc + 6));
-	return true;
-}
-
-static inline bool jit_emulate_rom_delay_call(uae_u32 pc)
-{
-	if (pc != 0x010024cc)
-		return false;
-
-	/* ROM delay(x): SUB.L #3,(4,A7); if positive, burn time in cache-disable
-	   DBF loops; restore CACR; RTS.  The JIT runtime helper preserves the
-	   visible stack-argument mutation and call/return shape, but compresses the
-	   delay loops to bounded tick delivery. */
-	const uae_u32 arg_addr = regs.regs[15] + 4;
-	const uae_u32 arg = Uae2026JitLiveGetLong(arg_addr);
-	Uae2026JitLivePutLong(arg_addr, arg - 3u);
-	jit_charge_rom_delay_ticks(arg);
-	return jit_fast_return_from_subroutine();
-}
-
-static inline bool jit_emulate_rom_delay_body(uae_u32 pc)
-{
-	if (pc < 0x010024d2 || pc > 0x010024ee)
-		return false;
-	/* If the first SUBQ ran via an interpreter fallback inside a compiled
-	   caller block, dispatch can resume at the delay body.  Charge based on the
-	   already-mutated stack argument and return instead of native-emitting the
-	   cache/DBF body against VRAM-backed stack memory. */
-	jit_charge_rom_delay_ticks(Uae2026JitLiveGetLong(regs.regs[15] + 4) + 3u);
-	return jit_fast_return_from_subroutine();
-}
-
-static inline bool jit_emulate_rom_delay_dbf(uae_u32 pc, uae_u16 op)
-{
-	if ((pc != 0x010024f0 && pc != 0x010024f4) || (op & 0xfff8) != 0x51c8)
-		return false;
-	const uae_u16 disp = (uae_u16)get_iword(2);
-	if ((pc == 0x010024f0 && disp != 0xfffe) || (pc == 0x010024f4 && disp != 0xfffa))
-		return false;
-	const int reg = op & 7;
-	regs.regs[reg] = (regs.regs[reg] & 0xffff0000u) | 0xffffu;
-	jit_set_guest_pc_fast(pc + 4);
-	return true;
-}
-
-static inline bool jit_emulate_rom_cache_restore(uae_u32 pc, uae_u16 op)
-{
-	if (pc != 0x010024f8 || op != 0x4e7b || (uae_u16)get_iword(2) != 0x8002)
-		return false;
-	jit_set_guest_pc_fast(0x010024fc);
-	return true;
-}
-
-static inline bool jit_live_frame_addr(uae_u32 addr)
-{
-	return (addr >= 0x04000000u && addr < 0x08000000u) ||
-		(addr >= 0x0b000000u && addr < 0x0b040000u);
-}
-
-static inline bool jit_emulate_rom_scc_clock_reset(uae_u32 pc)
-{
-	if (pc < 0x01007900u || pc > 0x01007a8eu)
-		return false;
-	/* ROM SCC clock/reset helper.  The real routine bit-bangs the SCC clock
-	   programming registers at the 0x021180xx BMAP alias and calls a delay/math
-	   helper from inside the device-write sequence.  In RAM-mode dispatch, those
-	   special-memory writes can split a compiled block with stale continuation
-	   state.  Complete the routine natively from any known in-routine resume PC:
-	   preserve the visible ROM-global side effect, restore the outer frame, and
-	   return to the original caller. */
-	const uae_u32 global = Uae2026JitLiveGetLong(regs.vbr + 4);
-	if (global)
-		Uae2026JitLivePutByte(global + 4, Uae2026JitLiveGetByte(global + 4) & 0xcfu);
-
-	if (pc == 0x01007900u)
-		return jit_fast_return_from_subroutine();
-
-	uae_u32 fp = regs.regs[14];
-	uae_u32 outer_fp = 0;
-	if (pc <= 0x01007954u) {
-		outer_fp = fp;
-	} else if (pc <= 0x010079f0u) {
-		if (!jit_live_frame_addr(fp))
-			return false;
-		outer_fp = Uae2026JitLiveGetLong(fp);
-	} else {
-		if (!jit_live_frame_addr(fp))
-			return false;
-		uae_u32 caller_fp = Uae2026JitLiveGetLong(fp);
-		if (!jit_live_frame_addr(caller_fp))
-			return false;
-		outer_fp = Uae2026JitLiveGetLong(caller_fp);
-	}
-	if (!jit_live_frame_addr(outer_fp))
-		return false;
-
-	regs.regs[10] = Uae2026JitLiveGetLong(outer_fp - 8); /* A2 */
-	regs.regs[11] = Uae2026JitLiveGetLong(outer_fp - 4); /* A3 */
-	regs.regs[14] = Uae2026JitLiveGetLong(outer_fp);     /* caller FP */
-	regs.regs[15] = outer_fp + 4;                       /* caller return address */
-	return jit_fast_return_from_subroutine();
-}
-
-static inline bool jit_emulate_bulk_clear_loop(uae_u32 pc, uae_u16 op)
-{
-	if ((pc == 0x0000702a || pc == 0x0100702a || pc == 0x0000703c || pc == 0x0100703c) &&
-		op == 0x4298 && (uae_u16)get_iword(2) == 0x51c8 && (uae_u16)get_iword(4) == 0xfffc) {
-		uae_u32 count = (regs.regs[0] & 0xffffu) + 1u;
-		Uae2026JitFastClearLongs(regs.regs[8], count);
-		regs.regs[8] += count * 4u;
-		regs.regs[0] = (regs.regs[0] & 0xffff0000u) | 0xffffu;
-		jit_set_guest_pc_fast(pc + 6);
-		return true;
-	}
-	if ((pc == 0x00007050 || pc == 0x01007050) &&
-		op == 0x51ca && (uae_u16)get_iword(2) == 0xfffc) {
-		uae_u32 count = regs.regs[2] & 0xffffu;
-		Uae2026JitFastClearBytes(regs.regs[8], count);
-		regs.regs[8] += count;
-		regs.regs[2] = (regs.regs[2] & 0xffff0000u) | 0xffffu;
-		jit_set_guest_pc_fast(pc + 4);
-		return true;
-	}
-	return false;
-}
-
-static inline void jit_maybe_apply_runtime_helpers(void)
-{
-	if (!jit_allow_ram_dispatch_env())
-		return;
-	uae_u32 pc = m68k_getpc();
-	uae_u16 op = get_iword(0);
-	if (jit_emulate_rom_vbr_global_setter(pc) ||
-		jit_emulate_rom_vbr_global_lookup(pc) ||
-		jit_emulate_rom_rtc_write_byte(pc) ||
-		jit_emulate_rom_rtc_read_byte(pc) ||
-		jit_emulate_rom_delay_call(pc) ||
-		jit_emulate_rom_delay_dbf(pc, op) ||
-		jit_emulate_rom_cache_restore(pc, op) ||
-		jit_emulate_rom_scc_clock_reset(pc) ||
-		jit_emulate_rom_delay_body(pc) ||
-		jit_emulate_bulk_clear_loop(pc, op))
-		return;
-}
-
-static inline bool jit_low_virtual_singlestep_enabled(void)
-{
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("B2_JIT_LOW_VIRTUAL_SINGLESTEP");
-		cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
-	}
-	return cached != 0;
-}
-
-static inline uae_u32 jit_low_virtual_singlestep_start(void)
-{
-	static uae_u32 value = 0x00003200u;
-	static bool init = false;
-	if (!init) {
-		const char *env = getenv("B2_JIT_LOW_VIRTUAL_SINGLESTEP_START");
-		/* Default to the confirmed ROM probe window only.  Broader ranges are
-		 * useful diagnostics but can perturb later low-ROM paths and stall boot. */
-		value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0x00003200u;
-		init = true;
-	}
-	return value;
-}
-
-static inline uae_u32 jit_low_virtual_singlestep_end(void)
-{
-	static uae_u32 value = 0x00003400u;
-	static bool init = false;
-	if (!init) {
-		const char *env = getenv("B2_JIT_LOW_VIRTUAL_SINGLESTEP_END");
-		value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0x00003400u;
-		init = true;
-	}
-	return value;
-}
-
-static inline bool jit_maybe_singlestep_low_virtual(void)
-{
-	if (!jit_allow_ram_dispatch_env() || !jit_low_virtual_singlestep_enabled() || !regs.mmu_enabled)
-		return false;
-	const uae_u32 pc = m68k_getpc();
-	if (pc >= 0x01000000u || pc < jit_low_virtual_singlestep_start() || pc > jit_low_virtual_singlestep_end())
-		return false;
-	Uae2026JitPublishFallbackState(pc, 0xffffu);
-	regs.fault_pc = pc;
-	mmu_restart = true;
-	/* Match the primary 040 interpreter loop: publish restart state, then
-	 * clear mmu_opcode before the opcode fetch so an instruction-fetch fault
-	 * is distinguishable from a fault after a decoded opcode. */
-	mmu_opcode = (uae_u16)-1;
-	mmu_opcode = (uae_u16)Uae2026JitMmuFetchOpcode(pc);
-	Uae2026JitPublishFallbackState(pc, mmu_opcode);
-	jit_maybe_prepare_fallback_call_push_txn(pc, mmu_opcode);
-	jit_maybe_prepare_fallback_return_pop_txn(pc, mmu_opcode);
-	(void)(*cpufunctbl[mmu_opcode])(mmu_opcode);
-	cpu_check_ticks();
-	jit_maybe_begin_fallback_call_push_txn(pc, mmu_opcode);
-	return true;
-}
-
-static inline bool jit_dispatch_low_virtual_prefetch_guard_enabled(void)
-{
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("B2_JIT_LOW_VIRTUAL_PREFETCH_GUARD");
-		cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
-	}
-	return cached != 0;
-}
-
-static inline uae_u32 jit_dispatch_low_virtual_prefetch_start(void)
-{
-	static uae_u32 value = 0x00003200u;
-	static bool init = false;
-	if (!init) {
-		const char *env = getenv("B2_JIT_LOW_VIRTUAL_PREFETCH_START");
-		value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0x00003200u;
-		init = true;
-	}
-	return value;
-}
-
-static inline uae_u32 jit_dispatch_low_virtual_prefetch_end(void)
-{
-	static uae_u32 value = 0x00003400u;
-	static bool init = false;
-	if (!init) {
-		const char *env = getenv("B2_JIT_LOW_VIRTUAL_PREFETCH_END");
-		value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0x00003400u;
-		init = true;
-	}
-	return value;
-}
-
-static inline void jit_maybe_prefetch_guard_low_virtual_dispatch(uae_u32 pc)
-{
-	if (!jit_allow_ram_dispatch_env() || !jit_dispatch_low_virtual_prefetch_guard_enabled() || !regs.mmu_enabled)
-		return;
-	if (pc >= 0x01000000u || pc < jit_dispatch_low_virtual_prefetch_start() || pc > jit_dispatch_low_virtual_prefetch_end())
-		return;
-	/* Dispatch-level guard: cover low-virtual blocks that execute via
-	 * execute_normal()/fallback as well as blocks that become native L2.  Passing
-	 * 0xffff means there is no compile-time opcode literal to compare against;
-	 * Uae2026JitPrefetchGuard() republishes the MMU-fetched opcode on success. */
-	(void)Uae2026JitPrefetchGuard(pc, 0xffffu);
-}
-
-static inline bool jit_bad_pcp_guard_enabled(void)
-{
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("B2_JIT_GUARD_PCP");
-		cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
-	}
-	return cached != 0;
-}
-
-static inline bool jit_trace_dispatch_pc_enabled(void)
-{
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("B2_TRACE_DISPATCH_PC_START");
-		cached = (env && *env) ? 1 : 0;
-	}
-	return cached != 0;
-}
-
-static inline uae_u32 jit_trace_dispatch_pc_start(void)
-{
-	static uae_u32 value = 0;
-	static bool init = false;
-	if (!init) {
-		const char *env = getenv("B2_TRACE_DISPATCH_PC_START");
-		value = env && *env ? (uae_u32)strtoul(env, NULL, 0) : 0;
-		init = true;
-	}
-	return value;
-}
-
-static inline uae_u32 jit_trace_dispatch_pc_end(void)
-{
-	static uae_u32 value = 0xffffffffu;
-	static bool init = false;
-	if (!init) {
-		const char *env = getenv("B2_TRACE_DISPATCH_PC_END");
-		value = env && *env ? (uae_u32)strtoul(env, NULL, 0) : 0xffffffffu;
-		init = true;
-	}
-	return value;
-}
-
-static inline bool jit_trace_dispatch_ring_enabled(void)
-{
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("B2_TRACE_DISPATCH_RING");
-		cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
-	}
-	return cached != 0;
-}
-
-struct jit_dispatch_ring_entry {
-	unsigned long dispatch_seq;
-	uae_u32 guest_pc;
-	uae_u32 block_entry_pc;
-	uae_u32 d0, d1, d2, d4, d5;
-	uae_u32 a0, a1, a2, a3, a5, a7;
-	uae_u32 sr, intmask, spcflags;
-};
-
-static jit_dispatch_ring_entry jit_dispatch_ring[64];
-static unsigned long jit_dispatch_ring_count = 0;
-static bool jit_dispatch_ring_dumped = false;
-
-static void jit_trace_dispatch_ring_maybe_dump(unsigned long dispatch_seq, uae_u32 guest_pc, uae_u32 block_entry_pc)
-{
-	if (!jit_trace_dispatch_ring_enabled())
-		return;
-	jit_dispatch_ring_entry &slot = jit_dispatch_ring[jit_dispatch_ring_count % (sizeof(jit_dispatch_ring) / sizeof(jit_dispatch_ring[0]))];
-	MakeSR();
-	slot.dispatch_seq = dispatch_seq;
-	slot.guest_pc = guest_pc;
-	slot.block_entry_pc = block_entry_pc;
-	slot.d0 = (uae_u32)regs.regs[0];
-	slot.d1 = (uae_u32)regs.regs[1];
-	slot.d2 = (uae_u32)regs.regs[2];
-	slot.d4 = (uae_u32)regs.regs[4];
-	slot.d5 = (uae_u32)regs.regs[5];
-	slot.a0 = (uae_u32)regs.regs[8];
-	slot.a1 = (uae_u32)regs.regs[9];
-	slot.a2 = (uae_u32)regs.regs[10];
-	slot.a3 = (uae_u32)regs.regs[11];
-	slot.a5 = (uae_u32)regs.regs[13];
-	slot.a7 = (uae_u32)regs.regs[15];
-	slot.sr = (uae_u32)regs.sr;
-	slot.intmask = (uae_u32)regs.intmask;
-	slot.spcflags = (uae_u32)regs.spcflags;
-	jit_dispatch_ring_count++;
-
-	if (jit_dispatch_ring_dumped)
-		return;
-	if (!(guest_pc == 0x0400706a || guest_pc == 0x04007080 || guest_pc == 0x04007116 || guest_pc == 0x0400e1a4))
-		return;
-	jit_dispatch_ring_dumped = true;
-	fprintf(stderr, "DISPATCHRING dump trigger guest_pc=%08x dispatch=%lu count=%lu\n",
-		(unsigned)guest_pc, dispatch_seq, jit_dispatch_ring_count);
-	const unsigned long cap = (unsigned long)(sizeof(jit_dispatch_ring) / sizeof(jit_dispatch_ring[0]));
-	unsigned long start = jit_dispatch_ring_count > cap ? (jit_dispatch_ring_count - cap) : 0;
-	for (unsigned long i = start; i < jit_dispatch_ring_count; i++) {
-		const jit_dispatch_ring_entry &e = jit_dispatch_ring[i % cap];
-		fprintf(stderr,
-			"DISPATCHRING[%lu] dispatch=%lu guest_pc=%08x block_entry_pc=%08x d0=%08x d1=%08x d2=%08x d4=%08x d5=%08x a0=%08x a1=%08x a2=%08x a3=%08x a5=%08x a7=%08x sr=%04x intmask=%u spc=%08x\n",
-			i - start,
-			e.dispatch_seq,
-			(unsigned)e.guest_pc,
-			(unsigned)e.block_entry_pc,
-			(unsigned)e.d0,
-			(unsigned)e.d1,
-			(unsigned)e.d2,
-			(unsigned)e.d4,
-			(unsigned)e.d5,
-			(unsigned)e.a0,
-			(unsigned)e.a1,
-			(unsigned)e.a2,
-			(unsigned)e.a3,
-			(unsigned)e.a5,
-			(unsigned)e.a7,
-			(unsigned)e.sr,
-			(unsigned)e.intmask,
-			(unsigned)e.spcflags);
-	}
-}
-
-static void jit_log_dispatch_pc(unsigned long dispatch_seq,
-	uae_u32 guest_pc,
-	uae_u32 block_entry_pc,
-	uintptr block_entry_pcp,
-	uintptr block_entry_oldp,
-	unsigned long prev_dispatch_seq,
-	uae_u32 prev_block_entry_pc,
-	uintptr prev_block_entry_pcp,
-	uintptr prev_block_entry_oldp)
-{
-	static unsigned long log_count = 0;
-	jit_trace_dispatch_ring_maybe_dump(dispatch_seq, guest_pc, block_entry_pc);
-	if (log_count >= 400)
-		return;
-	MakeSR();
-	uae_u32 a5 = (uae_u32)regs.regs[13];
-	uae_u32 a5_byte = 0xffffffffu;
-	if (a5)
-		a5_byte = (uae_u32)get_byte(a5);
-	fprintf(stderr,
-		"DISPATCHPC[%lu] dispatch=%lu guest_pc=%08x regs.pc=%08x regs.pc_p=%p oldp=%p block_entry_pc=%08x block_entry_pcp=%p block_entry_oldp=%p prev_dispatch=%lu prev_block_entry_pc=%08x prev_block_entry_pcp=%p prev_block_entry_oldp=%p d0=%08x d1=%08x d4=%08x d5=%08x a0=%08x a1=%08x a2=%08x a3=%08x a5=%08x m[a5]=%02x a7=%08x sr=%04x intmask=%u spc=%08x\n",
-		++log_count,
-		dispatch_seq,
-		(unsigned)guest_pc,
-		(unsigned)regs.pc,
-		(void*)regs.pc_p,
-		(void*)regs.pc_oldp,
-		(unsigned)block_entry_pc,
-		(void*)block_entry_pcp,
-		(void*)block_entry_oldp,
-		prev_dispatch_seq,
-		(unsigned)prev_block_entry_pc,
-		(void*)prev_block_entry_pcp,
-		(void*)prev_block_entry_oldp,
-		(unsigned)regs.regs[0],
-		(unsigned)regs.regs[1],
-		(unsigned)regs.regs[4],
-		(unsigned)regs.regs[5],
-		(unsigned)regs.regs[8],
-		(unsigned)regs.regs[9],
-		(unsigned)regs.regs[10],
-		(unsigned)regs.regs[11],
-		a5,
-		(unsigned)(a5_byte & 0xff),
-		(unsigned)regs.regs[15],
-		(unsigned)regs.sr,
-		(unsigned)regs.intmask,
-		(unsigned)regs.spcflags);
-}
-
-static inline bool jit_bad_pcp_value(uintptr value, uae_u32 *guest_pc_out, uintptr *expected_pcp_out)
-{
-	const uae_u32 guest_pc = m68k_getpc();
-	const uintptr expected_pcp = (uintptr)get_real_address(guest_pc, 0, sz_word);
-	if (guest_pc_out)
-		*guest_pc_out = guest_pc;
-	if (expected_pcp_out)
-		*expected_pcp_out = expected_pcp;
-	return value != expected_pcp;
-}
-
-static void jit_log_bad_pcp(const char *phase,
-	unsigned long dispatch_seq,
-	uae_u32 block_entry_pc,
-	uintptr block_entry_pcp,
-	uintptr block_entry_oldp,
-	unsigned long prev_dispatch_seq,
-	uae_u32 prev_block_entry_pc,
-	uintptr prev_block_entry_pcp,
-	uintptr prev_block_entry_oldp,
-	uae_u32 guest_pc,
-	uintptr expected_pcp)
-{
-	static unsigned long log_count = 0;
-	if (log_count >= 32)
-		return;
-	fprintf(stderr,
-		"BAD_PCP[%lu] phase=%s dispatch=%lu guest_pc=%08x expected_pcp=%p regs.pc=%08x regs.pc_p=%p regs.pc_oldp=%p block_entry_pc=%08x block_entry_pcp=%p block_entry_oldp=%p prev_dispatch=%lu prev_block_entry_pc=%08x prev_block_entry_pcp=%p prev_block_entry_oldp=%p last_setpc_seq=%lu last_setpc_kind=%s last_setpc_value=%p d0=%08x d1=%08x a0=%08x a1=%08x a2=%08x a7=%08x spc=%08x\n",
-		++log_count,
-		phase,
-		dispatch_seq,
-		(unsigned)guest_pc,
-		(void*)expected_pcp,
-		(unsigned)regs.pc,
-		(void*)regs.pc_p,
-		(void*)regs.pc_oldp,
-		(unsigned)block_entry_pc,
-		(void*)block_entry_pcp,
-		(void*)block_entry_oldp,
-		prev_dispatch_seq,
-		(unsigned)prev_block_entry_pc,
-		(void*)prev_block_entry_pcp,
-		(void*)prev_block_entry_oldp,
-		jit_last_setpc_seq,
-		jit_setpc_kind_name(jit_last_setpc_kind),
-		(void*)jit_last_setpc_value,
-		(unsigned)regs.regs[0],
-		(unsigned)regs.regs[1],
-		(unsigned)regs.regs[8],
-		(unsigned)regs.regs[9],
-		(unsigned)regs.regs[10],
-		(unsigned)regs.regs[15],
-		(unsigned)regs.spcflags);
-}
-
-static inline bool jit_spin_trace_enabled(void)
-{
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("B2_JIT_TRACE_SPIN");
-		cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
-	}
-	return cached != 0;
-}
-
-static inline bool jit_is_late_spin_pc(uae_u32 pc)
-{
-	switch (pc) {
-	case 0x040b98f6:
-	case 0x040b98fa:
-	case 0x040b9a18:
-	case 0x040b9a1c:
-	case 0x040ba0a8:
-	case 0x040ba0b0:
-	case 0x040ba0b2:
-	case 0x040ba0d6:
-		return true;
-	default:
-		return false;
-	}
-}
-
-static inline bool jit_trace_0230_enabled(void)
-{
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("B2_TRACE_REGION_0230");
-		cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
-	}
-	return cached != 0;
-}
-
-static inline bool jit_is_region_0230_pc(uae_u32 pc)
-{
-	return pc >= 0x04000220 && pc <= 0x04000248;
-}
-
-static void jit_log_region_0230(unsigned long dispatch_seq,
-	uae_u32 guest_pc,
-	uae_u32 prev_guest_pc,
-	uae_u32 block_entry_pc,
-	uintptr block_entry_pcp,
-	uintptr block_entry_oldp,
-	unsigned long prev_dispatch_seq,
-	uae_u32 prev_block_entry_pc,
-	uintptr prev_block_entry_pcp,
-	uintptr prev_block_entry_oldp)
-{
-	static unsigned long log_count = 0;
-	if (log_count >= 128)
-		return;
-	fprintf(stderr,
-		"TRACE0230[%lu] dispatch=%lu guest_pc=%08x prev_guest_pc=%08x regs.pc=%08x regs.pc_p=%p regs.pc_oldp=%p block_entry_pc=%08x block_entry_pcp=%p block_entry_oldp=%p prev_dispatch=%lu prev_block_entry_pc=%08x prev_block_entry_pcp=%p prev_block_entry_oldp=%p last_setpc_seq=%lu last_setpc_kind=%s last_setpc_value=%p d0=%08x d1=%08x a0=%08x a1=%08x a2=%08x a7=%08x spc=%08x\n",
-		++log_count,
-		dispatch_seq,
-		(unsigned)guest_pc,
-		(unsigned)prev_guest_pc,
-		(unsigned)regs.pc,
-		(void*)regs.pc_p,
-		(void*)regs.pc_oldp,
-		(unsigned)block_entry_pc,
-		(void*)block_entry_pcp,
-		(void*)block_entry_oldp,
-		prev_dispatch_seq,
-		(unsigned)prev_block_entry_pc,
-		(void*)prev_block_entry_pcp,
-		(void*)prev_block_entry_oldp,
-		jit_last_setpc_seq,
-		jit_setpc_kind_name(jit_last_setpc_kind),
-		(void*)jit_last_setpc_value,
-		(unsigned)regs.regs[0],
-		(unsigned)regs.regs[1],
-		(unsigned)regs.regs[8],
-		(unsigned)regs.regs[9],
-		(unsigned)regs.regs[10],
-		(unsigned)regs.regs[15],
-		(unsigned)regs.spcflags);
-}
-
-static void jit_log_spin_trace(unsigned long dispatch_seq,
-	uae_u32 guest_pc,
-	uae_u32 prev_guest_pc,
-	uae_u32 block_entry_pc,
-	uintptr block_entry_pcp,
-	uintptr block_entry_oldp,
-	unsigned long prev_dispatch_seq,
-	uae_u32 prev_block_entry_pc,
-	uintptr prev_block_entry_pcp,
-	uintptr prev_block_entry_oldp)
-{
-	static unsigned long log_count = 0;
-	if (log_count >= 128)
-		return;
-	fprintf(stderr,
-		"SPIN_TRACE[%lu] dispatch=%lu guest_pc=%08x prev_guest_pc=%08x regs.pc=%08x regs.pc_p=%p regs.pc_oldp=%p block_entry_pc=%08x block_entry_pcp=%p block_entry_oldp=%p prev_dispatch=%lu prev_block_entry_pc=%08x prev_block_entry_pcp=%p prev_block_entry_oldp=%p last_setpc_seq=%lu last_setpc_kind=%s last_setpc_value=%p d0=%08x d1=%08x a0=%08x a1=%08x a2=%08x a7=%08x spc=%08x\n",
-		++log_count,
-		dispatch_seq,
-		(unsigned)guest_pc,
-		(unsigned)prev_guest_pc,
-		(unsigned)regs.pc,
-		(void*)regs.pc_p,
-		(void*)regs.pc_oldp,
-		(unsigned)block_entry_pc,
-		(void*)block_entry_pcp,
-		(void*)block_entry_oldp,
-		prev_dispatch_seq,
-		(unsigned)prev_block_entry_pc,
-		(void*)prev_block_entry_pcp,
-		(void*)prev_block_entry_oldp,
-		jit_last_setpc_seq,
-		jit_setpc_kind_name(jit_last_setpc_kind),
-		(void*)jit_last_setpc_value,
-		(unsigned)regs.regs[0],
-		(unsigned)regs.regs[1],
-		(unsigned)regs.regs[8],
-		(unsigned)regs.regs[9],
-		(unsigned)regs.regs[10],
-		(unsigned)regs.regs[15],
-		(unsigned)regs.spcflags);
-}
 
 void m68k_do_compile_execute(void)
 {
-	if (!ensure_aarch64_jit_runtime_ready())
-		jit_abort("ARM64 JIT dispatcher stubs were not initialized before compiled execution");
-	/* Previous can restore/copy the CPU register struct after compiler table
-	 * setup, which clears the JIT-only pointer fields. Re-stamp them at the
-	 * native dispatch boundary before generated code dereferences them. */
-	regs.raw_cputbl_count = raw_cputbl_count;
-	/* regs.mem_banks is stamped by the Previous bridge to point at Previous's
-	 * live addrbank table.  Do not overwrite it with the vendored static table
-	 * here, or special-memory codegen will miss device/VRAM/MMU side effects. */
-	if (!regs.mem_banks)
-		regs.mem_banks = (uintptr)mem_banks;
-	regs.cache_tags = (uintptr)cache_tags;
-	{
-		static int entry_trace = -1;
-		if (entry_trace < 0) {
-			const char *env = getenv("B2_JIT_ENTRY_TRACE");
-			entry_trace = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
-		}
-		if (entry_trace)
-			fprintf(stderr, "JIT_ENTRY pc=%08x spc=%08x a7=%08x\n", m68k_getpc(), (unsigned)regs.spcflags, regs.regs[15]);
+	if (!ensure_aarch64_jit_runtime_ready()) {
+		/* build_comp() normally reports the precise allocation failure itself.
+		   Keep this defensive path fail-closed in strict mode, but let ordinary
+		   execution transfer cleanly to m68k_execute() below. */
+		if (UseJIT)
+			disable_jit_runtime("ARM64 JIT dispatcher stubs were not initialized before compiled execution");
+		return;
 	}
-	static unsigned long _dc = 0;
 #if defined(CPU_AARCH64)
 	extern bool tick_inhibit;
 	/* Synchronous tick model: inhibit the async tick thread and drive
 	   one_tick() from this dispatch loop. This makes interrupt delivery
 	   deterministic based on block execution count rather than wall-clock. */
 	static bool use_sync_ticks = false;
+	static bool use_retirement_ticks = false;
 	static bool sync_ticks_init = false;
 	if (!sync_ticks_init) {
-		use_sync_ticks = getenv("B2_JIT_SYNC_TICKS") && getenv("B2_JIT_SYNC_TICKS")[0] == '1';
-		if (use_sync_ticks)
-			fprintf(stderr, "JIT: synchronous tick model enabled\n");
+		const char *sync_env = getenv("B2_JIT_SYNC_TICKS");
+		const char *retirement_env = getenv("B2_JIT_RETIREMENT_TICK_EVERY");
+		use_retirement_ticks = retirement_env && *retirement_env &&
+			strtoul(retirement_env, NULL, 0) != 0;
+		/* ARM64 full-JIT cannot safely let the async 60Hz tick thread mutate
+		   emulator state while generated code has live register/flag state.
+		   Use dispatcher-bound wall-clock ticks normally. An explicitly requested
+		   guest-retirement schedule supersedes wall-clock ticks from the first
+		   retired instruction, independently of path-capture diagnostics. */
+		use_sync_ticks = !(sync_env && sync_env[0] == '0');
 		sync_ticks_init = true;
 	}
-	unsigned long tick_counter = 0;
-	const unsigned long tick_interval = 8000; /* ~60Hz at typical block dispatch rate */
 #endif
 	for (;;) {
 #if defined(CPU_AARCH64)
-		jit_maybe_apply_runtime_helpers();
-		if (SPCFLAGS_TEST(SPCFLAG_ALL)) {
-			MakeSR();
-			if (m68k_do_specialties())
-				return;
-		}
-		{
-			extern bool UseJIT;
-			static bool ram_synced_for_dispatch = false;
-			uae_u32 _pc = m68k_getpc();
-			if (_pc == 0 && jit_allow_ram_dispatch_env() && !regs.mmu_enabled) {
-				static unsigned long zero_pc_log = 0;
-				uae_u32 vec2 = regs.vbr ? Uae2026JitLiveGetLong(regs.vbr + 8) : Uae2026JitLiveGetLong(8);
-				const bool log_zero_pc = zero_pc_log < 16 || (zero_pc_log % 1024) == 0;
-				if (log_zero_pc) {
-					fprintf(stderr, "JIT_ZERO_PC dispatch=%lu vbr=%08x vec2=%08x a7=%08x spc=%08x\n",
-						zero_pc_log + 1, (unsigned)regs.vbr, (unsigned)vec2,
-						(unsigned)regs.regs[15], (unsigned)regs.spcflags);
-				}
-				zero_pc_log++;
-				if (vec2) {
-					if (jit_allow_ram_dispatch_env()) {
-						/* Switch to supervisor state before translating the vector PC.
-						 * jit_set_guest_pc_fast() performs code-space MMU translation in
-						 * RAM/MMU mode; doing that while still in user mode faults on the
-						 * handler address and turns a recoverable zero-PC handoff into a
-						 * repeated user-mode access-error loop. */
-						regs.s = 1;
-						regs.m = 0;
-						if (Uae2026JitLastExceptionSp)
-							regs.isp = Uae2026JitLastExceptionSp;
-						if (regs.isp)
-							m68k_areg(regs, 7) = regs.isp;
-						MakeSR();
-					}
-					jit_set_guest_pc_fast(vec2);
-					_pc = vec2;
-					if (jit_allow_ram_dispatch_env() && log_zero_pc) {
-						fprintf(stderr, "JIT_ZERO_PC recovered pc=%08x sr=%04x a7=%08x isp=%08x last_ex_sp=%08x\n",
-							(unsigned)vec2, (unsigned)regs.sr, (unsigned)m68k_areg(regs, 7),
-							(unsigned)regs.isp, (unsigned)Uae2026JitLastExceptionSp);
-					}
-				}
-			}
-			if (jit_maybe_singlestep_low_virtual())
-				continue;
-			_pc = m68k_getpc();
-			jit_maybe_prefetch_guard_low_virtual_dispatch(_pc);
-			_pc = m68k_getpc();
-			if (jit_allow_ram_dispatch_env() && (regs.mmu_enabled || Uae2026OpcodeTestModeActive())) {
-				regs.pc = _pc;
-				regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(_pc);
-				regs.pc_oldp = regs.pc_p;
-			}
-			const bool in_rom = (_pc >= 0x01000000 && _pc < 0x01020000);
-			const bool in_ram = (_pc >= 0x04000000 && _pc < 0x08000000);
-			if (!in_rom && !jit_allow_ram_dispatch_env()) {
-				UseJIT = false;
-				return;
-			}
-			if (in_ram && !ram_synced_for_dispatch) {
-				Uae2026JitSyncRamToShadow();
-				ram_synced_for_dispatch = true;
-			}
-		}
-		if (use_sync_ticks)
+		if (use_sync_ticks || use_retirement_ticks)
 			tick_inhibit = true;
 #endif
 		((compiled_handler)(pushall_call_handler))();
 #if defined(CPU_AARCH64)
-		if (jit_allow_ram_dispatch_env())
-			Uae2026JitSyncVideoFromShadow();
-		{
-			static unsigned _jit_dispatch_tick = 0;
-			if (((++_jit_dispatch_tick) & 0xffu) == 0)
-				Uae2026JitCpuCheckTicks(1024);
-		}
-#endif
-		_dc++;
-		/* COLD-HOOK: promote stable direct edges from this call-safe C context
-		 * instead of an emitted compemu_raw_call at conditional-block-exit (that
-		 * bare LR-only call clobbers caller-saved x0-x18 the endblock needs).
-		 * Throttled walk of the active list; jit_maybe_promote_stable_edge
-		 * self-guards (stability + prefer_direct + dedup) so re-scanning is safe. */
-		{
-			static int cold_promote = -1;
-			if (cold_promote < 0) {
-				const char *e = getenv("B2_JIT_COLD_PROMOTE");
-				cold_promote = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
-			}
-			if (cold_promote && (_dc & 0x3F) == 0) {
-				blockinfo *cb = active;
-				int budget = 512;
-				static int census = -1;
-				if (census < 0) { const char *e=getenv("B2_JIT_PROMOTE_PROBE"); census = (e&&*e&&strcmp(e,"0"))?0:99; }
-				int n_total=0, n_edges=0, n_stable=0;
-				while (cb && budget-- > 0) {
-					n_total++;
-					if (cb->edge_exec_count[0] || cb->edge_exec_count[1]) n_edges++;
-					if (jit_dominant_edge_stable(cb)) {
-						n_stable++;
-						int slot = jit_dominant_edge_index(cb);
-						if (slot >= 0) {
-							jit_commit_edge_summary_for_rebuild(cb);
-							jit_maybe_promote_stable_edge(cb, (uae_u32)slot);
-						}
-					}
-					cb = cb->next;
-				}
-				if (census < 8) { census++;
-					extern unsigned long g_endblk_inreg, g_endblk_isconst;
-					fprintf(stderr, "COLD_CENSUS total=%d with_edges=%d stable=%d endblk_inreg=%lu endblk_isconst=%lu\n", n_total, n_edges, n_stable, g_endblk_inreg, g_endblk_isconst);
-					fflush(stderr); }
-			}
-		}
-		{
-			static unsigned long rom_exc_trace = 0;
-			static int rom_exc_trace_enabled = -1;
-			if (rom_exc_trace_enabled < 0) {
-				const char *env = getenv("PREVIOUS_JIT_TRACE_ROM_EXC");
-				rom_exc_trace_enabled = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
-			}
-			if (rom_exc_trace_enabled && rom_exc_trace < 80) {
-				uae_u32 _pc = m68k_getpc();
-				if (_pc >= 0x010016d8u && _pc <= 0x01001746u) {
-					uae_u32 fp = regs.regs[14];
-					uae_u32 f8c = 0, f8e = 0, f92 = 0, f44 = 0;
-					if ((fp >= 0x0b000000u && fp < 0x0b040000u) || (fp >= 0x04000000u && fp < 0x08000000u)) {
-						f8c = Uae2026JitLiveGetLong(fp + 0x8c);
-						f8e = Uae2026JitLiveGetLong(fp + 0x8e);
-						f92 = Uae2026JitLiveGetLong(fp + 0x92);
-						f44 = Uae2026JitLiveGetLong(fp + 0x44);
-					}
-					fprintf(stderr, "ROMEXC[%lu] pc=%08x d0=%08x d1=%08x d4=%08x d5=%08x d6=%08x a3=%08x a4=%08x a5=%08x fp=%08x a7=%08x f44=%08x f8c=%08x f8e=%08x f92=%08x sr=%04x\n",
-						++rom_exc_trace, _pc, (unsigned)regs.regs[0], (unsigned)regs.regs[1],
-						(unsigned)regs.regs[4], (unsigned)regs.regs[5], (unsigned)regs.regs[6],
-						(unsigned)regs.regs[11], (unsigned)regs.regs[12], (unsigned)regs.regs[13],
-						(unsigned)fp, (unsigned)regs.regs[15], (unsigned)f44,
-						(unsigned)f8c, (unsigned)f8e, (unsigned)f92, (unsigned)regs.sr);
-				}
-			}
-			static unsigned long gfx_loop_trace = 0;
-			static int gfx_loop_trace_enabled = -1;
-			if (gfx_loop_trace_enabled < 0) {
-				const char *env = getenv("PREVIOUS_JIT_TRACE_GFXLOOP");
-				gfx_loop_trace_enabled = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
-			}
-			if (gfx_loop_trace_enabled && gfx_loop_trace < 240) {
-				uae_u32 _pc = m68k_getpc();
-				if (_pc >= 0x010084f0u && _pc <= 0x01008820u) {
-					uae_u32 a2 = regs.regs[10];
-					uae_u32 w154 = 0, w156 = 0, l324 = 0, l328 = 0, l348 = 0;
-					if (a2 >= 0x0b000000u && a2 < 0x0b040000u) {
-						w154 = Uae2026JitLiveGetWord(a2 + 0x154);
-						w156 = Uae2026JitLiveGetWord(a2 + 0x156);
-						l324 = Uae2026JitLiveGetLong(a2 + 0x324);
-						l328 = Uae2026JitLiveGetLong(a2 + 0x328);
-						l348 = Uae2026JitLiveGetLong(a2 + 0x348);
-					}
-					fprintf(stderr, "GFXLOOP[%lu] pc=%08x d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x a1=%08x a2=%08x a3=%08x a5=%08x w154=%04x w156=%04x l324=%08x l328=%08x l348=%08x sr=%04x\n",
-						++gfx_loop_trace, _pc,
-						(unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[2],
-						(unsigned)regs.regs[3], (unsigned)regs.regs[4], (unsigned)regs.regs[5],
-						(unsigned)regs.regs[6], (unsigned)regs.regs[7], (unsigned)regs.regs[9],
-						(unsigned)regs.regs[10], (unsigned)regs.regs[11], (unsigned)regs.regs[13],
-						(unsigned)w154, (unsigned)w156, (unsigned)l324, (unsigned)l328,
-						(unsigned)l348, (unsigned)regs.sr);
-				}
-			}
-			static int dc_trace_enabled = -1;
-			if (dc_trace_enabled < 0) {
-				const char *env = getenv("PREVIOUS_JIT_TRACE_DC");
-				if (env && *env)
-					dc_trace_enabled = (strcmp(env, "0") != 0) ? 1 : 0;
+		if (use_sync_ticks && !use_retirement_ticks) {
+			/* Drive the 60Hz tick by WALL-CLOCK at this safe block-dispatch
+			   boundary. The async tick thread stays inhibited for thread-safety
+			   (it must not mutate emulator state while generated code holds live
+			   register/flag state). Tight compiled polling loops do not decrement
+			   jit_countdown, so using it as the trigger starves interrupt delivery. */
+			extern int32 jit_countdown;
+			if (jit_countdown < 0)
+				jit_countdown = JIT_DISPATCH_BUDGET;
+			static uint64 last_tick_us = 0;
+			const uint64 perf_freq = SDL_GetPerformanceFrequency();
+			const uint64 now_us = perf_freq
+				? (SDL_GetPerformanceCounter() * 1000000ull) / perf_freq : 0;
+			if (last_tick_us == 0)
+				last_tick_us = now_us;
+			if (now_us - last_tick_us >= 16667) {
+				/* Clamp catch-up so a stall cannot unleash a tick burst. */
+				if (now_us - last_tick_us > 100000)
+					last_tick_us = now_us;
 				else
-					dc_trace_enabled = 0;
-			}
-			if (dc_trace_enabled) {
-				static unsigned long dc_log = 0;
-				if (++dc_log % 10000 == 0 || (dc_log <= 500)) {
-					uae_u32 _pc = m68k_getpc();
-					fprintf(stderr, "DC[%lu] pc=%08x sr=%04x intmask=%u spc=%08x",
-						dc_log, _pc, (unsigned)regs.sr, (unsigned)regs.intmask,
-						(unsigned)regs.spcflags);
-					if (dc_log <= 30) {
-						fprintf(stderr, " D0=%08x D3=%08x D7=%08x A0=%08x A7=%08x",
-							regs.regs[0], regs.regs[3], regs.regs[7],
-							regs.regs[8], regs.regs[15]);
-					}
-					fprintf(stderr, "\n");
-					{
-						static int pc_words_initialized = 0;
-						static uae_u32 pc_words_start = 0, pc_words_end = 0;
-						static unsigned long pc_words_limit = 0, pc_words_count = 0;
-						if (!pc_words_initialized) {
-							const char *start_env = getenv("B2_JIT_DUMP_PC_WORDS_START");
-							const char *end_env = getenv("B2_JIT_DUMP_PC_WORDS_END");
-							const char *limit_env = getenv("B2_JIT_DUMP_PC_WORDS_LIMIT");
-							pc_words_start = (start_env && *start_env) ? (uae_u32)strtoul(start_env, NULL, 0) : 0;
-							pc_words_end = (end_env && *end_env) ? (uae_u32)strtoul(end_env, NULL, 0) : pc_words_start;
-							pc_words_limit = (limit_env && *limit_env) ? strtoul(limit_env, NULL, 0) : 64;
-							pc_words_initialized = 1;
-						}
-						if (pc_words_start && _pc >= pc_words_start && _pc <= pc_words_end && pc_words_count < pc_words_limit) {
-							fprintf(stderr, "PCWORDS[%lu] pc=%08x sr=%04x intmask=%u spc=%08x",
-								++pc_words_count, (unsigned)_pc, (unsigned)regs.sr,
-								(unsigned)regs.intmask, (unsigned)regs.spcflags);
-							for (int _wi = 0; _wi < 12; _wi++)
-								fprintf(stderr, " w%d=%04x", _wi, (unsigned)Uae2026JitLiveGetWord(_pc + (uae_u32)(_wi * 2)));
-							uae_u32 _poll_a4 = 0, _poll_d6 = 0, _poll_d5 = 0;
-							if (regs.regs[12] >= 0x04000000u && regs.regs[12] < 0x08000000u)
-								_poll_a4 = Uae2026JitLiveGetLong((uae_u32)regs.regs[12]);
-							if (regs.regs[6] >= 0x04000000u && regs.regs[6] < 0x08000000u)
-								_poll_d6 = Uae2026JitLiveGetLong((uae_u32)regs.regs[6]);
-							if (regs.regs[5] >= 0x04000000u && regs.regs[5] < 0x08000000u)
-								_poll_d5 = Uae2026JitLiveGetLong((uae_u32)regs.regs[5]);
-							fprintf(stderr,
-								" d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x"
-								" a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x"
-								" live=%08x poll_a4=%08x poll_d6=%08x poll_d5=%08x\n",
-								(unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[2], (unsigned)regs.regs[3],
-								(unsigned)regs.regs[4], (unsigned)regs.regs[5], (unsigned)regs.regs[6], (unsigned)regs.regs[7],
-								(unsigned)regs.regs[8], (unsigned)regs.regs[9], (unsigned)regs.regs[10], (unsigned)regs.regs[11],
-								(unsigned)regs.regs[12], (unsigned)regs.regs[13], (unsigned)regs.regs[14], (unsigned)regs.regs[15],
-								(unsigned)InterruptFlags, (unsigned)_poll_a4, (unsigned)_poll_d6, (unsigned)_poll_d5);
-						}
-					}
-					static int dump_once = 0;
-					if (!dump_once && _pc < 0x00800000 && dc_log > 30000) {
-						dump_once = 1;
-						uae_u8 *p = get_real_address(_pc);
-						fprintf(stderr, "RAMDUMP pc=%08x:", _pc);
-						for (int _i = 0; _i < 32; _i++)
-							fprintf(stderr, " %02x", p[_i]);
-						fprintf(stderr, "\n");
-						fprintf(stderr, "REGDUMP2 D0=%08x D1=%08x D2=%08x D3=%08x D4=%08x D5=%08x D6=%08x D7=%08x\n",
-							regs.regs[0], regs.regs[1], regs.regs[2], regs.regs[3],
-							regs.regs[4], regs.regs[5], regs.regs[6], regs.regs[7]);
-						fprintf(stderr, "REGDUMP2 A0=%08x A1=%08x A2=%08x A3=%08x A4=%08x A5=%08x A6=%08x A7=%08x\n",
-							regs.regs[8], regs.regs[9], regs.regs[10], regs.regs[11],
-							regs.regs[12], regs.regs[13], regs.regs[14], regs.regs[15]);
-						fprintf(stderr, "REGDUMP2 pc_p=%p pc_oldp=%p pc=%08x sr=%04x isp=%08x usp=%08x msp=%08x\n",
-							(void*)regs.pc_p, (void*)regs.pc_oldp, regs.pc,
-							regs.sr, regs.isp, regs.usp, regs.msp);
-						/* Also dump what pc_p actually points to */
-						if (regs.pc_p) {
-							uae_u8 *pp = (uae_u8*)regs.pc_p;
-							fprintf(stderr, "CODEAT pc_p:");
-							for (int _i = 0; _i < 32; _i++)
-								fprintf(stderr, " %02x", pp[_i]);
-							fprintf(stderr, "\n");
-						}
-					}
-				}
-			}
-		}
-#if defined(CPU_AARCH64)
-		if (use_sync_ticks) {
-			tick_inhibit = false;
-			extern int32 jit_countdown;
-			if (jit_countdown < 0) {
-				jit_countdown = 10000000;
+					last_tick_us += 16667;
 				jit_one_tick();
 			}
 		}
+		/* Unlike BasiliskII's Time Manager, Previous's CycInt queue is drained
+		   by jit_one_tick() through Uae2026JitCpuCheckTicks(). */
 		{
 			extern int32 jit_countdown;
-			if (jit_countdown < 0) {
-				jit_one_tick();
-				jit_countdown = 10000000;
-			}
+			if (jit_countdown < 0)
+				jit_countdown = JIT_DISPATCH_BUDGET;
 		}
 #endif
-		jit_poll_interrupt_pins_for_dispatch();
 		if (SPCFLAGS_TEST(SPCFLAG_ALL)) {
 			/* Sync M68K SR from JIT flags before handling interrupts.
 			   The compiled code may have changed intmask via MOVE to SR
@@ -1340,26 +181,22 @@ void m68k_do_compile_execute(void)
 
 void m68k_compile_execute(void)
 {
-setjmpagain:
-	TRY(prb) {
-		for (;;) {
-			if (quit_program > 0) {
-				if (quit_program == 1)
-					break;
-				quit_program = 0;
-				m68k_reset();
-			}
-			m68k_do_compile_execute();
+	for (;;) {
+		if (quit_program > 0) {
+			if (quit_program == 1)
+				break;
+			quit_program = 0;
+			m68k_reset();
 		}
-	}
-	CATCH(prb) {
-		fprintf(stderr,
-			"m68k_compile_execute: exception %d pc=%08x fault_pc=%08x addr=%08x sp=%08x\n",
-			(int)prb, (unsigned)m68k_getpc(), (unsigned)regs.fault_pc,
-			(unsigned)regs.mmu_fault_addr, (unsigned)regs.regs[15]);
-		flush_icache();
-		Exception(prb, 0);
-		goto setjmpagain;
+		m68k_do_compile_execute();
+		if (!UseJIT) {
+			/* JIT initialization can fail lazily on the first execution request.
+			   Timer ownership and preferences were already restored by
+			   disable_jit_runtime(); continue in the ordinary interpreter rather
+			   than aborting or returning from the emulator entry point. */
+			m68k_execute();
+			return;
+		}
 	}
 }
 
@@ -1375,24 +212,6 @@ void get_n_addr(int address, int dest, int tmp) { (void)tmp; get_n_addr(address,
 void get_n_addr_jmp(int address, int dest, int tmp) { (void)tmp; get_n_addr_jmp(address, dest); }
 void calc_disp_ea_020(int base, uae_u32 dp, int target, int tmp) { (void)tmp; calc_disp_ea_020(base, dp, target); }
 void register_branch(uae_u32 not_taken, uae_u32 taken, uae_u8 cond) { register_branch((uintptr)not_taken, (uintptr)taken, cond); }
-
-extern "C" bool jit_op_rom_delay_bsr_callsite(uae_u32 pc, uae_u32 retpc)
-{
-	if (!jit_allow_ram_dispatch_env())
-		return false;
-	/* Caller-side ROM delay(x) compression.  At a BSR/JSR-to-delay callsite,
-	   the visible post-return state is: A7 back at the argument, argument
-	   decremented by 3, elapsed ticks charged, PC at the return address.  Avoid
-	   pushing a temporary return address through the 0x0bxxxxxx VRAM/MMU stack
-	   path during block tracing/native execution. */
-	uae_u32 sp = regs.regs[15];
-	uae_u32 arg = Uae2026JitLiveGetLong(sp);
-	Uae2026JitLivePutLong(sp, arg - 3u);
-	jit_charge_rom_delay_ticks(arg);
-	jit_set_guest_pc_fast(retpc ? retpc : (pc + 6));
-	return true;
-}
-
 #include "compemu_legacy_arm64_compat.cpp"
 #else
 
@@ -1759,7 +578,7 @@ static inline unsigned int cft_map (unsigned int f)
 
 uae_u8* start_pc_p;
 uae_u32 start_pc;
-uae_u32 current_block_pc_p;
+uintptr current_block_pc_p; /* host pointer to current block's start — matches taken_pc_p type */
 static uintptr current_block_start_target;
 uae_u32 needed_flags;
 static uintptr next_pc_p;
@@ -3150,7 +1969,7 @@ static inline void disassociate(int r)
 	evict(r);
 }
 
-/* XXFIXME: val may be 64bit address for PC_P */
+/* Note: val field is uintptr on ARM64 (compemu_arm.h overrides compemu.h via include ordering) */
 static inline void set_const(int r, uae_u32 val)
 {
 	disassociate(r);
@@ -4775,12 +3594,12 @@ static inline void writemem(int address, int source, int offset, int size, int t
 {
 	int f=tmp;
 
-	switch (offset) {
-	case 3 * SIZEOF_VOID_P: mov_l_ri(f, (uintptr)Uae2026JitBankPutLongExport); break;
-	case 4 * SIZEOF_VOID_P: mov_l_ri(f, (uintptr)Uae2026JitBankPutWordExport); break;
-	case 5 * SIZEOF_VOID_P: mov_l_ri(f, (uintptr)Uae2026JitBankPutByteExport); break;
-	default: mov_l_ri(f, (uintptr)Uae2026JitBankPutByteExport); break;
-	}
+	mov_l_rr(f,address);
+	shrl_l_ri(f,16);   /* The index into the mem bank table */
+	mov_l_rm_indexed(f,uae_p32(mem_banks),f,SIZEOF_VOID_P); /* FIXME: is SIZEOF_VOID_P correct? */
+	/* Now f holds a pointer to the actual membank */
+	mov_l_rR(f,f,offset);
+	/* Now f holds the address of the b/w/lput function */
 	call_r_02(f,address,source,4,size);
 	forget_about(tmp);
 }
@@ -4789,7 +3608,7 @@ static inline void writemem(int address, int source, int offset, int size, int t
 void writebyte(int address, int source, int tmp)
 {
 #ifdef UAE
-	if (true || (special_mem & S_WRITE) || distrust_byte())
+	if ((special_mem & S_WRITE) || distrust_byte())
 		writemem_special(address, source, 5 * SIZEOF_VOID_P, 1, tmp);
 	else
 #endif
@@ -4800,7 +3619,7 @@ static inline void writeword_general(int address, int source, int tmp,
 	int clobber)
 {
 #ifdef UAE
-	if (true || (special_mem & S_WRITE) || distrust_word())
+	if ((special_mem & S_WRITE) || distrust_word())
 		writemem_special(address, source, 4 * SIZEOF_VOID_P, 2, tmp);
 	else
 #endif
@@ -4821,7 +3640,7 @@ static inline void writelong_general(int address, int source, int tmp,
 	int clobber)
 {
 #ifdef UAE
-	if (true || (special_mem & S_WRITE) || distrust_long())
+	if ((special_mem & S_WRITE) || distrust_long())
 		writemem_special(address, source, 3 * SIZEOF_VOID_P, 4, tmp);
 	else
 #endif
@@ -4886,24 +3705,12 @@ static inline void readmem(int address, int dest, int offset, int size, int tmp)
 {
 	int f=tmp;
 
-	if (offset != 6 * SIZEOF_VOID_P) {
-		switch (offset) {
-		case 0 * SIZEOF_VOID_P: mov_l_ri(f, (uintptr)Uae2026JitBankGetLongExport); break;
-		case 1 * SIZEOF_VOID_P: mov_l_ri(f, (uintptr)Uae2026JitBankGetWordExport); break;
-		case 2 * SIZEOF_VOID_P: mov_l_ri(f, (uintptr)Uae2026JitBankGetByteExport); break;
-		default: mov_l_ri(f, (uintptr)Uae2026JitBankGetByteExport); break;
-		}
-		call_r_11(dest,f,address,size,4);
-		forget_about(tmp);
-		return;
-	}
-
 	mov_l_rr(f,address);
 	shrl_l_ri(f,16);   /* The index into the mem bank table */
 	mov_l_rm_indexed(f,uae_p32(mem_banks),f,SIZEOF_VOID_P); /* FIXME: is SIZEOF_VOID_P correct? */
 	/* Now f holds a pointer to the actual membank */
 	mov_l_rR(f,f,offset);
-	/* Now f holds the address of the xlateaddr function */
+	/* Now f holds the address of the b/w/lget function */
 	call_r_11(dest,f,address,size,4);
 	forget_about(tmp);
 }
@@ -4912,7 +3719,7 @@ static inline void readmem(int address, int dest, int offset, int size, int tmp)
 void readbyte(int address, int dest, int tmp)
 {
 #ifdef UAE
-	if (true || (special_mem & S_READ) || distrust_byte())
+	if ((special_mem & S_READ) || distrust_byte())
 		readmem_special(address, dest, 2 * SIZEOF_VOID_P, 1, tmp);
 	else
 #endif
@@ -4922,7 +3729,7 @@ void readbyte(int address, int dest, int tmp)
 void readword(int address, int dest, int tmp)
 {
 #ifdef UAE
-	if (true || (special_mem & S_READ) || distrust_word())
+	if ((special_mem & S_READ) || distrust_word())
 		readmem_special(address, dest, 1 * SIZEOF_VOID_P, 2, tmp);
 	else
 #endif
@@ -4932,7 +3739,7 @@ void readword(int address, int dest, int tmp)
 void readlong(int address, int dest, int tmp)
 {
 #ifdef UAE
-	if (true || (special_mem & S_READ) || distrust_long())
+	if ((special_mem & S_READ) || distrust_long())
 		readmem_special(address, dest, 0 * SIZEOF_VOID_P, 4, tmp);
 	else
 #endif
@@ -5798,7 +4605,9 @@ void build_comp(void)
 	}
 
 	for (i = 0; nftbl[i].opcode < 65536; i++) {
-		bool uses_fpu = (tbl[i].specific & COMP_OPCODE_USES_FPU) != 0;
+		/* Normal and no-flags tables are independently generated; classify the
+		   entry actually being installed rather than assuming slot parity. */
+		bool uses_fpu = (nftbl[i].specific & COMP_OPCODE_USES_FPU) != 0;
 		if (uses_fpu && avoid_fpu)
 			nfcompfunctbl[cft_map(nftbl[i].opcode)] = NULL;
 		else
@@ -6828,9 +5637,7 @@ void exec_nostats(void)
 {
 	int _run_count = 0;
 	for (;;)  { 
-		uae_u32 op_pc = m68k_getpc();
-		uae_u32 opcode = jit_fetch_dispatch_opcode(op_pc);
-		Uae2026JitMmuTxnCommit();
+		uae_u32 opcode = GET_OPCODE;
 #if FLIGHT_RECORDER
 		m68k_record_step(m68k_getpc(), cft_map(opcode));
 #endif
@@ -6847,11 +5654,8 @@ void exec_nostats(void)
 			}
 		}
 #endif
-		jit_maybe_prepare_fallback_call_push_txn(op_pc, (uae_u16)opcode);
-		jit_maybe_prepare_fallback_return_pop_txn(op_pc, (uae_u16)opcode);
 		(*cpufunctbl[opcode])(opcode);
 		cpu_check_ticks();
-		jit_maybe_begin_fallback_call_push_txn(op_pc, (uae_u16)opcode);
 		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL) || ++_run_count >= MAXRUN) {
 			return;
 		}
@@ -6877,18 +5681,29 @@ void execute_normal(void)
 		start_pc = regs.pc; 
 #endif
 		for (;;)  { /* Take note: This is the do-it-normal loop */
+			/* Optional verifier block-split probe. End the trace after at least
+			   one retired instruction so the next dispatch begins at the requested
+			   architectural boundary. */
+			{
+				static int bb_init = -1;
+				static uae_u32 bb_target = 0;
+				if (bb_init < 0) {
+					const char* e = getenv("B2_FORCE_BLOCK_BREAK_BEFORE");
+					bb_target = (e && *e) ? (uae_u32)strtoul(e, 0, 0) : 0;
+					bb_init = 0;
+				}
+				if (bb_target && blocklen > 0 && m68k_getpc() == bb_target) {
+					compile_block(pc_hist, blocklen);
+					return;
+				}
+			}
 			pc_hist[blocklen++].location = (uae_u16 *)regs.pc_p;
-			uae_u32 op_pc = m68k_getpc();
-			uae_u32 opcode = jit_fetch_dispatch_opcode(op_pc);
-			Uae2026JitMmuTxnCommit();
+			uae_u32 opcode = GET_OPCODE;
 #if FLIGHT_RECORDER
 			m68k_record_step(m68k_getpc(), cft_map(opcode));
 #endif
-			jit_maybe_prepare_fallback_call_push_txn(op_pc, (uae_u16)opcode);
-			jit_maybe_prepare_fallback_return_pop_txn(op_pc, (uae_u16)opcode);
 			(*cpufunctbl[opcode])(opcode);
 			cpu_check_ticks();
-			jit_maybe_begin_fallback_call_push_txn(op_pc, (uae_u16)opcode);
 			if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL) || blocklen>=MAXRUN) {
 				compile_block(pc_hist, blocklen);
 				return; /* We will deal with the spcflags in the caller */
@@ -6973,18 +5788,36 @@ extern "C" void jit_trace_add(uae_u32 pc, uae_u32 opcode)
 extern "C" void jit_trace_pc_hit(uae_u32 pc, uae_u32 tagged_opcode)
 {
     static unsigned long tc = 0;
+    static int armed = -1;       /* -1 = uninit, 0 = waiting for anchor, 1 = armed */
+    static uae_u32 anchor = 0;
+    static unsigned long limit = 0;
+    static unsigned long after = 0;
+    if (armed < 0) {
+        const char *aenv = getenv("B2_TRACE_ANCHOR_PC");
+        anchor = (aenv && *aenv) ? (uae_u32)strtoul(aenv, NULL, 0) : 0;
+        const char *lenv = getenv("B2_JIT_TRACE_LIMIT");
+        limit = (lenv && *lenv) ? strtoul(lenv, NULL, 0) : 400;
+        const char *after_env = getenv("B2_JIT_TRACE_AFTER");
+        after = (after_env && *after_env) ? strtoul(after_env, NULL, 0) : 0;
+        armed = anchor ? 0 : 1;  /* no anchor => emit immediately */
+    }
+    if (jit_guest_path_index < after)
+        return;
+    if (!armed) {
+        if (pc == anchor)
+            armed = 1;
+        else
+            return;
+    }
     const uae_u16 opcode = (uae_u16)(tagged_opcode & 0xffff);
     const uae_u16 kind = (uae_u16)(tagged_opcode >> 16);
     const char *kind_name = kind == 1 ? "compiled" :
         kind == 2 ? "fallback" : "unknown";
-    if (tc >= 400)
+    if (tc >= limit)
         return;
     MakeSR();
-    uae_u32 a6 = (uae_u32)regs.regs[14];
-    uae_u32 gate_op = get_long(a6 + 0x10);   /* TST.L (0x10,A6) operand at init gate 0x01000c04 */
-    int zflag = (int)((regflags.nzcv >> 30) & 1);
     fprintf(stderr,
-        "JITPCHIT[%lu] kind=%s pc=%08x op=%04x regs.pc=%08x regs.pc_p=%p oldp=%p sr=%04x intmask=%u d0=%08x d1=%08x d2=%08x a0=%08x a1=%08x a2=%08x a6=%08x a7=%08x gate[a6+10]=%08x Z=%d spc=%08x\n",
+        "JITPCHIT[%lu] kind=%s pc=%08x op=%04x regs.pc=%08x regs.pc_p=%p oldp=%p sr=%04x intmask=%u d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x spc=%08x\n",
         ++tc,
         kind_name,
         (unsigned)pc,
@@ -6997,13 +5830,19 @@ extern "C" void jit_trace_pc_hit(uae_u32 pc, uae_u32 tagged_opcode)
         (unsigned)regs.regs[0],
         (unsigned)regs.regs[1],
         (unsigned)regs.regs[2],
+        (unsigned)regs.regs[3],
+        (unsigned)regs.regs[4],
+        (unsigned)regs.regs[5],
+        (unsigned)regs.regs[6],
+        (unsigned)regs.regs[7],
         (unsigned)regs.regs[8],
         (unsigned)regs.regs[9],
         (unsigned)regs.regs[10],
-        (unsigned)a6,
+        (unsigned)regs.regs[11],
+        (unsigned)regs.regs[12],
+        (unsigned)regs.regs[13],
+        (unsigned)regs.regs[14],
         (unsigned)regs.regs[15],
-        (unsigned)gate_op,
-        zflag,
         (unsigned)regs.spcflags);
 }
 #endif

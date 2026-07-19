@@ -31,6 +31,8 @@
  *
  */
 
+#include "arm64_branch_patch.h"
+
 /********************************************************************
  * CPU functions exposed to gencomp. Both CREATE and EMIT time      *
  ********************************************************************/
@@ -225,13 +227,6 @@ MIDFUNC(2,mov_l_mi,(IMPTR d, IMPTR s))
 		uintptr idx = d - (uintptr) &regs;
 		if(d == (uintptr) &(regs.pc_p) || d == (uintptr) &(regs.pc_oldp)) {
 			LOAD_U64(REG_WORK2, s);  // pc_p/pc_oldp are 64-bit host pointers
-			if (jit_trace_setpc_env()) {
-				STR_xXpre(REG_WORK2, RSP_INDEX, -16);
-				LDR_xXi(REG_PAR1, RSP_INDEX, 0);
-				LOAD_U32(REG_PAR2, 7);
-				compemu_raw_call((uintptr)jit_trace_setpc_value);
-				LDR_xXpost(REG_WORK2, RSP_INDEX, 16);
-			}
 			STR_xXi(REG_WORK2, R_REGSTRUCT, idx);
 		} else {
 			LOAD_U32(REG_WORK2, (uae_u32)s);
@@ -480,13 +475,6 @@ MIDFUNC(2,mov_l_mr,(IMPTR d, RR4 s))
 	if(d >= (uintptr)&regs && d < (uintptr)&regs + 32760) {
 		uintptr idx = d - (uintptr) &regs;
 		if(d == (uintptr)&regs.pc_oldp || d == (uintptr)&regs.pc_p) {
-			if (jit_trace_setpc_env()) {
-				STR_xXpre(s, RSP_INDEX, -16);
-				LDR_xXi(REG_PAR1, RSP_INDEX, 0);
-				LOAD_U32(REG_PAR2, 8);
-				compemu_raw_call((uintptr)jit_trace_setpc_value);
-				LDR_xXpost(s, RSP_INDEX, 16);
-			}
 			STR_xXi(s, R_REGSTRUCT, idx);
 		} else
 			STR_wXi(s, R_REGSTRUCT, idx);
@@ -606,18 +594,16 @@ MENDFUNC(1,forget_about,(W4 r))
 MIDFUNC(2,arm_ADD_l,(RW4 d, RR4 s))
 {
 	if (isconst(s)) {
-		uintptr val = live.state[s].val;
-		#ifdef CPU_AARCH64
-		// When adding a 32-bit M68K displacement to PC_P (a 64-bit host
-		// pointer), sign-extend the displacement first.  M68K branch
-		// offsets are signed, but stored as unsigned uintptr in
-		// live.state[].val.  Adding an unsigned 0xFFFFFE42 (i.e. -0x1BE)
-		// to a 64-bit pointer causes carry into bit 32, producing 0x4...
-		// instead of the correct 0x3...
-		if (d == PC_P && val <= (uintptr)0xFFFFFFFFULL)
-			val = (uintptr)(uae_s64)(uae_s32)val;
+#ifdef CPU_AARCH64
+		/* PC_P plus a register-sourced M68K displacement is pointer-width
+		   arithmetic even when constant-folded. Keep that type decision at
+		   the destination contract rather than routing it through guest ADD.L. */
+		if (d == PC_P) {
+			COMPCALL(arm_ADD_ptr_ri)(d, (uae_s32)(uae_u32)live.state[s].val);
+			return;
+		}
 #endif
-		COMPCALL(arm_ADD_l_ri)(d, val);
+		COMPCALL(arm_ADD_l_ri)(d, live.state[s].val);
 		return;
 	}
 
@@ -659,73 +645,65 @@ MIDFUNC(2,arm_ADD_ldiv8,(RW4 d, RR4 s))
 }
 MENDFUNC(2,arm_ADD_ldiv8,(RW4 d, RR4 s))
 
-static inline bool arm64_low32_hostptr_imm(uintptr i)
+/* Add a host pointer base to a signed 32-bit M68K displacement.  This is a
+   type contract, not a value heuristic: a guest immediate may numerically
+   overlap a low host mapping and must still use ordinary 32-bit arithmetic. */
+MIDFUNC(2,arm_ADD_l_ri_hostptr,(RW4 d, IMPTR base))
 {
-	uintptr base = (uintptr)RAMBaseHost;
-	uintptr limit = base + RAMSize + ROMSize + 0x100000;
-	if (i >= base && i < limit)
-		return true;
-	if (base <= (uintptr)0xFFFFFFFFULL && limit <= (uintptr)0xFFFFFFFFULL + 1) {
-		uintptr i32 = (uintptr)(uae_u32)i;
-		uintptr b32 = (uintptr)(uae_u32)base;
-		uintptr l32 = (uintptr)(uae_u32)limit;
-		if (i32 >= b32 && i32 < l32)
-			return true;
+	if (isconst(d)) {
+		const uae_s64 displacement = (uae_s32)(uae_u32)live.state[d].val;
+		live.state[d].val = base + (uintptr)displacement;
+		return;
 	}
-	return false;
-}
 
+	d = rmw(d);
+	LOAD_U64(REG_WORK1, base);
+	ADD_xxwEX(d, REG_WORK1, d, EX_SXTW);
+	unlock2(d);
+}
+MENDFUNC(2,arm_ADD_l_ri_hostptr,(RW4 d, IMPTR base))
+
+/* Pointer-width increment for PC_P and pointer-valued scratch registers. */
+MIDFUNC(2,arm_ADD_ptr_ri,(RW4 d, IM32 offset))
+{
+	if (!offset)
+		return;
+	if (isconst(d)) {
+		live.state[d].val += (uintptr)(uae_s64)offset;
+		return;
+	}
+
+	d = rmw(d);
+	if (offset > 0 && offset <= 0xfff) {
+		ADD_xxi(d, d, offset);
+	} else if (offset < 0 && offset >= -0xfff) {
+		SUB_xxi(d, d, -offset);
+	} else {
+		LOAD_U64(REG_WORK1, (uintptr)(uae_s64)offset);
+		ADD_xxx(d, d, REG_WORK1);
+	}
+	unlock2(d);
+}
+MENDFUNC(2,arm_ADD_ptr_ri,(RW4 d, IM32 offset))
+
+/* Ordinary M68K long arithmetic is always modulo 2^32. */
 MIDFUNC(2,arm_ADD_l_ri,(RW4 d, IMPTR i))
 {
-	if (!i)
+	const uae_u32 i32 = (uae_u32)i;
+	if (!i32)
 		return;
-	const bool hostptr_imm = arm64_low32_hostptr_imm(i);
 	if (isconst(d)) {
-		// Preserve full 64-bit result when d is PC_P, when i is a host
-		// pointer immediate (even if it currently fits in 32 bits on Linux),
-		// or when val already exceeds 32 bits.
-		if (d == PC_P || i > (IMPTR)0xFFFFFFFFULL || hostptr_imm || live.state[d].val > (uintptr)0xFFFFFFFFULL) {
-			uintptr val = live.state[d].val;
-			// When adding a host pointer base to a 32-bit M68K displacement,
-			// sign-extend the displacement first. Otherwise values like
-			// 0xFFFFFFFA are treated as +4GB-6 and produce 0x1........ PCs.
-			if (val <= (uintptr)0xFFFFFFFFULL && (i > (IMPTR)0xFFFFFFFFULL || hostptr_imm))
-				val = (uintptr)(uae_s64)(uae_s32)(uae_u32)val;
-			live.state[d].val = val + i;
-		} else {
-			live.state[d].val = (uae_u32)(live.state[d].val + i);
-		}
+		live.state[d].val = (uae_u32)(live.state[d].val + i32);
 		return;
 	}
 
-	// Use 64-bit ADD when d is PC_P or when the immediate is a host pointer
-	// base used to turn a signed guest displacement into a host PC pointer.
-	bool is_ptr = (d == PC_P) || (i > (IMPTR)0xFFFFFFFFULL) || hostptr_imm;
-	bool is_pcp = (d == PC_P);
 	d = rmw(d);
-
-	if (is_ptr) {
-		if (is_pcp) {
-			if(i <= 0xfff) {
-				ADD_xxi(d, d, i);
-			} else {
-				LOAD_U64(REG_WORK1, (uintptr)i);
-				ADD_xxx(d, d, REG_WORK1);
-			}
-		} else {
-			LOAD_U64(REG_WORK1, (uintptr)i);
-			ADD_xxwEX(d, REG_WORK1, d, 6); // ADD Xd, Ximm, Wd, SXTW
-		}
+	if (i32 <= 0xfff) {
+		ADD_wwi(d, d, i32);
 	} else {
-		uae_u32 i32 = (uae_u32)i;
-		if(i32 <= 0xfff) {
-			ADD_wwi(d, d, i32);
-		} else {
-			LOAD_U32(REG_WORK1, i32);
-			ADD_www(d, d, REG_WORK1);
-		}
+		LOAD_U32(REG_WORK1, i32);
+		ADD_www(d, d, REG_WORK1);
 	}
-
 	unlock2(d);
 }
 MENDFUNC(2,arm_ADD_l_ri,(RW4 d, IMPTR i))
@@ -820,29 +798,46 @@ STATIC_INLINE void flush_cpu_icache(void *start, void *stop)
 
 STATIC_INLINE void write_jmp_target(uae_u32* jmpaddr, uintptr a)
 {
-	jit_begin_write_window();
-	uintptr off = (a - (uintptr)jmpaddr) >> 2;
-	if((*(jmpaddr) & 0xfc000000) == 0x14000000) {
-		/* branch always — 26-bit offset, ±128MB */
-		off = off & 0x3ffffff;
-		*(jmpaddr) = (*(jmpaddr) & 0xfc000000) | off;
-	} else if((*(jmpaddr) & 0x7c000000) == 0x34000000) {
-		/* TBZ/TBNZ/CBZ/CBNZ — 14-bit offset */
-		intptr soff = (intptr)((a - (uintptr)jmpaddr)) >> 2;
-		if (soff > 0x1fff || soff < -0x2000)
-			write_log("JIT: TBZ/TBNZ branch to target too long (%ld).\n", (long)soff);
-		off = off & 0x3fff;
-		*(jmpaddr) = (*(jmpaddr) & 0xfffc001f) | (off << 5);
-	} else {
-		/* conditional branch B.cond — 19-bit offset, ±1MB */
-		intptr soff = (intptr)((a - (uintptr)jmpaddr)) >> 2;
-		if (soff > 0x3ffff || soff < -0x40000)
-			write_log("JIT: B.cond to target too long (%ld) jmpaddr=%p target=%p.\n",
-				(long)soff, (void*)jmpaddr, (void*)a);
-		off = off & 0x7ffff;
-		*(jmpaddr) = (*(jmpaddr) & 0xff00001f) | (off << 5);
+	const uintptr base = (uintptr)jmpaddr;
+	const int64_t byte_offset = a >= base
+		? (int64_t)(a - base)
+		: -(int64_t)(base - a);
+	const uae_u32 instruction = *jmpaddr;
+	uae_u32 patched = 0;
+	const arm64_branch_patch_status status =
+		arm64_patch_branch_instruction(instruction, byte_offset, &patched);
+
+	switch (status) {
+	case ARM64_BRANCH_PATCH_OK:
+		break;
+	case ARM64_BRANCH_PATCH_UNALIGNED:
+		jit_abort("JIT: unaligned branch target jmpaddr=%p target=%p",
+			(void*)jmpaddr, (void*)a);
+		return;
+	case ARM64_BRANCH_PATCH_B_RANGE:
+		jit_abort("JIT: B target out of range (%ld) jmpaddr=%p target=%p",
+			(long)(byte_offset / 4), (void*)jmpaddr, (void*)a);
+		return;
+	case ARM64_BRANCH_PATCH_TB_RANGE:
+		jit_abort("JIT: TBZ/TBNZ target out of range (%ld) jmpaddr=%p target=%p",
+			(long)(byte_offset / 4), (void*)jmpaddr, (void*)a);
+		return;
+	case ARM64_BRANCH_PATCH_CB_RANGE:
+		jit_abort("JIT: CBZ/CBNZ target out of range (%ld) jmpaddr=%p target=%p",
+			(long)(byte_offset / 4), (void*)jmpaddr, (void*)a);
+		return;
+	case ARM64_BRANCH_PATCH_BCOND_RANGE:
+		jit_abort("JIT: B.cond target out of range (%ld) jmpaddr=%p target=%p",
+			(long)(byte_offset / 4), (void*)jmpaddr, (void*)a);
+		return;
+	case ARM64_BRANCH_PATCH_UNSUPPORTED:
+		jit_abort("JIT: unsupported branch patch instruction %08x at %p",
+			instruction, (void*)jmpaddr);
+		return;
 	}
 
+	jit_begin_write_window();
+	*jmpaddr = patched;
 	flush_cpu_icache((void *)jmpaddr, (void *)&jmpaddr[1]);
 	jit_end_write_window();
 }
@@ -1289,6 +1284,7 @@ MIDFUNC(2,fp_from_exten_mr,(RR4 adr, FR s))
 	adr = readreg(adr);
 	s = f_readreg(s);
 	raw_fp_from_exten_mr(adr, s);
+	emit_strict_cache_disabled_write_barrier(adr, 12);
 	f_unlock(s);
 	unlock2(adr);
 }
@@ -1311,6 +1307,7 @@ MIDFUNC(2,fp_from_double_mr,(RR4 adr, FR s))
 	adr = readreg(adr);
 	s = f_readreg(s);
 	raw_fp_from_double_mr(adr, s);
+	emit_strict_cache_disabled_write_barrier(adr, 8);
 	f_unlock(s);
 	unlock2(adr);
 }
@@ -1396,21 +1393,6 @@ MIDFUNC(1,dbf_dec_test_ne_w,(RW4 d))
 }
 MENDFUNC(1,dbf_dec_test_ne_w,(RW4 d))
 
-/* DBcc (cc>=2) in-place low-word decrement (cross-apply of @basilisk c32216e8).
-   Preserves the high word and does NOT touch NZCV (the following cmov reads the
-   loop's live condition flags). Aliasing-immune by construction: no scratch-dest
-   virtual register that the legacy allocator could alias onto src's host reg
-   (the gencomp:2371 scratch-vs-dirty-architectural hazard that the old
-   lea_l_brr(scratchie,src,-1)/mov_w_rr(src,scratchie) pattern was subject to). */
-MIDFUNC(1,dbcc_dec_w,(RW4 d))
-{
-	d = rmw(d);
-	SUB_wwi(REG_WORK1, d, 1);
-	BFXIL_xxii(d, REG_WORK1, 0, 16);
-	unlock2(d);
-}
-MENDFUNC(1,dbcc_dec_w,(RW4 d))
-
 /* Conditional move for DBcc terminal test: if src.W != 0, set d = s.
    Does NOT modify hardware NZCV or regflags.nzcv.
    Uses UXTH + CBNZ + MOV sequence that preserves all flags. */
@@ -1441,6 +1423,12 @@ MENDFUNC(3,dbcc_cond_move_ne_w,(RW4 d, RR4 s, RR4 src_w))
  * opcodes that are too complex to compile natively. */
 MIDFUNC(1,call_helper,(IMPTR addr))
 {
+	/* A C helper may clobber every AAPCS64 caller-saved register.  Materialise
+	   all guest state and then discard host-register associations before the
+	   call; otherwise the endblock emitted after helper-backed instructions
+	   can reuse a stale x0-x17 value as live PC/register state. */
+	prepare_for_call_1();
+	prepare_for_call_2();
 	compemu_raw_call(addr);
 }
 MENDFUNC(1,call_helper,(IMPTR addr))

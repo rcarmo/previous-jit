@@ -159,26 +159,42 @@ STATIC_INLINE int get_fp_value(uae_u32 opcode, uae_u16 extra)
 		switch (size)
 		{
 		case 6: /* byte */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			fmov_b_rr(FS1, reg);
+#else
 			sign_extend_8_rr(S1, reg);
 			mov_l_mr((uintptr) temp_fp, S1);
 			delay2;
 			fmovi_rm(FS1, (uintptr) temp_fp);
+#endif
 			return FS1;
 		case 4: /* word */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			fmov_w_rr(FS1, reg);
+#else
 			sign_extend_16_rr(S1, reg);
 			mov_l_mr((uintptr) temp_fp, S1);
 			delay2;
 			fmovi_rm(FS1, (uintptr) temp_fp);
+#endif
 			return FS1;
 		case 0: /* long */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			fmov_l_rr(FS1, reg);
+#else
 			mov_l_mr((uintptr) temp_fp, reg);
 			delay2;
 			fmovi_rm(FS1, (uintptr) temp_fp);
+#endif
 			return FS1;
 		case 1: /* single precision */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			fmov_s_rr(FS1, reg);
+#else
 			mov_l_mr((uintptr) temp_fp, reg);
 			delay2;
 			fmovs_rm(FS1, (uintptr) temp_fp);
+#endif
 			return FS1;
 		default:
 			return -1;
@@ -197,11 +213,20 @@ STATIC_INLINE int get_fp_value(uae_u32 opcode, uae_u16 extra)
 	{
 	case 0: /* long */
 	case 1: /* single precision */
-	case 2: /* extended precision */
 	case 4: /* word */
 	case 5: /* double precision */
 	case 6: /* byte */
 		break;
+	case 2: /* extended precision */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+		/* The native FP shadow is binary64. Converting a 64-bit-significand,
+		 * 15-bit-exponent operand here would silently lose architectural state;
+		 * the legacy temp_fp route also passes a host pointer as a guest vreg.
+		 * Fail before EA calculation/writeback and retain exact MPFR fallback. */
+		return -1;
+#else
+		break;
+#endif
 	case 3: /* packed decimal static */
 	default:
 		return -1;
@@ -269,7 +294,17 @@ STATIC_INLINE int get_fp_value(uae_u32 opcode, uae_u16 extra)
 			}
 			break;
 		case 3: /* d8(pc,Xn) */
-			return -1;
+			{
+				uae_u32 address = start_pc + ((char *) comp_pc_p - (char *) start_pc_p) + m68k_pc_offset;
+				uae_u32 dp = comp_get_iword((m68k_pc_offset += 2) - 2);
+
+				/* Keep the extension-word PC base distinct from the EA target:
+				 * calc_disp_ea_020 may overwrite its target before using base. */
+				mov_l_ri(S2, address);
+				ad = S1;
+				calc_disp_ea_020(S2, dp, ad, S3);
+			}
+			break;
 		case 4: /* #imm */
 			{
 				uae_u32 address = start_pc + ((char *) comp_pc_p - (char *) start_pc_p) + m68k_pc_offset;
@@ -292,15 +327,23 @@ STATIC_INLINE int get_fp_value(uae_u32 opcode, uae_u16 extra)
 	{
 	case 0: /* long */
 		readlong(ad, S2, S3);
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+		fmov_l_rr(FS1, S2);
+#else
 		mov_l_mr((uintptr) temp_fp, S2);
 		delay2;
 		fmovi_rm(FS1, (uintptr) temp_fp);
+#endif
 		break;
 	case 1: /* single precision */
 		readlong(ad, S2, S3);
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+		fmov_s_rr(FS1, S2);
+#else
 		mov_l_mr((uintptr) temp_fp, S2);
 		delay2;
 		fmovs_rm(FS1, (uintptr) temp_fp);
+#endif
 		break;
 	case 2: /* extended precision */
 		readword(ad, S2, S3);
@@ -320,10 +363,14 @@ STATIC_INLINE int get_fp_value(uae_u32 opcode, uae_u16 extra)
 		return -1;						/* Some silly "packed" stuff */
 	case 4: /* word */
 		readword(ad, S2, S3);
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+		fmov_w_rr(FS1, S2);
+#else
 		sign_extend_16_rr(S2, S2);
 		mov_l_mr((uintptr) temp_fp, S2);
 		delay2;
 		fmovi_rm(FS1, (uintptr) temp_fp);
+#endif
 		break;
 	case 5: /* double precision */
 		readlong(ad, S2, S3);
@@ -336,10 +383,14 @@ STATIC_INLINE int get_fp_value(uae_u32 opcode, uae_u16 extra)
 		break;
 	case 6: /* byte */
 		readbyte(ad, S2, S3);
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+		fmov_b_rr(FS1, S2);
+#else
 		sign_extend_8_rr(S2, S2);
 		mov_l_mr((uintptr) temp_fp, S2);
 		delay2;
 		fmovi_rm(FS1, (uintptr) temp_fp);
+#endif
 		break;
 	default:
 		return -1;
@@ -347,6 +398,17 @@ STATIC_INLINE int get_fp_value(uae_u32 opcode, uae_u16 extra)
 	return FS1;
 }
 
+
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+STATIC_INLINE void clear_fp_exception_status(void)
+{
+	/* Every ordinary FMOVE destination replaces the current exception-status
+	 * byte, including exact single/double stores.  Integer conversion emitters
+	 * add INEX2 or OPERR after this common reset. */
+	mov_l_ri(S5, 0);
+	mov_l_mr((uintptr)&fpu.fpsr.exception_status, S5);
+}
+#endif
 
 /* return of -1 means failure, >=0 means OK */
 STATIC_INLINE int put_fp_value(int val, uae_u32 opcode, uae_u16 extra)
@@ -378,24 +440,44 @@ STATIC_INLINE int put_fp_value(int val, uae_u32 opcode, uae_u16 extra)
 		switch (size)
 		{
 		case 6: /* byte */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			clear_fp_exception_status();
+			fmov_to_b_rr(reg, val);
+#else
 			fmovi_mr((uintptr) temp_fp, val);
 			delay;
 			mov_b_rm(reg, (uintptr) temp_fp);
+#endif
 			return 0;
 		case 4: /* word */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			clear_fp_exception_status();
+			fmov_to_w_rr(reg, val);
+#else
 			fmovi_mr((uintptr) temp_fp, val);
 			delay;
 			mov_w_rm(reg, (uintptr) temp_fp);
+#endif
 			return 0;
 		case 0: /* long */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			clear_fp_exception_status();
+			fmov_to_l_rr(reg, val);
+#else
 			fmovi_mr((uintptr) temp_fp, val);
 			delay;
 			mov_l_rm(reg, (uintptr) temp_fp);
+#endif
 			return 0;
 		case 1: /* single precision */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			clear_fp_exception_status();
+			fmov_to_s_rr(reg, val);
+#else
 			fmovs_mr((uintptr) temp_fp, val);
 			delay;
 			mov_l_rm(reg, (uintptr) temp_fp);
+#endif
 			return 0;
 		default:
 			return -1;
@@ -412,11 +494,19 @@ STATIC_INLINE int put_fp_value(int val, uae_u32 opcode, uae_u16 extra)
 	{
 	case 0: /* long */
 	case 1: /* single precision */
-	case 2: /* extended precision */
 	case 4: /* word */
 	case 5: /* double precision */
 	case 6: /* byte */
 		break;
+	case 2: /* extended precision */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+		/* The native FP shadow cannot represent an ordinary 80-bit destination.
+		 * Reject it before postincrement/predecrement or any emitted store so the
+		 * MPFR interpreter remains the exact architectural service boundary. */
+		return -1;
+#else
+		break;
+#endif
 	case 3: /* packed decimal static */
 	default:
 		return -1;
@@ -475,42 +565,40 @@ STATIC_INLINE int put_fp_value(int val, uae_u32 opcode, uae_u16 extra)
 			}
 			break;
 		case 2: /* d16(pc) */
-			{
-				uae_u32 address = start_pc + ((char *) comp_pc_p - (char *) start_pc_p) + m68k_pc_offset;
-				uae_s32 PC16off = (uae_s32) (uae_s16) comp_get_iword((m68k_pc_offset += 2) - 2);
-
-				ad = S1;
-				mov_l_ri(ad, address + PC16off);
-			}
-			break;
 		case 3: /* d8(pc,Xn) */
-			return -1;
 		case 4: /* #imm */
-			{
-				uae_u32 address = start_pc + ((char *) comp_pc_p - (char *) start_pc_p) + m68k_pc_offset;
-
-				ad = S1;
-				mov_l_ri(ad, address);
-				m68k_pc_offset += sz2[size];
-			}
-			break;
+			/* PC-relative and immediate effective addresses are source-only.
+			 * Reject them before consuming extensions or emitting a write. */
+			return -1;
 		default:
 			return -1;
 		}
 	}
 
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+	clear_fp_exception_status();
+#endif
+
 	switch (size)
 	{
 	case 0: /* long */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+		fmov_to_l_rr(S2, val);
+#else
 		fmovi_mr((uintptr) temp_fp, val);
 		delay;
 		mov_l_rm(S2, (uintptr) temp_fp);
+#endif
 		writelong_clobber(ad, S2, S3);
 		break;
 	case 1: /* single precision */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+		fmov_to_s_rr(S2, val);
+#else
 		fmovs_mr((uintptr) temp_fp, val);
 		delay;
 		mov_l_rm(S2, (uintptr) temp_fp);
+#endif
 		writelong_clobber(ad, S2, S3);
 		break;
 	case 2: /* extended precision */
@@ -528,12 +616,25 @@ STATIC_INLINE int put_fp_value(int val, uae_u32 opcode, uae_u16 extra)
 	case 3: /* packed decimal static */
 		return -1;						/* Packed */
 	case 4: /* word */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+		fmov_to_w_rr(S2, val);
+#else
 		fmovi_mr((uintptr) temp_fp, val);
 		delay;
 		mov_l_rm(S2, (uintptr) temp_fp);
+#endif
 		writeword_clobber(ad, S2, S3);
 		break;
 	case 5: /* double precision */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+		/* Split the native double into low/high integer words, then route both
+		 * guest stores through the normal memory boundary. This retains special
+		 * memory and code-invalidation semantics unlike a raw host store. */
+		fmov_to_d_rrr(S2, S3, val);
+		writelong_clobber(ad, S3, S4);
+		add_l_ri(ad, 4);
+		writelong_clobber(ad, S2, S3);
+#else
 		fmov_mr((uintptr) temp_fp, val);
 		delay;
 		mov_l_rm(S2, (uintptr) temp_fp + 4);
@@ -541,11 +642,16 @@ STATIC_INLINE int put_fp_value(int val, uae_u32 opcode, uae_u16 extra)
 		add_l_ri(ad, 4);
 		mov_l_rm(S2, (uintptr) temp_fp);
 		writelong_clobber(ad, S2, S3);
+#endif
 		break;
 	case 6: /* byte */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+		fmov_to_b_rr(S2, val);
+#else
 		fmovi_mr((uintptr) temp_fp, val);
 		delay;
 		mov_l_rm(S2, (uintptr) temp_fp);
+#endif
 		writebyte(ad, S2, S3);
 		break;
 	default:
@@ -769,6 +875,13 @@ void comp_fbcc_opp(uae_u32 opcode)
 	{
 		off = comp_get_ilong((m68k_pc_offset += 4) - 4);
 	}
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+	/* FBcc does not alter integer CCR. Save it before even the target-address
+	 * plumbing: legacy add/move helpers are permitted to clobber host NZCV, so
+	 * postponing this until just before FCMP preserves their temporary state
+	 * instead of the architectural entry flags. */
+	preserve_flags_before_nzcv_clobber();
+#endif
 	mov_l_ri(S1, (uintptr) (comp_pc_p + off - (m68k_pc_offset - start_68k_offset)));
 	mov_l_ri(PC_P, (uintptr) comp_pc_p);
 
@@ -785,6 +898,22 @@ void comp_fbcc_opp(uae_u32 opcode)
 	v2 = get_const(S1);
 	fflags_into_flags();
 
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+	/* AArch64 FCMP publishes IEEE predicates directly in NZCV:
+	 *   less=1000, equal=0110, greater=0010, unordered=0011.
+	 * The inherited x87 implementation below composes C3/C2/C0 and passes
+	 * legacy parity IDs 10/11 through helpers that correctly reject them on
+	 * AArch64.  codegen_arm64 already defines the complete FBcc pseudo-condition
+	 * range (NATIVE_CC_F_* = 16 + guest condition), including ordered/unordered
+	 * compound predicates.  Values >=16 deliberately bypass the ordinary
+	 * x86-to-AArch64 integer-condition translation at block finalisation.
+	 * Bit 0x10 remains the architecturally identical signalling form and was
+	 * removed from cc above. */
+	/* Keep all sixteen FBcc edges in the pseudo-condition namespace. Besides
+	 * selecting compound FP predicates, this type tag tells block finalisation
+	 * to retain the saved integer CCR. */
+	register_branch(v1, v2, 16 + cc);
+#else
 	switch (cc)
 	{
 	case 0:
@@ -844,6 +973,7 @@ void comp_fbcc_opp(uae_u32 opcode)
 		mov_l_rr(PC_P, S1);
 		break;
 	}
+#endif
 }
 
 
@@ -1146,6 +1276,18 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 			return;
 		}
 
+#if defined(CPU_AARCH64) || defined(CPU_aarch64)
+		/* An architectural extended register can contain precision, exponent,
+		 * or NaN metadata that the native binary64 shadow has already lost.
+		 * A double destination must perform its own conversion and publish its
+		 * exception status, so retain the MPFR service before EA mutation. */
+		if (((extra >> 10) & 7) == 5)
+		{
+			FAIL(1);
+			return;
+		}
+#endif
+
 		if (put_fp_value((extra >> 7) & 7, opcode, extra) < 0)
 		{
 			FAIL(1);
@@ -1160,6 +1302,19 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 			FAIL(1);
 			return;
 		}
+
+#if defined(CPU_AARCH64) || defined(CPU_aarch64)
+		/* Native FP shadows are binary64 and cannot serialize an architectural
+		   extended register list without losing low significand bits, extended
+		   exponent range, or NaN metadata. Static FMOVEM lists therefore cross
+		   the exact MPFR service boundary before EA acquisition or mutation.
+		   Dynamic lists already fail closed below and remain separately audited. */
+		if ((extra & 0x0800) == 0)
+		{
+			FAIL(1);
+			return;
+		}
+#endif
 
 		{
 			int ad;
@@ -1341,6 +1496,18 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 			return;
 		}
 
+#if defined(CPU_AARCH64) || defined(CPU_aarch64)
+		/* Direct Dn/An and immediate control-register transfers must remain one
+		   architectural service.  The residual native path cannot represent the
+		   complete FPCR/FPSR state, and mixed masks can otherwise mutate one
+		   destination before a later unsupported register forces fallback. */
+		if ((opcode & 0x30) == 0 || (opcode & 0x3f) == 0x3c)
+		{
+			FAIL(1);
+			return;
+		}
+#endif
+
 		/* rare */
 		if ((opcode & 0x30) == 0)
 		{
@@ -1465,6 +1632,13 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 				FAIL(1);
 				return;
 			}
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* The architectural constant ROM is extended precision. AArch64's
+			 * native path mixes binary32/binary64 approximations with helper
+			 * fallbacks, so retain one exact MPFR boundary for every selector. */
+			FAIL(1);
+			return;
+#endif
 
 			switch (extra & 0x7f)
 			{
@@ -1536,15 +1710,32 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 
 		switch (extra & 0x7f)
 		{
+		case 0x40:						/* FSMOVE: explicit 24-bit precision */
+		case 0x44:						/* FDMOVE: explicit 53-bit precision */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* The binary64 shadow cannot represent every MPFR source presented to
+			 * these forced-precision operations, and the legacy copy omits their
+			 * rounding/status contract. Retain exact MPFR service. */
+			FAIL(1);
+			return;
+#endif
+			/* fall through on native backends that implement explicit precision */
 		case 0x00:						/* FMOVE */
-		case 0x40:						/* FSMOVE: Explicit rounding. This is just a quick fix. Same
-										 * for all other cases that have three choices */
-		case 0x44:						/* FDMOVE */
 			if (jit_disable.fmove)
 			{
 				FAIL(1);
 				return;
 			}
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* Register-source FMOVE is an architectural precision operation, not
+			 * a binary64-shadow copy. Preserve extended significand/exponent and
+			 * NaN metadata through MPFR before acquiring either FP operand. */
+			if ((extra & 0x4000) == 0)
+			{
+				FAIL(1);
+				return;
+			}
+#endif
 
 			dont_care_fflags();
 			src = get_fp_value(opcode, extra);
@@ -1612,6 +1803,13 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 		case 0x04:						/* FSQRT */
 		case 0x41:						/* FSSQRT */
 		case 0x45:						/* FDSQRT */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* The binary64 shadow cannot represent the architectural extended
+			 * operand/result range or the forced single/double rounding and FPSR
+			 * contract. Retain exact MPFR service before operand acquisition. */
+			FAIL(1);
+			return;
+#endif
 			if (jit_disable.fsqrt)
 			{
 				FAIL(1);
@@ -1700,6 +1898,13 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 				FAIL(1);
 				return;
 			}
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* The AArch64 native route evaluates a binary64 shadow with the host
+			 * C library. It cannot preserve an extended source, FPCR precision and
+			 * exponent range, or exact Motorola FPSR status. Retain MPFR service. */
+			FAIL(1);
+			return;
+#endif
 
 			dont_care_fflags();
 			src = get_fp_value(opcode, extra);
@@ -1728,6 +1933,10 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 				FAIL(1);
 				return;
 			}
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			FAIL(1);
+			return;
+#endif
 
 			dont_care_fflags();
 			src = get_fp_value(opcode, extra);
@@ -1745,6 +1954,10 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 				FAIL(1);
 				return;
 			}
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			FAIL(1);
+			return;
+#endif
 
 			dont_care_fflags();
 			src = get_fp_value(opcode, extra);
@@ -1795,6 +2008,10 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 				FAIL(1);
 				return;
 			}
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			FAIL(1);
+			return;
+#endif
 
 			dont_care_fflags();
 			src = get_fp_value(opcode, extra);
@@ -1809,6 +2026,14 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 		case 0x18:						/* FABS */
 		case 0x58:						/* FSABS */
 		case 0x5c:						/* FDABS */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* The AArch64 register file is a binary64 shadow. Even an ordinary
+			 * sign operation would first round a wider architectural MPFR source,
+			 * while FSABS/FDABS additionally require forced precision and exact
+			 * exception state. Retain one MPFR service boundary for the family. */
+			FAIL(1);
+			return;
+#endif
 			if (jit_disable.fabs)
 			{
 				FAIL(1);
@@ -1839,6 +2064,13 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 		case 0x1a:						/* FNEG */
 		case 0x5a:						/* FSNEG */
 		case 0x5e:						/* FDNEG */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* The binary64 shadow cannot preserve the architectural MPFR value,
+			 * including extended range, NaN metadata, signed zero, forced precision,
+			 * and FPSR semantics. Retain the exact interpreter service boundary. */
+			FAIL(1);
+			return;
+#endif
 			if (jit_disable.fneg)
 			{
 				FAIL(1);
@@ -1872,6 +2104,12 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 				FAIL(1);
 				return;
 			}
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* As with FSIN, the binary64 shadow and host libm route lose the
+			 * extended source and exact FPCR/FPSR result contract. */
+			FAIL(1);
+			return;
+#endif
 
 			dont_care_fflags();
 			src = get_fp_value(opcode, extra);
@@ -1908,6 +2146,12 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 		case 0x20:						/* FDIV */
 		case 0x60:						/* FSDIV */
 		case 0x64:						/* FDDIV */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* Binary64 native operands cannot represent the extended dividend or
+			 * divisor, forced precision, NaN ownership, or Motorola exceptions. */
+			FAIL(1);
+			return;
+#endif
 			if (jit_disable.fdiv)
 			{
 				FAIL(1);
@@ -1931,20 +2175,19 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 				return;
 			}
 
-			// FIXME: the quotient byte must be computed
-			dont_care_fflags();
-			src = get_fp_value(opcode, extra);
-			if (src < 0)
-			{
-				FAIL(1);				/* Illegal instruction */
-				return;
-			}
-			frem_rr(reg, src);
-			MAKE_FPSR(reg);
-			break;
+			/* IEEE remainder does not implement truncating FMOD quotient bits,
+			 * extended operands, NaN ownership, or Motorola exceptions. */
+			FAIL(1);
+			return;
 		case 0x22:						/* FADD */
 		case 0x62:						/* FSADD */
 		case 0x66:						/* FDADD */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* Binary64 native operands cannot represent extended addends,
+			 * forced result formats, NaN ownership, or Motorola exceptions. */
+			FAIL(1);
+			return;
+#endif
 			if (jit_disable.fadd)
 			{
 				FAIL(1);
@@ -1964,6 +2207,12 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 		case 0x23:						/* FMUL */
 		case 0x63:						/* FSMUL */
 		case 0x67:						/* FDMUL */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* Binary64 native operands cannot represent extended factors,
+			 * forced result formats, NaN ownership, or Motorola exceptions. */
+			FAIL(1);
+			return;
+#endif
 			if (jit_disable.fmul)
 			{
 				FAIL(1);
@@ -1981,6 +2230,12 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 			MAKE_FPSR(reg);
 			break;
 		case 0x24:						/* FSGLDIV */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* Binary64 native operands cannot retain extended inputs, the
+			 * single significand/extended exponent result, or Motorola status. */
+			FAIL(1);
+			return;
+#endif
 			if (jit_disable.fsgldiv)
 			{
 				FAIL(1);
@@ -2003,20 +2258,10 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 				FAIL(1);
 				return;
 			}
-			// gb-- disabled because the quotient byte must be computed
-			// otherwise, free rotation in ClarisWorks doesn't work.
+			/* The architectural quotient byte and extended operands require
+			 * exact semantic service; no host-native remainder path is valid. */
 			FAIL(1);
 			return;
-			dont_care_fflags();
-			src = get_fp_value(opcode, extra);
-			if (src < 0)
-			{
-				FAIL(1);				/* Illegal instruction */
-				return;
-			}
-			frem1_rr(reg, src);
-			MAKE_FPSR(reg);
-			break;
 		case 0x26:						/* FSCALE */
 			if (jit_disable.fscale)
 			{
@@ -2028,6 +2273,12 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 			return;
 			break;
 		case 0x27:						/* FSGLMUL */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* Binary64 native operands cannot retain extended factors, the
+			 * single significand/extended exponent result, or Motorola status. */
+			FAIL(1);
+			return;
+#endif
 			if (jit_disable.fsglmul)
 			{
 				FAIL(1);
@@ -2047,6 +2298,12 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 		case 0x28:						/* FSUB */
 		case 0x68:						/* FSSUB */
 		case 0x6c:						/* FDSUB */
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* Binary64 native operands cannot represent extended subtrahends,
+			 * forced result formats, NaN ownership, or Motorola exceptions. */
+			FAIL(1);
+			return;
+#endif
 			if (jit_disable.fsub)
 			{
 				FAIL(1);
@@ -2088,14 +2345,23 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 				return;
 			}
 
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* FCMP and operand-address plumbing may overwrite host NZCV, but
+			 * 68k integer CCR is architecturally unchanged by FPP operations. */
+			preserve_flags_before_nzcv_clobber();
+#endif
 			src = get_fp_value(opcode, extra);
 			if (src < 0)
 			{
 				FAIL(1);				/* Illegal instruction */
 				return;
 			}
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			fcompare_result_rr(FP_RESULT, reg, src);
+#else
 			fmov_rr(FP_RESULT, reg);
-			fsub_rr(FP_RESULT, src);	/* Right way? */
+			fsub_rr(FP_RESULT, src);
+#endif
 			break;
 		case 0x3a:						/* FTST */
 			if (jit_disable.ftst)
@@ -2104,13 +2370,29 @@ void comp_fpp_opp(uae_u32 opcode, uae_u16 extra)
 				return;
 			}
 
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+			/* Operand conversion can clobber host NZCV; integer CCR is not an
+			 * output of FTST and must survive into successor blocks unchanged. */
+			preserve_flags_before_nzcv_clobber();
+#endif
 			src = get_fp_value(opcode, extra);
 			if (src < 0)
 			{
 				FAIL(1);				/* Illegal instruction */
 				return;
 			}
-			fmov_rr(FP_RESULT, src);
+			/* fmov_rr intentionally elides self moves.  FP_RESULT is the
+			 * dedicated compare shadow, but a freshly initialised allocator may
+			 * assign the source itself to that virtual register.  In that case
+			 * the old code returned without materialising FP_RESULT, and the next
+			 * FBcc loaded zero/garbage or crashed.  Force a distinct temporary
+			 * through the normal FP ownership path before publishing the result. */
+			if (src == FP_RESULT) {
+				fmov_rr(FS1, src);
+				fmov_rr(FP_RESULT, FS1);
+			} else {
+				fmov_rr(FP_RESULT, src);
+			}
 			break;
 		default:
 			FAIL(1);

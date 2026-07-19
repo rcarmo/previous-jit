@@ -678,27 +678,22 @@ static void gen_move16(uae_u32 opcode, struct instr *curi) {
 		comprintf("\tarm_ADD_l_ri8(dstreg+8,16);\n");
 
 	start_brace();
-	/* 01051ec3 (macemu parity): MOVE16 previously allocated 4 scratches at once
-	   (scratchie+=4, tmp+0..tmp+3); under register pressure the 4 scratches can
-	   alias live architectural regs (reg-alloc-pressure class, same family as the
-	   126c959f MOVEM and b36d5a10 fixes). Use ONE scratch, load-store-forget per
-	   longword so at most one scratch is live at a time. */
-	comprintf("\tint tmp=scratchie++;\n");
+	comprintf("\tint tmp=scratchie;\n");
+	comprintf("\tscratchie+=4;\n");
 
 	comprintf("\tget_n_addr(src,src,scratchie);\n"
 			"\tget_n_addr(dst,dst,scratchie);\n"
-			"\tmov_l_rR(tmp,src,0);\n"
-			"\tmov_l_Rr(dst,tmp,0);\n"
-			"\tforget_about(tmp);\n"
-			"\tmov_l_rR(tmp,src,4);\n"
-			"\tmov_l_Rr(dst,tmp,4);\n"
-			"\tforget_about(tmp);\n"
-			"\tmov_l_rR(tmp,src,8);\n"
-			"\tmov_l_Rr(dst,tmp,8);\n"
-			"\tforget_about(tmp);\n"
-			"\tmov_l_rR(tmp,src,12);\n"
-			"\tmov_l_Rr(dst,tmp,12);\n"
-			"\tforget_about(tmp);\n");
+			"\tmov_l_rR(tmp+0,src,0);\n"
+			"\tmov_l_rR(tmp+1,src,4);\n"
+			"\tmov_l_rR(tmp+2,src,8);\n"
+			"\tmov_l_rR(tmp+3,src,12);\n"
+			"\tmov_l_Rr(dst,tmp+0,0);\n"
+			"\tforget_about(tmp+0);\n"
+			"\tmov_l_Rr(dst,tmp+1,4);\n"
+			"\tforget_about(tmp+1);\n"
+			"\tmov_l_Rr(dst,tmp+2,8);\n"
+			"\tforget_about(tmp+2);\n"
+			"\tmov_l_Rr(dst,tmp+3,12);\n");
 	close_brace();
 #endif
 }
@@ -715,30 +710,19 @@ static void genmovemel(uae_u16 opcode) {
 	/* ARM64 fix: avoid get_n_addr + mov_l_rR which caches a 64-bit host
 	   pointer in a 32-bit virtual register. Use readlong()/readword()
 	   which reconstruct the host pointer fresh each time. */
-	/* 126c959f (macemu parity): for (An) control mode, genamode maps srca
-	   directly to the architectural An (dodgy=0 for movem). Walking srca with
-	   add_l_ri would spuriously increment/clobber the arch An. MOVEM mem->reg
-	   must NOT modify An for control modes (only (An)+ writes back). Copy the
-	   EA to a scratch and walk the scratch; (An)+ (Aipi) still writes back srca. */
-	const char *movem_srca = "srca";
-	if (table68k[opcode].dmode == Aind) {
-		comprintf("\tint movem_srca=scratchie++;\n"
-				"\tmov_l_rr(movem_srca,srca);\n");
-		movem_srca = "movem_srca";
-	}
 	comprintf("\tfor (i=0;i<16;i++) {\n"
 			"\t\tif ((mask>>i)&1) {\n");
 	switch (table68k[opcode].size) {
 	case sz_long:
-		comprintf("\t\t\treadlong(%s,i,scratchie);\n"
-				"\t\t\tadd_l_ri(%s,4);\n"
-				"\t\t\toffset+=4;\n", movem_srca, movem_srca);
+		comprintf("\t\t\treadlong(srca,i,scratchie);\n"
+				"\t\t\tadd_l_ri(srca,4);\n"
+				"\t\t\toffset+=4;\n");
 		break;
 	case sz_word:
-		comprintf("\t\t\treadword(%s,i,scratchie);\n"
+		comprintf("\t\t\treadword(srca,i,scratchie);\n"
 				"\t\t\tsign_extend_16_rr(i,i);\n"
-				"\t\t\tadd_l_ri(%s,2);\n"
-				"\t\t\toffset+=2;\n", movem_srca, movem_srca);
+				"\t\t\tadd_l_ri(srca,2);\n"
+				"\t\t\toffset+=2;\n");
 		break;
 	default:
 		assert(0);
@@ -2368,14 +2352,14 @@ static void gen_dbcc(uae_u32 opcode, struct instr *curi, const char* ssize) {
 		break;
 	}
 	comprintf("\tsub_l_ri(offs,m68k_pc_offset-m68k_pc_offset_thisinst-2);\n");
-	comprintf("\tarm_ADD_l_ri(offs,(uintptr)comp_pc_p);\n");
+	comprintf("\tarm_ADD_l_ri_hostptr(offs,(uintptr)comp_pc_p);\n");
 	/* New PC,
 	 once the
 	 offset_68k is
 	 * also added */
 	/* Let's fold in the m68k_pc_offset at this point */
-	comprintf("\tarm_ADD_l_ri(offs,m68k_pc_offset);\n");
-	comprintf("\tarm_ADD_l_ri(PC_P,m68k_pc_offset);\n");
+	comprintf("\tarm_ADD_ptr_ri(offs,m68k_pc_offset);\n");
+	comprintf("\tarm_ADD_ptr_ri(PC_P,m68k_pc_offset);\n");
 	comprintf("\tm68k_pc_offset=0;\n");
 
 	start_brace();
@@ -2421,9 +2405,9 @@ static void gen_dbcc(uae_u32 opcode, struct instr *curi, const char* ssize) {
 	case 14:
 	case 15:
 		comprintf("\tmov_l_rr(nsrc,src);\n");
-		/* cross-apply @basilisk c32216e8: aliasing-immune in-place low-word decrement
-		   replaces lea_l_brr(scratchie,src,-1)/mov_w_rr(src,scratchie) (destroyed src's
-		   high word when the allocator aliased scratchie onto src). */
+		/* Preserve the architectural counter's high word and avoid mapping an
+		   unallocated scratch vreg onto src (Previous cd3d1bc / Basilisk
+		   c32216e8). The helper does a no-flags in-place low-word decrement. */
 		comprintf("\tdbcc_dec_w(src);\n");
 		comprintf("\tcmov_l_rr(offs,PC_P,%d);\n", cond_codes[curi->cc]);
 		comprintf("\tcmov_l_rr(src,nsrc,%d);\n", cond_codes[curi->cc]);
@@ -4398,11 +4382,11 @@ gen_opcode(unsigned long int opcode) {
 				"\tsub_l_ri(src,m68k_pc_offset-m68k_pc_offset_thisinst-2);\n");
 		/* Leave the following as "add" --- it will allow it to be optimized
 		 away due to src being a constant ;-) */
-		comprintf("\tarm_ADD_l_ri(src,(uintptr)comp_pc_p);\n");
+		comprintf("\tarm_ADD_l_ri_hostptr(src,(uintptr)comp_pc_p);\n");
 		comprintf("\tmov_l_ri(PC_P,(uintptr)comp_pc_p);\n");
 		/* Now they are both constant. Might as well fold in m68k_pc_offset */
-		comprintf("\tarm_ADD_l_ri(src,m68k_pc_offset);\n");
-		comprintf("\tarm_ADD_l_ri(PC_P,m68k_pc_offset);\n");
+		comprintf("\tarm_ADD_ptr_ri(src,m68k_pc_offset);\n");
+		comprintf("\tarm_ADD_ptr_ri(PC_P,m68k_pc_offset);\n");
 		comprintf("\tm68k_pc_offset=0;\n");
 
 		if (curi->cc >= 2) {

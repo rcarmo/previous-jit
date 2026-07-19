@@ -226,18 +226,21 @@ struct regstruct
 	uae_u32  cacr, caar;
 
 #if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
-	/* offset 196: JIT scratch / FP shadow registers  */
-	uae_u32  jit_scratchregs[3];         /* 12 bytes  -> 208 */
-	double   jit_scratchfregs_a[2];      /* 16 bytes  -> 224 */
-	double   jit_fp_result_a;            /*  8 bytes  -> 232 */
-	uae_u32  jit_exception;              /*  4 bytes  -> 236 */
-	uae_u32  _jit_pad1;                  /*  4 bytes  -> 240 */
-	double   jit_fpregs[8];              /* 64 bytes  -> 304 */
-	double   jit_fp_result;              /*  8 bytes  -> 312 */
-	double   jit_scratchfregs_b[2];      /* 16 bytes  -> 328 */
-	uae_u32 *raw_cputbl_count;           /*  8 bytes  -> 336 */
-	uintptr_t mem_banks;                 /*  8 bytes  -> 344 */
-	uintptr_t cache_tags;                /*  8 bytes  -> 352 */
+	/* offset 196: audited c014449f JIT scratch / FP shadow ABI. */
+	uae_u32  jit_scratchregs[5];         /* 20 bytes  -> 216 */
+	uintptr_t jit_scratch_vregs[5];      /* 40 bytes  -> 256 */
+	double   jit_scratchfregs_a[2];      /* 16 bytes  -> 272 */
+	double   jit_fp_result_a;            /*  8 bytes  -> 280 */
+	uae_u32  jit_exception;              /*  4 bytes  -> 284 */
+	uae_u32  jit_exception_oldpc;        /*  4 bytes  -> 288 */
+	double   jit_fpregs[8];              /* 64 bytes  -> 352 */
+	double   jit_fp_result;              /*  8 bytes  -> 360 */
+	double   jit_scratchfregs_b[2];      /* 16 bytes  -> 376 */
+	uae_u32  jit_fp_dirty_mask;          /*  4 bytes  -> 380 */
+	uae_u64  jit_host_fpcr;              /*  8 bytes  -> 392 */
+	uae_u32 *raw_cputbl_count;           /*  8 bytes  -> 400 */
+	uintptr_t mem_banks;                 /*  8 bytes  -> 408 */
+	uintptr_t cache_tags;                /*  8 bytes  -> 416 */
 #endif /* ENABLE_EXPERIMENTAL_UAE2026_JIT */
 
 	/* ================================================================== *
@@ -295,6 +298,20 @@ struct regstruct
 	bool fp_branch;
 #endif
 };
+
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+#ifdef __cplusplus
+#define PREVIOUS_JIT_ABI_ASSERT static_assert
+#else
+#define PREVIOUS_JIT_ABI_ASSERT _Static_assert
+#endif
+PREVIOUS_JIT_ABI_ASSERT(__builtin_offsetof(struct regstruct, jit_scratchregs) == 196, "native scratchregs ABI");
+PREVIOUS_JIT_ABI_ASSERT(__builtin_offsetof(struct regstruct, jit_scratch_vregs) == 216, "native scratch spill ABI");
+PREVIOUS_JIT_ABI_ASSERT(__builtin_offsetof(struct regstruct, jit_exception_oldpc) == 284, "native exception-PC ABI");
+PREVIOUS_JIT_ABI_ASSERT(__builtin_offsetof(struct regstruct, mem_banks) == 400, "native bank-table ABI");
+PREVIOUS_JIT_ABI_ASSERT(__builtin_offsetof(struct regstruct, cache_tags) == 408, "native cache-tag ABI");
+#undef PREVIOUS_JIT_ABI_ASSERT
+#endif
 
 extern struct regstruct regs;
 

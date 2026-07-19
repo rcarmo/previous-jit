@@ -16,55 +16,40 @@ void jit_op_orsr(void);
 void jit_op_andsr(void);
 void jit_op_eorsr(void);
 
-/* MOVEC */
-void jit_op_movec2(void);
-void jit_op_move2c(void);
-void jit_op_mvsr2(void);
-void jit_op_moves(void);
-
 /* Divide */
 void jit_op_divu_w(void);
 void jit_op_divs_w(void);
 void jit_op_mull(void);
 void jit_op_divl(void);
 
-/* BCD */
+/* BCD and packed/peripheral moves */
 void jit_op_abcd(void);
 void jit_op_sbcd(void);
 void jit_op_nbcd(void);
+void jit_op_pack(uae_u32 next_pc);
+void jit_op_unpk(uae_u32 next_pc);
+void jit_op_mvprm(uae_u32 next_pc);
+void jit_op_mvpmr(uae_u32 next_pc);
 
-/* Privileged/flow */
-void jit_op_mvr2usp(void);
-void jit_op_mvusp2r(void);
-void jit_op_reset(void);
-void jit_op_rte(void);
+/* Flow */
 void jit_op_rtr(void);
-void jit_op_stop(void);
 void jit_op_trap(void);
 void jit_op_trapv(void);
 void jit_op_trapcc(void);
+void jit_op_moves(void);
 void jit_op_chk(void);
 void jit_op_chk2(void);
-void jit_op_cas(void);
-void jit_op_callm(void);
-void jit_op_mmuop030(void);
-void jit_op_frestore(void);
-void jit_op_movep(void);
-void jit_op_rtm(void);
-void jit_op_bkpt(void);
-void jit_op_cas2(void);
-void jit_op_fsave(void);
-void jit_op_ftrapcc(void);
-void jit_op_fdbcc(void);
-void jit_op_cache_line(void);
-void jit_op_mmu_final(void);
 
 /* Bit operations */
 void jit_op_tas(void);
-void jit_op_pack(void);
-void jit_op_unpk(void);
-void jit_op_bitfield(void);
+void jit_op_bfffo(void);
 void jit_op_bfins(void);
+void jit_op_bfextu(void);
+void jit_op_bfexts(void);
+void jit_op_bftst(void);
+void jit_op_bfchg(void);
+void jit_op_bfclr(void);
+void jit_op_bfset(void);
 
 /* Rotate/shift */
 void jit_op_roxl(void);
@@ -80,10 +65,6 @@ void jit_op_rorw(void);
 void jit_op_roxlw(void);
 void jit_op_roxrw(void);
 
-/* Cache */
-void jit_op_cinva(void);
-void jit_op_cpusha(void);
-
 } /* extern "C" */
 
 #endif /* CPU_aarch64 */
@@ -94,7 +75,9 @@ extern const uae_u32 ARM_CCR_MAP[];
 
 /* JIT FPU shadow register sync */
 #ifdef USE_JIT_FPU
+extern "C" {
 void jit_fpu_sync_to_shadow(void);
 void jit_fpu_sync_from_shadow(void);
+}
 #endif
 

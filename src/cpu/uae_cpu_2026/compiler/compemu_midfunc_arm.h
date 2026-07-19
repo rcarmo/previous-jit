@@ -34,7 +34,11 @@
 // Arm optimized midfunc
 DECLARE_MIDFUNC(arm_ADD_l(RW4 d, RR4 s));
 DECLARE_MIDFUNC(arm_ADD_ldiv8(RW4 d, RR4 s));
+/* Keep 32-bit guest arithmetic, signed guest-offset + host-base conversion,
+   and pointer-width increments as distinct contracts. */
 DECLARE_MIDFUNC(arm_ADD_l_ri(RW4 d, IMPTR i));
+DECLARE_MIDFUNC(arm_ADD_l_ri_hostptr(RW4 d, IMPTR base));
+DECLARE_MIDFUNC(arm_ADD_ptr_ri(RW4 d, IM32 offset));
 DECLARE_MIDFUNC(arm_ADD_l_ri8(RW4 d, IM8 i));
 DECLARE_MIDFUNC(arm_SUB_l_ri8(RW4 d, IM8 i));
 
@@ -46,6 +50,8 @@ DECLARE_MIDFUNC(mov_l_mi(IMPTR d, IMPTR s));
 DECLARE_MIDFUNC(pop_l(W4 d));
 DECLARE_MIDFUNC(push_l(RR4 s));
 DECLARE_MIDFUNC(sign_extend_16_rr(W4 d, RR2 s));
+DECLARE_MIDFUNC(jnf_ADDA_w(RW4 d, RR2 s));
+DECLARE_MIDFUNC(jnf_ADDA_l(RW4 d, RR4 s));
 DECLARE_MIDFUNC(lea_l_brr(W4 d, RR4 s, IM32 offset));
 DECLARE_MIDFUNC(lea_l_brr_indexed(W4 d, RR4 s, RR4 index, IM8 factor, IM8 offset));
 DECLARE_MIDFUNC(lea_l_rr_indexed(W4 d, RR4 s, RR4 index, IM8 factor));
@@ -58,11 +64,10 @@ DECLARE_MIDFUNC(sub_l_ri(RW4 d, IM8 i));
 DECLARE_MIDFUNC(sub_w_ri(RW2 d, IM8 i));
 DECLARE_MIDFUNC(live_flags(void));
 DECLARE_MIDFUNC(dont_care_flags(void));
-DECLARE_MIDFUNC(discard_flags_in_nzcv(void));
 DECLARE_MIDFUNC(preserve_flags_before_nzcv_clobber(void));
+DECLARE_MIDFUNC(discard_flags_in_nzcv(void));
 DECLARE_MIDFUNC(save_and_discard_flags_in_nzcv(void));
 DECLARE_MIDFUNC(dbf_dec_test_ne_w(RW4 d));
-DECLARE_MIDFUNC(dbcc_dec_w(RW4 d));
 DECLARE_MIDFUNC(dbcc_cond_move_ne_w(RW4 d, RR4 s, RR4 src_w));
 DECLARE_MIDFUNC(make_flags_live(void));
 DECLARE_MIDFUNC(forget_about(W4 r));
@@ -120,6 +125,7 @@ DECLARE_MIDFUNC(jnf_MVR2USP(RR4 s));
 DECLARE_MIDFUNC(jnf_MVUSP2R(W4 d));
 DECLARE_MIDFUNC(jnf_TAS(RW1 d));
 DECLARE_MIDFUNC(jff_TAS(RW1 d));
+DECLARE_MIDFUNC(jnf_SCC(W1 d, IM8 cc));
 
 /* Declarations for jff_/jnf_ midfuncs used by native codegen
  * (implementations in compemu_midfunc_arm64_2.cpp) */
@@ -129,6 +135,12 @@ DECLARE_MIDFUNC(jff_DIVS(RW4 d, RR4 s));
 DECLARE_MIDFUNC(jnf_DIVS(RW4 d, RR4 s));
 DECLARE_MIDFUNC(jff_ASRW(RW2 d));
 DECLARE_MIDFUNC(jnf_ASRW(RW2 d));
+DECLARE_MIDFUNC(jff_ASL_b_imm(RW1 d, IM8 i));
+DECLARE_MIDFUNC(jff_ASL_w_imm(RW2 d, IM8 i));
+DECLARE_MIDFUNC(jff_ASL_l_imm(RW4 d, IM8 i));
+DECLARE_MIDFUNC(jff_ASL_b_reg(RW1 d, RR4 i));
+DECLARE_MIDFUNC(jff_ASL_w_reg(RW2 d, RR4 i));
+DECLARE_MIDFUNC(jff_ASL_l_reg(RW4 d, RR4 i));
 DECLARE_MIDFUNC(jff_ASLW(RW2 d));
 DECLARE_MIDFUNC(jnf_ASLW(RW2 d));
 DECLARE_MIDFUNC(jff_LSRW(RW2 d));
@@ -149,23 +161,36 @@ DECLARE_MIDFUNC(jnf_TRAPV(void));
 DECLARE_MIDFUNC(jff_ROXLW(RW2 d));
 DECLARE_MIDFUNC(jff_ROXRW(RW2 d));
 DECLARE_MIDFUNC(jff_MV2SCCR(RR4 s));
+DECLARE_MIDFUNC(jnf_MULU(RW4 d, RR4 s));
+DECLARE_MIDFUNC(jnf_MULS(RW4 d, RR4 s));
+DECLARE_MIDFUNC(jff_MULU(RW4 d, RR4 s));
+DECLARE_MIDFUNC(jff_MULS(RW4 d, RR4 s));
 DECLARE_MIDFUNC(jnf_MULU32(RW4 d, RR4 s));
 DECLARE_MIDFUNC(jnf_MULS32(RW4 d, RR4 s));
-DECLARE_MIDFUNC(jnf_MULU64(RW4 d, RW4 s));
-DECLARE_MIDFUNC(jnf_MULS64(RW4 d, RW4 s));
 DECLARE_MIDFUNC(jff_MULU32(RW4 d, RR4 s));
 DECLARE_MIDFUNC(jff_MULS32(RW4 d, RR4 s));
+#if defined(CPU_AARCH64)
+DECLARE_MIDFUNC(jnf_MULU64(W4 dl, W4 dh, RR4 s));
+DECLARE_MIDFUNC(jnf_MULS64(W4 dl, W4 dh, RR4 s));
+DECLARE_MIDFUNC(jff_MULU64(W4 dl, W4 dh, RR4 s));
+DECLARE_MIDFUNC(jff_MULS64(W4 dl, W4 dh, RR4 s));
+#else
+DECLARE_MIDFUNC(jnf_MULU64(RW4 d, RW4 s));
+DECLARE_MIDFUNC(jnf_MULS64(RW4 d, RW4 s));
 DECLARE_MIDFUNC(jff_MULU64(RW4 d, RW4 s));
 DECLARE_MIDFUNC(jff_MULS64(RW4 d, RW4 s));
+#endif
 DECLARE_MIDFUNC(jnf_DIVLU32(RW4 d, RR4 s1, W4 rem));
 DECLARE_MIDFUNC(jnf_DIVLS32(RW4 d, RR4 s1, W4 rem));
 DECLARE_MIDFUNC(jff_DIVLU32(RW4 d, RR4 s1, W4 rem));
 DECLARE_MIDFUNC(jff_DIVLS32(RW4 d, RR4 s1, W4 rem));
 DECLARE_MIDFUNC(jnf_DIVLU64(RW4 dq, RW4 dr, RR4 src));
 DECLARE_MIDFUNC(jnf_DIVLS64(RW4 dq, RW4 dr, RR4 src));
-DECLARE_MIDFUNC(jnf_ABCD_b(RW1 d, RR1 s));
-DECLARE_MIDFUNC(jnf_SBCD_b(RW1 d, RR1 s));
-DECLARE_MIDFUNC(jnf_NBCD_b(RW1 d));
+DECLARE_MIDFUNC(jff_DIVLU64(RW4 dq, RW4 dr, RR4 src));
+DECLARE_MIDFUNC(jff_DIVLS64(RW4 dq, RW4 dr, RR4 src));
+DECLARE_MIDFUNC(jff_ABCD_b(RW1 d, RR1 s));
+DECLARE_MIDFUNC(jff_SBCD_b(RW1 d, RR1 s));
+DECLARE_MIDFUNC(jff_NBCD_b(RW1 d));
 DECLARE_MIDFUNC(jnf_CHK_w(RR2 d, RR2 s));
 DECLARE_MIDFUNC(jnf_CHK_l(RR4 d, RR4 s));
 DECLARE_MIDFUNC(jff_ORSR(IM32 s, IM8 x));

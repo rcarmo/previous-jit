@@ -38,6 +38,10 @@
 #define ARM_CV_FLAGS      (ARM_C_FLAG|ARM_V_FLAG)
 
 
+/* AArch64 instructions are always 32-bit words. Force the final encoding
+ * back to uae_u32 before emission so signed intermediate literals in the
+ * macro encoders do not get sign-extended to uintptr-sized temporaries when
+ * combined with 64-bit offsets/operands on AArch64 builds. */
 #define _W(c) emit_long((uae_u32)(c))
 
 
@@ -59,9 +63,11 @@
 // move from sysreg
 #define MRS_NZCV_x(Xt)    _W((0b1101010100111 << 19) | (MIN_EL0 << 16) | (0b0100 << 12) | (0b0010 << 8) | (0b000 << 5) | (Xt))
 #define MRS_FPCR_x(Xt)    _W((0b1101010100111 << 19) | (MIN_EL0 << 16) | (0b0100 << 12) | (0b0100 << 8) | (0b000 << 5) | (Xt))
+#define MRS_FPSR_x(Xt)    _W((0b1101010100111 << 19) | (MIN_EL0 << 16) | (0b0100 << 12) | (0b0100 << 8) | (0b001 << 5) | (Xt))
 // move to sysreg
 #define MSR_NZCV_x(Xt)		_W((0b1101010100011 << 19) | (MIN_EL0 << 16) | (0b0100 << 12) | (0b0010 << 8) | (0b000 << 5) | (Xt))
 #define MSR_FPCR_x(Xt)    _W((0b1101010100011 << 19) | (MIN_EL0 << 16) | (0b0100 << 12) | (0b0100 << 8) | (0b000 << 5) | (Xt))
+#define MSR_FPSR_x(Xt)    _W((0b1101010100011 << 19) | (MIN_EL0 << 16) | (0b0100 << 12) | (0b0100 << 8) | (0b001 << 5) | (Xt))
 
 
 /*----------------------------------------
@@ -100,10 +106,10 @@
 
 /* test bit and branch */
 // these instructions do not affect condition flags
-#define TBNZ_xii(Xt,bit,i)  _W(((((bit) & 0x20) >> 5) << 31) | (0b0110111 << 24) | (((bit) & 0x1f) << 19) | ((((i)) % 0x3fff) << 5) | (Xt))
-#define TBNZ_wii(Wt,bit,i)  _W((0 << 31) | (0b0110111 << 24) | (((bit) & 0x1f) << 19) | ((((i)) % 0x3fff) << 5) | (Wt))
-#define TBZ_xii(Xt,bit,i)   _W(((((bit) & 0x20) >> 5) << 31) | (0b0110110 << 24) | (((bit) & 0x1f) << 19) | ((((i)) % 0x3fff) << 5) | (Xt))
-#define TBZ_wii(Wt,bit,i)   _W((0 << 31) | (0b0110110 << 24) | (((bit) & 0x1f) << 19) | ((((i)) % 0x3fff) << 5) | (Wt))
+#define TBNZ_xii(Xt,bit,i)  _W((((bit) & 0x20u) << 26) | (0b0110111 << 24) | (((bit) & 0x1f) << 19) | (((i) & 0x3fff) << 5) | (Xt))
+#define TBNZ_wii(Wt,bit,i)  _W((0 << 31) | (0b0110111 << 24) | (((bit) & 0x1f) << 19) | (((i) & 0x3fff) << 5) | (Wt))
+#define TBZ_xii(Xt,bit,i)   _W((((bit) & 0x20u) << 26) | (0b0110110 << 24) | (((bit) & 0x1f) << 19) | (((i) & 0x3fff) << 5) | (Xt))
+#define TBZ_wii(Wt,bit,i)   _W((0 << 31) | (0b0110110 << 24) | (((bit) & 0x1f) << 19) | (((i) & 0x3fff) << 5) | (Wt))
 
 
 /*----------------------------------------
@@ -425,6 +431,7 @@
 #define EOR_xxCflag(Xd,Xn)        _W(immCflag | immOP_EOR | ((Xn) << 5) | (Xd))
 #define CLEAR_xxZflag(Xd,Xn)      _W(immZflagInv | immOP_AND | ((Xn) << 5) | (Xd))
 #define CLEAR_xxCflag(Xd,Xn)      _W(immCflagInv | immOP_AND | ((Xn) << 5) | (Xd))
+#define CLEAR_xxVflag(Xd,Xn)      _W(immVflagInv | immOP_AND | ((Xn) << 5) | (Xd))
 #define SET_xxZflag(Xd,Xn)        _W(immZflag | immOP_ORR | ((Xn) << 5) | (Xd))
 #define SET_xxVflag(Xd,Xn)        _W(immVflag | immOP_ORR | ((Xn) << 5) | (Xd))
 #define SET_xxCflag(Xd,Xn)        _W(immCflag | immOP_ORR | ((Xn) << 5) | (Xd))
@@ -443,11 +450,11 @@
 
 #define LDR_dXi(Dt,Xn,i)      _W((0b1111110101 << 22) | (((i)/8) << 10) | ((Xn) << 5) | (Dt))
 #define LDR_sXi(St,Xn,i)      _W((0b1011110101 << 22) | (((i)/4) << 10) | ((Xn) << 5) | (St))
-#define LDR_dXx(Dt,Xn,Xm)     _W((0b11111100011 << 21) | ((Xm) << 16) | (0b011010 << 10) | ((Xn) << 5) | (Dt))
+#define LDR_dXx(Dt,Xn,Xm)     _W((0b11111100011 << 21) | ((Xn) << 16) | (EX_UXTW << 13) | (0 << 12) | (0b10 << 10) | ((Xm) << 5) | (Dt))
 
 #define STR_dXi(Dt,Xn,i)      _W((0b1111110100 << 22) | (((i)/8) << 10) | ((Xn) << 5) | (Dt))
 #define STR_sXi(St,Xn,i)      _W((0b1011110100 << 22) | (((i)/4) << 10) | ((Xn) << 5) | (St))
-#define STR_dXx(Dt,Xn,Xm)     _W((0b11111100001 << 21) | ((Xm) << 16) | (0b011010 << 10) | ((Xn) << 5) | (Dt))
+#define STR_dXx(Dt,Xn,Xm)     _W((0b11111100001 << 21) | ((Xn) << 16) | (EX_UXTW << 13) | (0 << 12) | (0b10 << 10) | ((Xm) << 5) | (Dt))
 #define FMOV_dd(Dd,Dn)        _W((0b00011110011 << 21) | (0b00000010000 << 10) | ((Dn) << 5) | (Dd))
 #define FMOV_ss(Sd,Sn)        _W((0b00011110001 << 21) | (0b00000010000 << 10) | ((Sn) << 5) | (Sd))
 #define FMOV_dx(Dd,Xn)        _W((0b10011110011 << 21) | (0b00111000000 << 10) | ((Xn) << 5) | (Dd))

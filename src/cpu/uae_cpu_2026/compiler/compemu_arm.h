@@ -90,9 +90,7 @@ typedef uae_s64 intptr;
 typedef uae_u32 uintptr;
 #endif
 /* FIXME: cpummu.cpp also checks for USE_JIT, possibly others */
-#ifndef USE_JIT
-#define USE_JIT 1
-#endif
+#define USE_JIT
 #endif
 
 #define JITPTR (uintptr)
@@ -100,7 +98,7 @@ typedef uae_u32 uintptr;
 /* Now that we do block chaining, and also have linked lists on each tag,
    TAGMASK can be much smaller and still do its job. Saves several megs
    of memory! */
-#define TAGMASK 0x0000ffff
+#define TAGMASK 0x0003ffff
 #define TAGSIZE (TAGMASK+1)
 #define MAXRUN 64
 #define cacheline(x) (((((uintptr)(x))>>1)&(TAGMASK>>1))<<1)
@@ -110,8 +108,13 @@ extern uae_u32 start_pc;
 
 struct blockinfo_t;
 
+#define JIT_TRACE_SOURCE_BYTES 22
+
 typedef struct {
   uae_u16* location;
+  uae_u32 guest_pc;
+  uae_u16 opcode;
+  uae_u8  source[JIT_TRACE_SOURCE_BYTES];
   uae_u8  specmem;
 } cpu_history;
 
@@ -199,15 +202,7 @@ extern uae_u32 needed_flags;
 extern uae_u8* comp_pc_p;
 extern void* pushall_call_handler;
 
-/* VREGS: virtual register count.  Slots 0..15 hold M68K Dn/An, then
- * PC_P=16, FLAGX=17, FLAGTMP=18, S1=19, S2=20, S3=21, and S4..S13 (22..31)
- * are extra scratch slots needed by the legacy compemu.cpp opcode
- * handlers (e.g. DBcc emits up to 6 `scratchie++` allocations from S1
- * upwards).  Was 22 here, matching only S1..S3, which silently overflowed
- * `live.state[]` and tripped `set_status invalid vreg 22` in compile_block
- * for any handler that needed more than 3 scratch slots.  Match the
- * legacy compemu.h convention (32) so all handlers fit. */
-#define VREGS 32
+#define VREGS 24
 #define VFREGS 10
 
 #define INMEM 1
@@ -260,7 +255,9 @@ STATIC_INLINE int end_block(uae_u16 opcode)
 #define S1 19
 #define S2 20
 #define S3 21
-#define SCRATCH_REGS 3
+#define S4 22
+#define S5 23
+#define SCRATCH_REGS 5
 
 #define FP_RESULT 8
 #define FS1 9
@@ -336,7 +333,11 @@ typedef struct {
 #define FR   uae_u32
 #define FRW  uae_u32
 
-#define MIDFUNC(nargs,func,args) void func args
+/* Some ARM64 MIDFUNC helpers are referenced from other translation units
+   (notably compemu_fpp.cpp) but otherwise look TU-local to the optimizer.
+   Mark them used so -O3 keeps emitting the out-of-line symbols needed by
+   clean harness rebuilds. */
+#define MIDFUNC(nargs,func,args) __attribute__((used)) void func args
 #define MENDFUNC(nargs,func,args)
 #define COMPCALL(func) func
 
@@ -378,6 +379,17 @@ extern uintptr get_const(int r);
 extern uae_u8* compemu_host_pc_from_const(uintptr pc_const);
 extern void register_branch(uintptr not_taken, uintptr taken, uae_u8 cond);
 extern void register_possible_exception(void);
+extern void register_possible_exception_at_successor(void);
+
+/* Deferred native exception requests carry the vector in the low word.  Any
+   operation whose format-2 frame needs the exact faulting opcode PC adds
+   OLDPC_VALID and stores that PC in regs.jit_exception_oldpc.  CHK also tags
+   its architecturally selected N value for publication at the common boundary.
+   Plain legacy requests (for example CHK2) remain untagged. */
+#define JIT_EXCEPTION_VECTOR_MASK 0x0000ffffu
+#define JIT_EXCEPTION_OLDPC_VALID 0x20000000u
+#define JIT_EXCEPTION_CHK_N_SET   0x40000000u
+#define JIT_EXCEPTION_CHK_N_VALID 0x80000000u
 
 #define comp_get_ibyte(o) do_get_mem_byte((uae_u8 *)(comp_pc_p + (o) + 1))
 #define comp_get_iword(o) do_get_mem_word((uae_u16 *)(comp_pc_p + (o)))

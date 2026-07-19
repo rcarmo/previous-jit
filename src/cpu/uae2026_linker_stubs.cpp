@@ -14,6 +14,13 @@
 #include "uae2026_vendored_preamble.h"
 #include "uae2026_compiler_prefs_shim.h"
 #include "cpu_emulation.h"
+#include <cstddef>
+
+static_assert(offsetof(struct regstruct, scratchregs) == 196, "vendored scratchregs ABI");
+static_assert(offsetof(struct regstruct, jit_scratch_vregs) == 216, "vendored scratch spill ABI");
+static_assert(offsetof(struct regstruct, jit_exception_oldpc) == 284, "vendored exception-PC ABI");
+static_assert(offsetof(struct regstruct, mem_banks) == 400, "vendored bank-table ABI");
+static_assert(offsetof(struct regstruct, cache_tags) == 408, "vendored cache-tag ABI");
 
 /* ================================================================== *
  * A. C++ -> C forwarding wrappers                                      *
@@ -29,6 +36,58 @@ extern "C" {
     void    prev_doint(void)                         __asm__("doint");
     void    prev_m68k_reset(int hard)                __asm__("m68k_reset");
     void    prev_read_table68k(void)                 __asm__("read_table68k");
+
+    uae_u32 prev_get_bitfield(uae_u32, uae_u32 *, int, int) __asm__("get_bitfield");
+    void prev_put_bitfield(uae_u32, uae_u32 *, uae_u32, int, int) __asm__("put_bitfield");
+    void prev_fpuop_dbcc(uae_u32, uae_u16)           __asm__("fpuop_dbcc");
+    void prev_fpuop_scc(uae_u32, uae_u16)            __asm__("fpuop_scc");
+    void prev_fpuop_trapcc(uae_u32, uaecptr, uae_u16) __asm__("fpuop_trapcc");
+    void prev_fpuop_bcc(uae_u32, uaecptr, uae_u32)   __asm__("fpuop_bcc");
+    void prev_fpuop_arithmetic(uae_u32, uae_u16)     __asm__("fpuop_arithmetic");
+    void prev_fpuop_save(uae_u32)                    __asm__("fpuop_save");
+    void prev_fpuop_restore(uae_u32)                 __asm__("fpuop_restore");
+    uae_u32 prev_op_4e73_31_ff(uae_u32)              __asm__("op_4e73_31_ff");
+}
+
+/* The audited compiler is C++; Previous's CPU and FPU cores are C. */
+uae_u32 get_bitfield(uae_u32 src, uae_u32 *data, int offset, int width)
+{
+    return prev_get_bitfield(src, data, offset, width);
+}
+void put_bitfield(uae_u32 dst, uae_u32 *data, uae_u32 value, int offset, int width)
+{
+    prev_put_bitfield(dst, data, value, offset, width);
+}
+void fpuop_dbcc(uae_u32 opcode, uae_u32 extra) { prev_fpuop_dbcc(opcode, (uae_u16)extra); }
+void fpuop_scc(uae_u32 opcode, uae_u32 extra) { prev_fpuop_scc(opcode, (uae_u16)extra); }
+void fpuop_trapcc(uae_u32 opcode, uaecptr oldpc, uae_u32 extra) { prev_fpuop_trapcc(opcode, oldpc, (uae_u16)extra); }
+void fpuop_bcc(uae_u32 opcode, uaecptr oldpc, uae_u32 extra) { prev_fpuop_bcc(opcode, oldpc, extra); }
+void fpuop_arithmetic(uae_u32 opcode, uae_u32 extra) { prev_fpuop_arithmetic(opcode, (uae_u16)extra); }
+void fpuop_save(uae_u32 opcode) { prev_fpuop_save(opcode); }
+void fpuop_restore(uae_u32 opcode) { prev_fpuop_restore(opcode); }
+void ex_rte(void) { (void)prev_op_4e73_31_ff(0x4e73); }
+void m68k_execute(void) { /* Return control to Previous's outer interpreter loop. */ }
+
+/* Previous bridge diagnostics consumed across the C++/C boundary. */
+extern "C" {
+    uae_u32 Uae2026JitLastInstructionPc = 0;
+    uae_u32 Uae2026JitLastSr = 0;
+    uae_u32 Uae2026JitLastA7 = 0;
+    uae_u32 Uae2026JitLowpcFaultSeq = 0;
+    uae_u32 Uae2026JitLastLowpcFaultPc = 0;
+    uae_u32 Uae2026JitLastLowpcFaultAddr = 0;
+    uae_u32 Uae2026JitLastLowpcFaultOpcode = 0;
+    uae_u32 Uae2026JitLastCodeHostPc = 0;
+    uae_u32 Uae2026JitLastCodeHostPhys = 0xffffffffu;
+    uae_u32 Uae2026JitLastCodeHostWords[12] = { 0 };
+    uae_u32 Uae2026JitCodeHostRingSeq = 0;
+    uae_u32 Uae2026JitCodeHostRingPc[64] = { 0 };
+    uae_u32 Uae2026JitCodeHostRingPhys[64] = { 0 };
+    uae_u32 Uae2026JitCodeHostRingWords[64][12] = { { 0 } };
+    uae_u32 Uae2026JitCodeHostRingRegs[64][16] = { { 0 } };
+    uae_u32 Uae2026JitCodeHostRingSr[64] = { 0 };
+    uae_u32 Uae2026JitLastExceptionSp = 0;
+    struct flag_struct Uae2026JitLastFlags = { 0, 0 };
 }
 
 extern "C" {
@@ -235,8 +294,23 @@ static uae_u32 Uae2026JitBankGetWord(uaecptr addr)
 static uae_u32 Uae2026JitBankGetLong(uaecptr addr)
 {
     uae_u32 off = 0;
-    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 4, &off))
-        return Uae2026JitLiveBankGetLong(addr);
+    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 4, &off)) {
+        const uae_u32 value = Uae2026JitLiveBankGetLong(addr);
+        if (getenv("B2_JIT_TRACE_RTC_BANK") && addr == 0x0200d000u) {
+            static unsigned count = 0;
+            if (count++ < 512) {
+                const uae_u32 frame = regs.regs[14];
+                const uae_u32 parent = frame ? Uae2026JitMmuGetLong(frame) : 0;
+                const uae_u32 caller = parent ? Uae2026JitMmuGetLong(parent + 4) : 0;
+                fprintf(stderr, "JIT_RTC_BANK getL[%u] addr=%08x value=%08x pc=%08x fp=%08x parent=%08x caller=%08x\n",
+                    count, (unsigned)addr, (unsigned)value,
+                    (unsigned)Uae2026JitLastInstructionPc,
+                    (unsigned)frame, (unsigned)parent, (unsigned)caller);
+                fflush(stderr);
+            }
+        }
+        return value;
+    }
     return Uae2026JitRuntimeMmuEnabled() ? Uae2026JitMmuGetLong(addr) : Uae2026JitPhysGetLong(addr);
 }
 

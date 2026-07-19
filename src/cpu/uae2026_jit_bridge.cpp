@@ -48,6 +48,13 @@ extern "C" {
 extern bool mmu_restart;
 extern uae_u16 mmu_opcode;
 
+extern "C" void Uae2026JitPublishTraceInstructionState(uae_u32 pc, uae_u16 opcode)
+{
+    regs.instruction_pc = pc;
+    regs.mmu_effective_addr = 0;
+    mmu_opcode = opcode;
+}
+
 /* UseJIT flag (defined in uae2026_linker_stubs.cpp) */
 extern bool UseJIT;
 
@@ -1294,6 +1301,9 @@ extern "C" void Uae2026JitBridgeRequestBlockExit(unsigned int source)
                 source, block_exit_request_count);
 }
 
+extern "C" uintptr_t Uae2026CompilerCacheTagsTable(void);
+extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
+
 extern "C" void Uae2026JitBridgeCompileExecute(void)
 {
     if (!jit_active)
@@ -1311,6 +1321,7 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
     regs.mem_banks = env_truthy("PREVIOUS_UAE2026_JIT_RAM", false)
         ? Uae2026JitRamMmuBankTable()
         : (uintptr_t)mem_banks;
+    regs.cache_tags = Uae2026CompilerCacheTagsTable();
 
     /* Update shadow ROM/VRAM/RAM before JIT dispatch so direct reads see current state. */
     Uae2026JitBridgeSyncOpcodeTestShadow();
@@ -1328,10 +1339,16 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
         }
     }
 
-    /* Ensure pc_p is NULL so execute_normal() always re-derives from
-     * regs.pc (which m68k_reset sets correctly) on every dispatch.     */
-    regs.pc_p    = nullptr;
-    regs.pc_oldp = nullptr;
+    /* Cache tags are keyed by the translated JIT code-host pointer. Translate
+     * before entering pushall; waiting for execute_normal() guarantees a miss
+     * and prevents pass-2/native re-entry from witnessing the compiled block. */
+    const uae_u32 dispatch_pc = regs.pc & ~1u;
+    regs.fault_pc = dispatch_pc;
+    Uae2026JitLastInstructionPc = dispatch_pc;
+    mmu_restart = true;
+    mmu_opcode = 0xffff;
+    regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(dispatch_pc);
+    regs.pc_oldp = regs.pc_p;
 
     bool handled_mmu_exception = false;
     int prb = setjmp(__exbuf);
@@ -1705,6 +1722,7 @@ extern "C" void Uae2026JitBridgeInit(void)
     regs.mem_banks = env_truthy("PREVIOUS_UAE2026_JIT_RAM", false)
         ? Uae2026JitRamMmuBankTable()
         : (uintptr_t)mem_banks;
+    regs.cache_tags = Uae2026CompilerCacheTagsTable();
 
     /*
      * JIT Shadow Memory

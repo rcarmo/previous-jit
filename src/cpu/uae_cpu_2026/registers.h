@@ -105,11 +105,17 @@ extern struct regstruct
     uae_u32 cacr,caar;
 
 #if defined(USE_JIT) && (defined(CPU_arm) || defined(CPU_aarch64) || defined(CPU_AARCH64))
-    /* Minimal ARM/AArch64 JIT compatibility surface derived from UAE/Amiberry. */
-    uae_u32 scratchregs[3];
+    /* Integer JIT helper and allocator spill backing. Keep in lockstep with
+     * compiler/compemu_arm.h:SCRATCH_REGS (S1..S5). Allocator slots must be
+     * pointer-width because translated effective addresses are host pointers. */
+    uae_u32 scratchregs[5];
+    uintptr_t jit_scratch_vregs[5];
     fpu_register scratchfregs[2];
     fpu_register fp_result;
     uae_u32 jit_exception;
+    /* Exact opcode PC for deferred exceptions with a format-2 instruction
+     * address field (notably native CHK). */
+    uae_u32 jit_exception_oldpc;
     /* Shadow FP register file for JIT FPU (64-bit double).
      * The JIT FP register allocator loads/stores these instead of
      * fpu.registers[] (which are mpfr_t under FPU_MPFR).
@@ -117,6 +123,8 @@ extern struct regstruct
     double jit_fpregs[8];
     double jit_fp_result;
     double jit_scratchfregs[2];
+    uae_u32 jit_fp_dirty_mask;
+    uae_u64 jit_host_fpcr;
     uae_u32 *raw_cputbl_count;
     uintptr_t mem_banks;
     uintptr_t cache_tags;

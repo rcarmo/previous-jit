@@ -2,65 +2,15 @@
  * Included only from compemu_support.cpp after compemu_support_arm.cpp.
  */
 
-extern "C" bool mmu_restart;
-extern "C" uae_u16 mmu_opcode;
-extern "C" int mmu040_movem;
-extern "C" uaecptr mmu040_movem_ea;
-struct previous_mmufixup_entry { int reg; uae_u32 value; };
-extern "C" previous_mmufixup_entry mmufixup[2];
-extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
-extern "C" uae_u32 Uae2026JitMmuFetchOpcode(uae_u32 pc);
-extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 pc);
-extern "C" void Uae2026JitMmuTxnBeginCallPushPreTarget(uae_u32 pc, uae_u32 opcode, uae_u32 pre_a7, uae_u32 target_pc);
-extern "C" void Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(uae_u32 pc, uae_u32 target_pc);
-extern "C" void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uae_u32 pc, uae_u32 opcode);
-extern "C" void Uae2026JitMmuTxnBeginReturnPopCurrentA7(uae_u32 pc, uae_u32 opcode, uae_u32 pop_bytes);
-extern "C" void Uae2026JitMmuTxnCommit(void);
-extern "C" void Uae2026JitCpuCheckTicks(int cycles);
+extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
 extern "C" bool Uae2026OpcodeTestModeActive(void);
-extern "C" bool jit_lockstep_window_pc(uae_u32 pc);
-extern "C" bool Uae2026OpcodeTestModeHandleStopTrailer(void);
-extern uintptr jit_MEMBaseDiff;
-static inline void jit_interpreted_op_check_ticks(void)
-{
-	if (jit_allow_ram_dispatch_env())
-		Uae2026JitCpuCheckTicks(4);
-	else
-		cpu_check_ticks();
-}
-
-extern "C" {
-uae_u32 Uae2026JitLastInstructionPc = 0;
-uae_u32 Uae2026JitLastSr = 0;
-uae_u32 Uae2026JitLastA7 = 0;
-uae_u32 Uae2026JitLowpcFaultSeq = 0;
-uae_u32 Uae2026JitLastLowpcFaultPc = 0;
-uae_u32 Uae2026JitLastLowpcFaultAddr = 0;
-uae_u32 Uae2026JitLastLowpcFaultOpcode = 0;
-uae_u32 Uae2026JitLastCodeHostPc = 0;
-uae_u32 Uae2026JitLastCodeHostPhys = 0xffffffffu;
-uae_u32 Uae2026JitLastCodeHostWords[12] = { 0 };
-uae_u32 Uae2026JitCodeHostRingSeq = 0;
-uae_u32 Uae2026JitCodeHostRingPc[64] = { 0 };
-uae_u32 Uae2026JitCodeHostRingPhys[64] = { 0 };
-uae_u32 Uae2026JitCodeHostRingWords[64][12] = { { 0 } };
-uae_u32 Uae2026JitCodeHostRingRegs[64][16] = { { 0 } };
-uae_u32 Uae2026JitCodeHostRingSr[64] = { 0 };
-struct flag_struct Uae2026JitLastFlags = { 0, 0 };
-}
-
-extern "C" void Uae2026JitCanonicalizePcAfterFallback(void);
-
-extern "C" void Uae2026JitPublishFallbackState(uae_u32 pc, uae_u32 opcode)
-{
-	regs.fault_pc = pc;
-	Uae2026JitLastInstructionPc = pc;
-	Uae2026JitLastSr = regs.sr;
-	Uae2026JitLastA7 = m68k_areg(regs, 7);
-	Uae2026JitLastFlags = regflags;
-	mmu_restart = true;
-	mmu_opcode = (uae_u16)opcode;
-}
+extern "C" uae_u32 Uae2026JitLastInstructionPc;
+extern "C" uae_u32 Uae2026JitLastSr;
+extern "C" uae_u32 Uae2026JitLastA7;
+extern "C" struct flag_struct Uae2026JitLastFlags;
+extern "C" void Uae2026JitPublishTraceInstructionState(uae_u32 pc, uae_u16 opcode);
+extern bool mmu_restart;
+extern uae_u16 mmu_opcode;
 
 static inline void jit_publish_code_fetch_state(uae_u32 pc)
 {
@@ -68,98 +18,26 @@ static inline void jit_publish_code_fetch_state(uae_u32 pc)
 	regs.fault_pc = pc;
 	Uae2026JitLastInstructionPc = pc;
 	Uae2026JitLastSr = regs.sr;
-	Uae2026JitLastA7 = m68k_areg(regs, 7);
+	Uae2026JitLastA7 = regs.regs[15];
 	Uae2026JitLastFlags = regflags;
 	mmu_restart = true;
-	mmu_opcode = (uae_u16)-1;
+	mmu_opcode = 0xffff;
 }
 
 static inline void jit_canonicalize_code_pc_if_ram_mmu(void)
 {
-	if (!jit_allow_ram_dispatch_env() || (!regs.mmu_enabled && !Uae2026OpcodeTestModeActive()))
+	const char *ram = getenv("PREVIOUS_UAE2026_JIT_RAM");
+	if ((!ram || !*ram || !strcmp(ram, "0")) ||
+	    (!regs.mmu_enabled && !Uae2026OpcodeTestModeActive()))
 		return;
-	uae_u32 pc = m68k_getpc() & ~1u;
+	/* During trace formation, interpreter handlers advance pc_p while regs.pc
+	   remains the block base. Preserve that delta instead of rewinding to the
+	   leader on the next dispatch. Fresh entries may have a null pointer pair. */
+	const uae_u32 pc = (regs.pc_p && regs.pc_oldp ? m68k_getpc() : regs.pc) & ~1u;
 	jit_publish_code_fetch_state(pc);
-	regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(pc);
+	const uintptr_t host = Uae2026JitMmuXlateCodeHost(pc);
+	regs.pc_p = (uae_u8 *)host;
 	regs.pc_oldp = regs.pc_p;
-}
-
-static inline uae_u16 jit_fetch_opcode_via_code_host(uae_u32 pc)
-{
-	jit_publish_code_fetch_state(pc);
-	uae_u8 *host = (uae_u8 *)Uae2026JitMmuXlateCodeHost(pc);
-	regs.pc_p = host;
-	regs.pc_oldp = host;
-	Uae2026JitLastCodeHostPc = pc;
-	Uae2026JitLastCodeHostPhys = (jit_MEMBaseDiff && (uintptr_t)host >= jit_MEMBaseDiff)
-		? (uae_u32)((uintptr_t)host - jit_MEMBaseDiff) : 0xffffffffu;
-	for (unsigned wi = 0; wi < 12; wi++) {
-		uae_u8 *p = host + wi * 2;
-		Uae2026JitLastCodeHostWords[wi] = ((uae_u16)p[0] << 8) | p[1];
-	}
-	{
-		const unsigned slot = Uae2026JitCodeHostRingSeq++ & 63u;
-		Uae2026JitCodeHostRingPc[slot] = pc;
-		Uae2026JitCodeHostRingPhys[slot] = Uae2026JitLastCodeHostPhys;
-		Uae2026JitCodeHostRingSr[slot] = regs.sr;
-		for (unsigned wi = 0; wi < 12; wi++)
-			Uae2026JitCodeHostRingWords[slot][wi] = Uae2026JitLastCodeHostWords[wi];
-		for (unsigned ri = 0; ri < 16; ri++)
-			Uae2026JitCodeHostRingRegs[slot][ri] = regs.regs[ri];
-	}
-	return (uae_u16)Uae2026JitLastCodeHostWords[0];
-}
-
-static inline uae_u32 jit_fetch_opcode_for_current_pc(uae_u32 pc)
-{
-	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled) {
-		const uintptr_t host_pc = (uintptr_t)regs.pc_p;
-		const bool host_phys_known = jit_MEMBaseDiff && host_pc >= jit_MEMBaseDiff;
-		const uae_u32 host_phys = host_phys_known ? (uae_u32)(host_pc - jit_MEMBaseDiff) : 0xffffffffu;
-		/* Non-identity user mappings must fetch opcodes from the code-translated
-		 * host page.  Direct GET_OPCODE and the legacy MMU iword fetch can observe
-		 * the stale data-view stream (for example 0200/0c80 at 00003334 after the
-		 * RTE seam) while pc_p/code shadow holds the correct translated bytes.
-		 * Keep low overlay/ROM identity cases on the legacy 040 fetch path; forcing
-		 * every low virtual fetch through the code host perturbs early ROM SCSI boot. */
-		if (host_phys_known && host_phys != pc &&
-			((pc >= 0x05000000u && pc < 0x08000000u) ||
-			 (regs.vbr == 0x040ae61cu && pc >= 0x00003300u && pc <= 0x00003400u) ||
-			 (getenv("B2_JIT_LOW12B_CODEHOST") && regs.vbr == 0x040ae61cu && pc >= 0x00012b00u && pc <= 0x00012c00u) ||
-			 (getenv("B2_JIT_LOW83_CODEHOST") && regs.vbr == 0x040ae61cu && pc >= 0x00008300u && pc <= 0x00008340u) ||
-			 (getenv("B2_JIT_LOW7F_CODEHOST") && regs.vbr == 0x040ae61cu && pc >= 0x00007f70u && pc <= 0x00008000u)))
-			return jit_fetch_opcode_via_code_host(pc);
-		if (pc < 0x01000000u) {
-			jit_publish_code_fetch_state(pc);
-			return (uae_u16)Uae2026JitMmuFetchOpcode(pc);
-		}
-	}
-	return GET_OPCODE;
-}
-
-extern "C" uae_u32 Uae2026JitPrefetchGuard(uae_u32 pc, uae_u32 opcode)
-{
-	/* Preserve interpreter-style restart publication around a faultable 040
-	 * instruction fetch while still allowing the native JIT body to run after a
-	 * successful fetch.  If the fetch faults, mmu_opcode intentionally remains
-	 * 0xffff, matching the primary interpreter prefetch path; if a later native
-	 * data access faults, publish the opcode that the 040 MMU fetch actually saw
-	 * rather than the compile-time opcode literal. */
-	Uae2026JitPublishFallbackState(pc, 0xffffu);
-	regs.fault_pc = pc;
-	mmu_restart = true;
-	mmu_opcode = (uae_u16)-1;
-	const uae_u16 fetched_opcode = (jit_allow_ram_dispatch_env() && (regs.mmu_enabled || Uae2026OpcodeTestModeActive()))
-		? jit_fetch_opcode_via_code_host(pc)
-		: (uae_u16)Uae2026JitMmuFetchOpcode(pc);
-	if ((uae_u16)opcode != 0xffffu && fetched_opcode != (uae_u16)opcode && getenv("B2_JIT_TRACE_PREFETCH_GUARD")) {
-		static unsigned long mismatch_count;
-		if (mismatch_count++ < 50)
-			fprintf(stderr, "JIT_PREFETCH_GUARD_MISMATCH pc=%08x compiled=%04x fetched=%04x\n",
-				(unsigned)pc, (unsigned)(opcode & 0xffffu), (unsigned)fetched_opcode);
-	}
-	Uae2026JitPublishFallbackState(pc, fetched_opcode);
-	return fetched_opcode;
 }
 
 static inline bool legacy_needflags_enabled(void)
@@ -174,11 +52,6 @@ static inline void legacy_copy_carry_to_flagx(void)
 		CSET_xc(x, NATIVE_CC_CC);
 	else
 		CSET_xc(x, NATIVE_CC_CS);
-	/* In-register FLAGX is 0/1 (JIT format); consumers read bit 0 and
-	 * tomem/jit_flush convert 0/1 -> bit-29 for the interpreter. A prior
-	 * LSL_wwi(x,x,29) here left bit-29 in-register, which a same-trace
-	 * consumer (e.g. ROXR.B reading bit 0) saw as X=0. Twin of the
-	 * DUPLICACTE_CARRY fix (18737bf); this is the legacy-path copy. */
 	unlock2(x);
 }
 
@@ -235,154 +108,6 @@ static inline int legacy_addr_with_offset(int base, uae_s32 offset)
 	return legacy_addr_with_offset_avoid(base, offset, -1);
 }
 
-static inline bool legacy_bsr_target(uae_u32 pc, uae_u16 opcode, uae_u32 *target_pc)
-{
-	if ((opcode & 0xff00u) != 0x6100u || !target_pc)
-		return false;
-	uae_s32 disp = 0;
-	if ((opcode & 0x00ffu) == 0x0000u)
-		disp = (uae_s32)(uae_s16)get_iword(2);
-	else if ((opcode & 0x00ffu) == 0x00ffu)
-		disp = (uae_s32)(((uae_u32)get_iword(2) << 16) | (uae_u32)get_iword(4));
-	else
-		disp = (uae_s32)(uae_s8)(opcode & 0x00ffu);
-	*target_pc = pc + 2u + (uae_u32)disp;
-	return true;
-}
-
-static inline bool legacy_bsr_l_target(uae_u32 pc, uae_u16 opcode, uae_u32 expected_target, uae_u32 *retpc)
-{
-	uae_u32 target = 0;
-	if (opcode != 0x61ff || !legacy_bsr_target(pc, opcode, &target))
-		return false;
-	if (target != expected_target)
-		return false;
-	if (retpc)
-		*retpc = pc + 6u;
-	return true;
-}
-
-static inline bool legacy_bsr_target_live(uae_u32 pc, uae_u16 opcode, uae_u32 *target_pc)
-{
-	if ((opcode & 0xff00u) != 0x6100u || !target_pc)
-		return false;
-	uae_s32 disp = 0;
-	if ((opcode & 0x00ffu) == 0x0000u)
-		disp = (uae_s32)(uae_s16)Uae2026JitLiveGetWord(pc + 2);
-	else if ((opcode & 0x00ffu) == 0x00ffu)
-		disp = (uae_s32)(((uae_u32)Uae2026JitLiveGetWord(pc + 2) << 16) |
-			(uae_u32)Uae2026JitLiveGetWord(pc + 4));
-	else
-		disp = (uae_s32)(uae_s8)(opcode & 0x00ffu);
-	*target_pc = pc + 2u + (uae_u32)disp;
-	return true;
-}
-
-static inline bool legacy_call_push_txn_opcode(uae_u32 pc, uae_u16 opcode)
-{
-	if ((opcode & 0xff00u) == 0x6100u)
-		return true;
-	/* Confirmed post-RTE/user seams where JSR pushes a return address before
-	   target code fetch can fault. Keep JSR transaction coverage narrow until
-	   all addressing modes have producer-side target metadata; a broad JSR(An)
-	   rule rolls back unrelated early boot probes and stalls before user space. */
-	return (pc == 0x0000003eu || pc == 0x00003c26u || pc == 0x00008334u ||
-		pc == 0x0000c52cu || pc == 0x05027706u) &&
-		(opcode & 0xffc0u) == 0x4e80u;
-}
-
-static inline void legacy_maybe_begin_call_push_txn(uae_u32 pc, uae_u16 opcode)
-{
-	if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled || !legacy_call_push_txn_opcode(pc, opcode))
-		return;
-	uae_u32 target_pc = 0;
-	if (legacy_bsr_target_live(pc, opcode, &target_pc)) {
-		Uae2026JitMmuTxnBeginCallPushPreTarget(pc, opcode, m68k_areg(regs, 7), target_pc);
-		return;
-	}
-	Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(pc, opcode);
-}
-
-static inline uae_u32 legacy_return_pop_bytes(uae_u16 opcode)
-{
-	if (opcode == 0x4e75u) /* RTS */
-		return 4;
-	if (opcode == 0x4e77u) /* RTR: PC long + CCR word */
-		return 6;
-	return 0;
-}
-
-static inline void legacy_maybe_begin_return_pop_txn(uae_u32 pc, uae_u16 opcode)
-{
-	const uae_u32 pop_bytes = legacy_return_pop_bytes(opcode);
-	if (pop_bytes && jit_allow_ram_dispatch_env() && regs.mmu_enabled)
-		Uae2026JitMmuTxnBeginReturnPopCurrentA7(pc, opcode, pop_bytes);
-}
-
-static inline bool legacy_rom_delay_bsr_callsite(uae_u32 pc, uae_u16 opcode, uae_u32 *retpc)
-{
-	if (pc != 0x01007922u && pc != 0x0100969cu && pc != 0x0100ce26u)
-		return false;
-	return legacy_bsr_l_target(pc, opcode, 0x010024ccu, retpc);
-}
-
-static inline bool legacy_rom_vbr_lookup_bsr_callsite(uae_u32 pc, uae_u16 opcode, uae_u32 *retpc)
-{
-	if (pc != 0x0100139au)
-		return false;
-	return legacy_bsr_l_target(pc, opcode, 0x010003c2u, retpc);
-}
-
-static inline bool legacy_rom_rtc_read_bsr_callsite(uae_u32 pc, uae_u16 opcode, uae_u32 *retpc)
-{
-	(void)pc;
-	return legacy_bsr_l_target(pc, opcode, 0x010077aau, retpc);
-}
-
-static inline bool legacy_ram_direct_movem_long_predec(uae_u32 pc, uae_u16 opcode)
-{
-	if (!jit_allow_ram_dispatch_env() || pc < 0x04000000u || pc >= 0x08000000u)
-		return false;
-	/* This shortcut bypasses the generated 040 MOVEM restart/fixup path.  If
-	 * one of its MMU writes faults, the bridge only sees the partially-emitted
-	 * helper state rather than the interpreter's normal MOVEM bookkeeping.  Keep
-	 * it available for diagnostics, but default to the exact interpreter path. */
-	{
-		const char *env = getenv("B2_JIT_RAM_DIRECT_MOVEM_PREDEC");
-		if (!(env && *env && strcmp(env, "0") != 0))
-			return false;
-	}
-	if ((opcode & 0xfff8u) != 0x48e0u)
-		return false;
-	const uae_u32 dstreg = opcode & 7u;
-	const uae_u16 mask = (uae_u16)Uae2026JitLiveGetWord(pc + 2);
-	uaecptr srca = m68k_areg(regs, dstreg);
-	uae_u16 amask = mask & 0xffu;
-	uae_u16 dmask = (mask >> 8) & 0xffu;
-	mmu040_movem = 1;
-	mmu040_movem_ea = srca;
-	while (amask) {
-		srca -= 4;
-		Uae2026JitMmuPutLong(srca, m68k_areg(regs, movem_index2[amask]));
-		amask = movem_next[amask];
-	}
-	while (dmask) {
-		srca -= 4;
-		Uae2026JitMmuPutLong(srca, m68k_dreg(regs, movem_index2[dmask]));
-		dmask = movem_next[dmask];
-	}
-	m68k_areg(regs, dstreg) = srca;
-	mmu040_movem = 0;
-	jit_set_guest_pc_fast(pc + 4);
-	return true;
-}
-
-static inline bool legacy_rom_rtc_write_bsr_callsite(uae_u32 pc, uae_u16 opcode, uae_u32 *retpc)
-{
-	(void)pc;
-	return legacy_bsr_l_target(pc, opcode, 0x010076c6u, retpc);
-}
-
 void start_needflags(void) { needflags = 1; }
 void end_needflags(void) { needflags = 0; }
 
@@ -411,7 +136,7 @@ void add_l(RW4 d, RR4 s) {
 }
 void add_l_ri(RW4 d, uae_s32 i) {
 #ifdef CPU_AARCH64
-	if (d == PC_P) { arm_ADD_l_ri(d, (uintptr)(uae_s64)i); return; }
+	if (d == PC_P) { arm_ADD_ptr_ri(d, i); return; }
 #endif
 	if (legacy_needflags_enabled()) jff_ADD_l_imm(d, i); else jnf_ADD_l_imm(d, i);
 }
@@ -436,6 +161,12 @@ void cmp_l(RR4 d, RR4 s) { jff_CMP_l(d, s); }
 void mov_b_rr(W1 d, RR1 s) { if (legacy_needflags_enabled()) jff_MOVE_b(d, s); else jnf_MOVE_b(d, s); }
 void mov_w_rr(W2 d, RR2 s) { if (legacy_needflags_enabled()) jff_MOVE_w(d, s); else jnf_MOVE_w(d, s); }
 void mov_w_ri(W2 d, uae_s32 i) { if (legacy_needflags_enabled()) jff_MOVE_w_imm(d, i); else jnf_MOVE_w_imm(d, i); }
+/* cont90j: no-flags in-place low-16 decrement for the DBcc cc>=2 counter.
+   Always jnf (never touches CCR) so the live compare flags the DBcc condition
+   reads are preserved (the existing sub_w_ri MIDFUNC SETS flags, so it can't
+   be used here); in-place via BFI (high word kept) with no scratch destination
+   = aliasing-immune, unlike the old lea_l_brr(scratchie,src,-1)+mov_w_rr. */
+void dbcc_dec_w(W2 d) { jnf_SUB_w_imm(d, 1); }
 
 void zero_extend_8_rr(W4 d, RR1 s)
 {
@@ -597,15 +328,34 @@ static inline void legacy_invert_carry_in_pstate(void)
 	MSR_NZCV_x(REG_WORK4);
 }
 
+/* Shifted byte/word ADC/SBC arithmetic uses the low padding bits to carry the
+   incoming X/borrow into the operand lane.  Rebuild Z from the architectural
+   narrow result while preserving the arithmetic N/C/V bits and the current
+   carry-polarity contract. */
+static inline void legacy_set_z_from_narrow_result(int d, int width)
+{
+	MRS_NZCV_x(REG_WORK4);
+	if (width == 8)
+		UBFX_wwii(REG_WORK3, d, 0, 8);
+	else
+		UBFX_wwii(REG_WORK3, d, 0, 16);
+	CMP_wi(REG_WORK3, 0);
+	CSET_xc(REG_WORK3, NATIVE_CC_EQ);
+	BFI_xxii(REG_WORK4, REG_WORK3, 30, 1);
+	MSR_NZCV_x(REG_WORK4);
+}
+
 void adc_b(RW1 d, RR1 s)
 {
 	legacy_fix_inverted_carry();
 	INIT_REGS_b(d, s);
-	MOV_xi(REG_WORK1, 0);
+	/* Ones below bit 24 propagate carry-in into the byte lane. */
+	MOVN_xi(REG_WORK1, 0);
 	BFI_xxii(REG_WORK1, s, 24, 8);
 	LSL_wwi(REG_WORK3, d, 24);
 	ADCS_www(REG_WORK1, REG_WORK1, REG_WORK3);
 	BFXIL_xxii(d, REG_WORK1, 24, 8);
+	legacy_set_z_from_narrow_result(d, 8);
 	flags_carry_inverted = false;
 	EXIT_REGS(d, s);
 }
@@ -614,11 +364,13 @@ void adc_w(RW2 d, RR2 s)
 {
 	legacy_fix_inverted_carry();
 	INIT_REGS_w(d, s);
-	MOV_xi(REG_WORK1, 0);
+	/* Ones below bit 16 propagate carry-in into the word lane. */
+	MOVN_xi(REG_WORK1, 0);
 	BFI_xxii(REG_WORK1, s, 16, 16);
 	LSL_wwi(REG_WORK3, d, 16);
 	ADCS_www(REG_WORK1, REG_WORK1, REG_WORK3);
 	BFXIL_xxii(d, REG_WORK1, 16, 16);
+	legacy_set_z_from_narrow_result(d, 16);
 	flags_carry_inverted = false;
 	EXIT_REGS(d, s);
 }
@@ -641,6 +393,7 @@ void sbb_b(RW1 d, RR1 s)
 	LSL_wwi(REG_WORK3, s, 24);
 	SBCS_www(REG_WORK1, REG_WORK1, REG_WORK3);
 	BFXIL_xxii(d, REG_WORK1, 24, 8);
+	legacy_set_z_from_narrow_result(d, 8);
 	flags_carry_inverted = true;
 	EXIT_REGS(d, s);
 }
@@ -654,6 +407,7 @@ void sbb_w(RW2 d, RR2 s)
 	LSL_wwi(REG_WORK3, s, 16);
 	SBCS_www(REG_WORK1, REG_WORK1, REG_WORK3);
 	BFXIL_xxii(d, REG_WORK1, 16, 16);
+	legacy_set_z_from_narrow_result(d, 16);
 	flags_carry_inverted = true;
 	EXIT_REGS(d, s);
 }
@@ -746,20 +500,85 @@ void setcc(W1 d, uae_s32 cc)
 	unlock2(d);
 }
 
+/* FPP-local classifier: keep this outside the MIDFUNC census because it is
+   not a separately reachable API or closure row. */
+void fcompare_result_rr(int result, int d, int s)
+{
+	d = f_readreg(d);
+	s = f_readreg(s);
+	result = f_writereg(result);
+	fcompare_result_emit(result, d, s);
+	f_unlock(result);
+	f_unlock(s);
+	f_unlock(d);
+}
+
 void cmov_l_rr(RW4 d, RR4 s, uae_s32 cc)
 {
 	if (d == s)
 		return;
+	FIX_INVERTED_CARRY
 	d = rmw(d);
-	if (isconst(s)) {
+	const bool s_is_const = isconst(s);
+	int src = s;
+	if (s_is_const) {
 		LOAD_U32(REG_WORK1, live.state[s].val);
-		CSEL_xxxc(d, REG_WORK1, d, legacy_x86_cc_to_native(cc));
+		src = REG_WORK1;
 	} else {
-		s = readreg(s);
-		CSEL_xxxc(d, s, d, legacy_x86_cc_to_native(cc));
-		unlock2(s);
+		src = readreg(s);
 	}
+
+	/* gencomp passes flags_x86.h condition numbers. M68K HI/LS use C as
+	   borrow, so they are not ARM HI/LS after the JIT's carry normalization:
+	   HI is !C&&!Z, LS is C||Z. Preserve the original destination in a work
+	   register and compose both predicates without modifying NZCV. */
+	if (cc == 7) { /* x86 HI */
+		MOV_xx(REG_WORK2, d);
+		CSEL_xxxc(REG_WORK3, src, REG_WORK2, NATIVE_CC_CC);
+		CSEL_xxxc(d, REG_WORK2, REG_WORK3, NATIVE_CC_EQ);
+	} else if (cc == 6) { /* x86 LS */
+		MOV_xx(REG_WORK2, d);
+		CSEL_xxxc(REG_WORK3, src, REG_WORK2, NATIVE_CC_CS);
+		CSEL_xxxc(d, src, REG_WORK3, NATIVE_CC_EQ);
+	} else {
+		CSEL_xxxc(d, src, d, legacy_x86_cc_to_native(cc));
+	}
+	if (!s_is_const)
+		unlock2(src);
 	unlock2(d);
+}
+
+/* jit_value_lock / jit_value_unlock: pin a just-fetched source value's host
+   register across a following destination-EA computation so that the dst-EA
+   allocation cannot clobber the live source value. Used by i_MOVE-to-memory:
+   under opt2 register pressure the destination EA (mov_l_rr(dsta,An)+lea) could
+   otherwise be allocated into the SAME host register holding the source value,
+   making the inline store write the destination ADDRESS instead of the value
+   (the self-address table that spun the 0403c19c resource-map compaction).
+   g_jvlock_reg/active are read by writereg() to also defeat its isinreg()
+   fast-path reuse of the pinned register (which would bypass alloc_reg_hinted's
+   lock check via make_exclusive eviction). */
+int g_jvlock_reg=-1;
+int g_jvlock_active=0;
+int jit_value_lock(int r)
+{
+	g_jvlock_active = 1;
+	if (isinreg(r)) {
+		int hr = live.state[r].realreg;
+		setlock(hr);
+		g_jvlock_reg = hr;
+		return hr;
+	}
+	/* Not yet in a register (defensive): materialize and lock it. */
+	int hr = readreg(r);
+	g_jvlock_reg = hr;
+	return hr;
+}
+void jit_value_unlock(int hr)
+{
+	g_jvlock_active = 0;
+	g_jvlock_reg = -1;
+	if (hr >= 0) unlock2(hr);
 }
 
 void mov_l_rR(W4 d, RR4 s, uae_s32 offset)
@@ -854,8 +673,11 @@ void mid_bswap_32(RW4 r)
 }
 
 void imul_32_32(RW4 d, RR4 s) { if (legacy_needflags_enabled()) jff_MULS32(d, s); else jnf_MULS32(d, s); }
-void imul_64_32(RW4 d, RW4 s) { if (legacy_needflags_enabled()) jff_MULS64(d, s); else jnf_MULS64(d, s); }
-void mul_64_32(RW4 d, RW4 s) { if (legacy_needflags_enabled()) jff_MULU64(d, s); else jnf_MULU64(d, s); }
+/* Legacy callers use s as both the multiplicand and returned high half.  Keep
+   that old two-operand ABI on top of the AArch64 three-operand ownership
+   contract; current gencomp MULL calls the MIDFUNC directly with explicit Dh. */
+void imul_64_32(RW4 d, RW4 s) { if (legacy_needflags_enabled()) jff_MULS64(d, s, s); else jnf_MULS64(d, s, s); }
+void mul_64_32(RW4 d, RW4 s) { if (legacy_needflags_enabled()) jff_MULU64(d, s, s); else jnf_MULU64(d, s, s); }
 
 void shra_b_ri(RW1 d, uae_s32 i) { if (legacy_needflags_enabled()) jff_ASR_b_imm(d, i); else jnf_ASR_b_imm(d, i); }
 void shra_w_ri(RW2 d, uae_s32 i) { if (legacy_needflags_enabled()) jff_ASR_w_imm(d, i); else jnf_ASR_w_imm(d, i); }
@@ -909,7 +731,7 @@ void set_zero(int r, int tmp)
 		unlock2(rr);
 	}
 	MSR_NZCV_x(REG_WORK1);
-	flags_carry_inverted = false;
+	/* Only Z changed; preserve the caller's physical-C polarity contract. */
 }
 
 int kill_rodent(int r)
@@ -918,25 +740,26 @@ int kill_rodent(int r)
 	return 0;
 }
 
-extern "C" void Uae2026JitSyncRamToShadow(void);
-
 void do_nothing(void)
 {
 #if defined(CPU_AARCH64)
-	jit_diag_do_nothing_calls++;
-	jit_diag_dispatch_count++;
-	if (countdown < 0)
-		cpu_do_check_ticks();
-	countdown = 10000000;
+	if (jit_diag_enabled()) {
+		jit_diag_do_nothing_calls++;
+		jit_diag_dispatch_count++;
+	}
+	countdown = JIT_DISPATCH_BUDGET;
 	if (quit_program > 0)
 		return;
-	{
+	if (jit_diag_enabled()) {
 		static unsigned long dn_count = 0;
 		dn_count++;
-		if (dn_count <= 5 || dn_count % 50000 == 0) {
-			fprintf(stderr, "DN[%lu] pc=%08x im=%u spc=%x d0=%08x a7=%08x\n",
+		if (dn_count <= 20 || dn_count % 50000 == 0) {
+			uaecptr sp = regs.regs[15];
+			fprintf(stderr, "DN[%lu] pc=%08x im=%u spc=%x d0=%08x d1=%08x d2=%08x d3=%08x a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a7=%08x s0=%08x s4=%08x t490=%08x t554=%08x t574=%08x\n",
 				dn_count, m68k_getpc(), (unsigned)regs.intmask,
-				(unsigned)regs.spcflags, regs.regs[0], regs.regs[15]);
+				(unsigned)regs.spcflags, regs.regs[0], regs.regs[1], regs.regs[2], regs.regs[3], regs.regs[8], regs.regs[9], regs.regs[10], regs.regs[11], regs.regs[12], regs.regs[15],
+				(unsigned)get_long(sp), (unsigned)get_long(sp + 4),
+				(unsigned)get_long(0x490), (unsigned)get_long(0x554), (unsigned)get_long(0x574));
 		}
 	}
 	MakeSR();
@@ -1081,6 +904,47 @@ static void jit_trace_lowmem400_maybe_dump(unsigned long step, uae_u32 pc)
 	fprintf(stderr, "LOWMEM400_DUMP step=%lu pc=%08x d1=%08x path=%s\n", step, (unsigned)pc, (unsigned)regs.regs[1], dump_path);
 }
 
+/* CONT.110 cont90e: one-shot dump of the QuickDraw pixel-LUT region built by the
+   0403bf00 generator, captured at the consumer entry 0403b0e0 (table complete,
+   runs once). L1-vs-L2 diff of the dump is the arbiter for whether the generator
+   (dbf d4) writes a divergent table (real producer) or dbf d4 is a flush artifact.
+   Gated by B2_LUT_DUMP_PATH; dark otherwise. */
+static void jit_trace_lut_maybe_dump(unsigned long step, uae_u32 pc)
+{
+	static int dumped = 0;
+	static int cfg_init = 0;
+	static char dump_path[512];
+	static uae_u32 trig_pc = 0x0403b0e0;
+	if (!cfg_init) {
+		const char *env = getenv("B2_LUT_DUMP_PATH");
+		dump_path[0] = 0;
+		if (env && *env) {
+			strncpy(dump_path, env, sizeof(dump_path) - 1);
+			dump_path[sizeof(dump_path) - 1] = 0;
+		}
+		const char *penv = getenv("B2_LUT_DUMP_TRIG_PC");
+		if (penv && *penv)
+			trig_pc = (uae_u32)strtoul(penv, NULL, 0);
+		cfg_init = 1;
+	}
+	if (dumped || !dump_path[0])
+		return;
+	if (pc != trig_pc)
+		return;
+	uae_u32 lo = 0xe000, hi = 0x14000;
+	const char *le = getenv("B2_LUT_DUMP_LO"); if (le && *le) lo = (uae_u32)strtoul(le, NULL, 0);
+	const char *he = getenv("B2_LUT_DUMP_HI"); if (he && *he) hi = (uae_u32)strtoul(he, NULL, 0);
+	FILE *f = fopen(dump_path, "wb");
+	if (!f)
+		return;
+	for (uaecptr addr = lo; addr < hi; addr++)
+		fputc((int)get_byte(addr), f);
+	fclose(f);
+	dumped = 1;
+	fprintf(stderr, "LUT_DUMP step=%lu pc=%08x lo=%08x hi=%08x path=%s\n",
+		step, (unsigned)pc, (unsigned)lo, (unsigned)hi, dump_path);
+}
+
 static void jit_trace_table_log(const char *tag, unsigned long step, uae_u32 pc)
 {
 	if (!jit_trace_table_enabled())
@@ -1110,125 +974,68 @@ static void jit_trace_table_log(const char *tag, unsigned long step, uae_u32 pc)
 	jit_trace_table_maybe_dump_complete(tag, step, pc);
 }
 
+#if defined(CPU_AARCH64)
+static cpuop_func *jit_orig_op_0_0_ff = NULL;
+
+static inline void jit_execute_ori_b_d0_exact(void)
+{
+	uae_u8 *p = regs.pc_p;
+	uae_u8 imm = p[3];
+	uae_u32 d0 = m68k_dreg(regs, 0);
+	uae_u8 result = (uae_u8)(d0 | imm);
+	regflags.nzcv = (result == 0 ? (uae_u32)FLAGVAL_Z : 0) |
+		((result & 0x80) ? (uae_u32)FLAGVAL_N : 0);
+	if (imm)
+		m68k_dreg(regs, 0) = (d0 & ~0xff) | result;
+	regs.pc_p = p + 4;
+}
+
+static void REGPARAM2 jit_fast_op_0_0_ff(uae_u32 opcode)
+{
+	(void)opcode;
+	jit_execute_ori_b_d0_exact();
+}
+
+static void jit_install_fast_interpreter_overrides(void)
+{
+	static bool installed = false;
+	if (installed)
+		return;
+	jit_orig_op_0_0_ff = cpufunctbl[0];
+	cpufunctbl[0] = jit_fast_op_0_0_ff;
+	installed = true;
+}
+#endif
+
 void exec_nostats(void)
 {
 #if defined(CPU_AARCH64)
-	jit_diag_exec_nostats_calls++;
-	jit_diag_dispatch_count++;
-	jit_diag_maybe_print();
-	jit_canonicalize_code_pc_if_ram_mmu();
-	{
-		uintptr pcp = (uintptr)regs.pc_p;
-		uintptr ram_base = (uintptr)RAMBaseHost;
-		uintptr ram_limit = ram_base + RAMSize;
-		uintptr rom_base = (uintptr)ROMBaseHost;
-		uintptr rom_limit = rom_base + ROMSize;
-		uintptr low_rom_base = rom_base - (uintptr)ROMBaseMac;
-		uintptr low_rom_limit = low_rom_base + ROMSize;
-		bool valid_host_pc = ((pcp >= ram_base && pcp < ram_limit) ||
-		                      (pcp >= rom_base && pcp < rom_limit) ||
-		                      (pcp >= low_rom_base && pcp < low_rom_limit));
-		if (!valid_host_pc || (pcp & 1)) {
-			static int bad_count = 0;
-			uae_u32 safe_pc = regs.pc & ~1u;
-			/* If safe_pc looks like 24-bit sign-extended ROM address
-			   (0xFFxxxxxx with underlying 0x008xxxxx), mask to 24 bits. */
-			if ((safe_pc & 0xFF000000) == 0xFF000000 && (safe_pc & 0x00800000))
-				safe_pc &= 0x00FFFFFF;
-			if (bad_count++ < 50)
-				fprintf(stderr, "JIT: exec_nostats bad pc_p=%p regs.pc=%08x d0=%08x d1=%08x a0=%08x a1=%08x a2=%08x a7=%08x sr=%04x spc=%08x oldp=%p last_setpc=%p last_kind=%u last_seq=%lu\n",
-					(void*)regs.pc_p, regs.pc,
-					regs.regs[0], regs.regs[1], regs.regs[8], regs.regs[9], regs.regs[10], regs.regs[15],
-					(unsigned)regs.sr, (unsigned)regs.spcflags, (void*)regs.pc_oldp,
-					(void*)jit_last_setpc_value, (unsigned)jit_last_setpc_kind, jit_last_setpc_seq);
-			/* Re-derive pc_p from guest PC.  In RAM/MMU mode this must use
-			 * code-space MMU translation; get_real_address() is a direct shadow
-			 * lookup and maps low user virtual PCs to stale ROM-overlay bytes.
-			 * Publish the target first because the code translation itself can
-			 * fault and must restart from safe_pc, not the previous instruction. */
-			regs.pc = safe_pc;
-			regs.fault_pc = safe_pc;
-			Uae2026JitLastInstructionPc = safe_pc;
-			if (jit_allow_ram_dispatch_env() && (regs.mmu_enabled || Uae2026OpcodeTestModeActive()))
-				regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(safe_pc);
-			else
-				regs.pc_p = get_real_address(safe_pc, 0, sz_word);
-			regs.pc_oldp = regs.pc_p;
-		}
+	if (jit_strict_full_jit_env())
+		jit_abort("strict full-JIT: exec_nostats runtime entry pc=%08x", m68k_getpc());
+	if (jit_diag_enabled()) {
+		jit_diag_exec_nostats_calls++;
+		jit_diag_dispatch_count++;
+		jit_diag_maybe_print();
 	}
 #endif
 	static unsigned long trace_count = 0;
+	const bool trace_enabled = jit_tracewin_enabled();
 	for (;;) {
-#if defined(CPU_AARCH64)
-		jit_maybe_apply_runtime_helpers();
-		if (SPCFLAGS_TEST(SPCFLAG_ALL))
-			return;
-#endif
 		uae_u32 before_pc = m68k_getpc();
-		uae_u32 opcode = jit_fetch_opcode_for_current_pc(before_pc);
-		{
-			static int _seenENS = 0;
-			if (!_seenENS && before_pc == 0x010001b0u) {
-				_seenENS = 1;
-				fprintf(stderr, "RAMTEST_ENTRY(ns) pc=%08x d0=%08x d1=%08x d4=%08x "
-					"a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x sr=%04x\n",
-					(unsigned)before_pc,
-					(unsigned)regs.regs[0],(unsigned)regs.regs[1],(unsigned)regs.regs[4],
-					(unsigned)regs.regs[8],(unsigned)regs.regs[9],(unsigned)regs.regs[10],(unsigned)regs.regs[11],
-					(unsigned)regs.regs[12],(unsigned)regs.regs[13],(unsigned)regs.regs[14],(unsigned)regs.regs[15],
-					(unsigned)regs.sr);
-				fflush(stderr);
-			}
+		uae_u32 opcode = GET_OPCODE;
+		jit_current_interp_pc = before_pc;
+		jit_current_interp_opcode = opcode;
+		bool trace_this = false;
+		if (trace_enabled && trace_count < jit_tracewin_limit()) {
+			trace_this = jit_tracewin_match(before_pc);
 		}
-		Uae2026JitMmuTxnCommit();
-		Uae2026JitPublishFallbackState(before_pc, opcode);
-		if (Uae2026OpcodeTestModeActive() && (uae_u16)opcode == 0x4e72u) {
-			m68k_setpc(before_pc);
-			Uae2026OpcodeTestModeHandleStopTrailer();
-			return;
-		}
-		if (legacy_ram_direct_movem_long_predec(before_pc, (uae_u16)opcode)) {
-			jit_interpreted_op_check_ticks();
-			if (SPCFLAGS_TEST(SPCFLAG_ALL))
-				return;
-			continue;
-		}
-		{
-			uae_u32 retpc = 0;
-			if ((legacy_rom_delay_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
-				 jit_op_rom_delay_bsr_callsite(before_pc, retpc)) ||
-				(legacy_rom_vbr_lookup_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
-				 jit_op_rom_vbr_global_lookup_callsite(before_pc, retpc)) ||
-				(legacy_rom_rtc_write_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
-				 jit_op_rom_rtc_write_byte_callsite(before_pc, retpc)) ||
-				(legacy_rom_rtc_read_bsr_callsite(before_pc, (uae_u16)opcode, &retpc) &&
-				 jit_op_rom_rtc_read_byte_callsite(before_pc, retpc))) {
-				jit_interpreted_op_check_ticks();
-				if (SPCFLAGS_TEST(SPCFLAG_ALL))
-					return;
-				continue;
-			}
-		}
-		if (legacy_call_push_txn_opcode(before_pc, (uae_u16)opcode))
-			legacy_maybe_begin_call_push_txn(before_pc, (uae_u16)opcode);
-		else
-			legacy_maybe_begin_return_pop_txn(before_pc, (uae_u16)opcode);
-		bool trace_this = trace_count < jit_tracewin_limit() && jit_tracewin_match(before_pc);
-		/* DARK ONE-SHOT: does the INTERP fallback ever reach the 0x010025xx
-		   hw-pulse routine, and with what intmask? Splits upstream-misroute (1)
-		   vs SR/intmask codegen (2). Negligible cost (static short-circuit). */
-		{
-			static int _seen25 = 0;
-			if (!_seen25 && before_pc >= 0x01002c70u && before_pc < 0x01002c90u) {
-				_seen25 = 1;
-				fprintf(stderr, "INTERP_REACH_25xx pc=%08x intmask=%d intflags=0x%x sr=0x%04x [PROBE-VALIDATION-CRC]\n",
-					(unsigned)before_pc, (int)regs.intmask, (unsigned)InterruptFlags, (unsigned)regs.sr);
-				fflush(stderr);
-			}
-		}
+		if (jit_guest_path_enabled())
+			jit_guest_path_record_reference(before_pc);
+		if (jit_trace_target_pc(before_pc))
+			jit_trace_pc_hit(before_pc, (2u << 16) | (opcode & 0xffff));
 		if (trace_this) {
 			fprintf(stderr,
-				"TRACEWINJ BEFORE step=%lu pc=%08x op=%04x regs.pc=%08x pc_p=%p oldp=%p d0=%08x d1=%08x a0=%08x a1=%08x a2=%08x a7=%08x sr=%04x nzcv=%08x x=%08x\n",
+				"TRACEWINJ BEFORE step=%lu pc=%08x op=%04x regs.pc=%08x pc_p=%p oldp=%p d0=%08x d1=%08x d2=%08x d3=%08x a0=%08x a1=%08x a2=%08x a3=%08x a7=%08x sr=%04x nzcv=%08x x=%08x\n",
 				trace_count + 1,
 				(unsigned)before_pc,
 				(unsigned)opcode,
@@ -1237,9 +1044,12 @@ void exec_nostats(void)
 				(void*)regs.pc_oldp,
 				(unsigned)regs.regs[0],
 				(unsigned)regs.regs[1],
+				(unsigned)regs.regs[2],
+				(unsigned)regs.regs[3],
 				(unsigned)regs.regs[8],
 				(unsigned)regs.regs[9],
 				(unsigned)regs.regs[10],
+				(unsigned)regs.regs[11],
 				(unsigned)regs.regs[15],
 				(unsigned)regs.sr,
 				(unsigned)regflags.nzcv,
@@ -1247,13 +1057,11 @@ void exec_nostats(void)
 			jit_trace_table_log("TRACEWINJTAB", trace_count + 1, before_pc);
 		}
 		(*cpufunctbl[opcode])(opcode);
-		jit_execprof_tick(before_pc, opcode, 1);
-		Uae2026JitCanonicalizePcAfterFallback();
 		if (trace_this) {
 			uae_u32 after_pc = m68k_getpc();
 			trace_count++;
 			fprintf(stderr,
-				"TRACEWINJ AFTER step=%lu pc=%08x op=%04x regs.pc=%08x pc_p=%p oldp=%p d0=%08x d1=%08x a0=%08x a1=%08x a2=%08x a7=%08x sr=%04x nzcv=%08x x=%08x\n",
+				"TRACEWINJ AFTER step=%lu pc=%08x op=%04x regs.pc=%08x pc_p=%p oldp=%p d0=%08x d1=%08x d2=%08x d3=%08x a0=%08x a1=%08x a2=%08x a3=%08x a7=%08x sr=%04x nzcv=%08x x=%08x\n",
 				trace_count,
 				(unsigned)after_pc,
 				(unsigned)opcode,
@@ -1262,44 +1070,84 @@ void exec_nostats(void)
 				(void*)regs.pc_oldp,
 				(unsigned)regs.regs[0],
 				(unsigned)regs.regs[1],
+				(unsigned)regs.regs[2],
+				(unsigned)regs.regs[3],
 				(unsigned)regs.regs[8],
 				(unsigned)regs.regs[9],
 				(unsigned)regs.regs[10],
+				(unsigned)regs.regs[11],
 				(unsigned)regs.regs[15],
 				(unsigned)regs.sr,
 				(unsigned)regflags.nzcv,
 				(unsigned)regflags.x);
 			jit_trace_table_log("TRACEWINJTAB", trace_count, after_pc);
 		}
-		jit_interpreted_op_check_ticks();
+		cpu_check_ticks();
 		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL))
 			return;
 	}
 }
 
+#if defined(CPU_AARCH64)
+extern "C" {
+uae_u32 jit_current_interp_pc = 0;
+uae_u32 jit_current_interp_opcode = 0;
+}
+
+static void exec_nostats_limited(int maxrun_limit)
+{
+	if (jit_strict_full_jit_env())
+		jit_abort("strict full-JIT: exec_nostats_limited runtime entry pc=%08x", m68k_getpc());
+	int run_count = 0;
+	if (maxrun_limit <= 0 || maxrun_limit > MAXRUN)
+		maxrun_limit = MAXRUN;
+	for (;;) {
+		uae_u32 opcode = GET_OPCODE;
+		const uae_u32 pc = m68k_getpc();
+		if (jit_guest_instruction_observer_enabled())
+			jit_guest_path_record_nostats(pc);
+		if (jit_trace_target_pc(pc))
+			jit_trace_pc_hit(pc, (2u << 16) | (opcode & 0xffff));
+		(*cpufunctbl[opcode])(opcode);
+		cpu_check_ticks();
+		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL) || ++run_count >= maxrun_limit)
+			return;
+	}
+}
+
+#endif
+
+static inline bool jit_interpop_assert_target(uae_u32 *target)
+{
+#if defined(CPU_AARCH64)
+	static int initialized = 0;
+	static bool enabled = false;
+	static uae_u32 value = 0;
+	if (!initialized) {
+		const char *env = getenv("B2_INTERPOP_PC");
+		if (env && *env) {
+			char *end = NULL;
+			const unsigned long parsed = strtoul(env, &end, 0);
+			enabled = end != env;
+			value = (uae_u32)parsed;
+		}
+		initialized = 1;
+	}
+	if (target)
+		*target = value;
+	return enabled;
+#else
+	(void)target;
+	return false;
+#endif
+}
+
 void execute_normal(void)
 {
 #if defined(CPU_AARCH64)
-	jit_diag_execute_normal_calls++;
-	jit_diag_dispatch_count++;
-	if (getenv("B2_JIT_EXECN_HIST")) {
-		static unsigned long _eh = 0;
-		if ((_eh++ & 0x1fffUL) == 0) {
-			fprintf(stderr, "EXECN_PC %08x\n", (unsigned)(regs.pc & ~1u));
-			fflush(stderr);
-		}
-		uae_u32 _hp = regs.pc & ~1u;
-		if (_hp == 0x01007342u || _hp == 0x010072a8u || _hp == 0x0100832au) {
-			static int _hc = 0;
-			if (_hc++ < 24) {
-				blockinfo *_hb = regs.pc_p ? get_blockinfo_addr(regs.pc_p) : 0;
-				uae_u16 _op = regs.pc_p ? DO_GET_OPCODE((uae_u16*)regs.pc_p) : 0;
-				fprintf(stderr, "EXECN_WHY pc=%08x op=%04x bi=%p count=%d status=%d handler=%p\n",
-					_hp, _op, (void*)_hb, _hb?_hb->count:-999, _hb?_hb->status:-999,
-					(void*)(_hb?_hb->handler_to_use:0));
-				fflush(stderr);
-			}
-		}
+	if (jit_diag_enabled()) {
+		jit_diag_execute_normal_calls++;
+		jit_diag_dispatch_count++;
 	}
 	/* If quit_program is set (e.g. M68K_EXEC_RETURN), skip everything
 	   and return immediately. Running further instructions would
@@ -1312,177 +1160,49 @@ void execute_normal(void)
 		m68k_do_specialties();
 	}
 
-	jit_diag_maybe_print();
+	/* Previous code PCs are virtual under the 68040 MMU. Publish precise fault
+	   state before translating and keep the PC pointer pair canonical. */
 	jit_canonicalize_code_pc_if_ram_mmu();
-	if (getenv("B2_JIT_SUCC_LOG")) {
-		uae_u32 _pc = regs.pc & ~1u;
-		if (_pc == 0x01002c32u || _pc == 0x01002c34u || _pc == 0x0100253eu) {
-			static int _mt = 0;
-			if (_mt++ < 4) {
-				fprintf(stderr, "MEMTEST pc=%08x d0=%08x d1=%08x a1=%08x a2=%08x a3=%08x\n",
-					_pc, (unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[9],
-					(unsigned)regs.regs[10], (unsigned)regs.regs[11]);
-				if (_pc == 0x0100253eu) {
-					uae_u32 base = (uae_u32)regs.regs[10]; /* a2 */
-					for (int i = 8; i < 16; i++)
-						fprintf(stderr, "  MEM[%08x] = %08x (expect %08x)\n",
-							(unsigned)(base + i*4), (unsigned)get_long(base + i*4), (unsigned)i);
-				}
-			}
-		}
-		if (_pc >= 0x01002c76u && _pc <= 0x01002ca0u) {
-			static int _sl = 0;
-			/* Always log the CRC loop-exit/finalize PCs (c8e not.l, c9c move.l d1,d0);
-			   bound the hot inner-loop PCs. */
-			bool _fin = (_pc == 0x01002c8eu || _pc == 0x01002c9cu);
-			if (_fin || _sl++ < 40)
-				fprintf(stderr, "SUCC%s en=%08x d0=%08x d1=%08x d2=%08x d3=%08x\n",
-					_fin ? "FIN" : "", _pc, (unsigned)regs.regs[0], (unsigned)regs.regs[1],
-					(unsigned)regs.regs[2], (unsigned)regs.regs[3]);
-		}
-		/* A0-TRACTABILITY: capture A0 (jump target) + A5(base) + D0/D1 across the
-		   CRC-finalize block, esp. JMP(A0)@0x01002cb4 and the device MOVE.L
-		   @0x01002c9e/cac (extension 0200 d000). Names whether A0 is corrupt and
-		   whether the device read is involved. */
-		if (_pc == 0x01002c9eu || _pc == 0x01002cacu || _pc == 0x01002cb4u ||
-		    _pc == 0x01002c60u || _pc == 0x01002c76u) {
-			static int _al = 0;
-			if (_al++ < 30) {
-				uae_u32 fld = get_long(0x0b03f99cu);
-				fprintf(stderr, "A0TRACE pc=%08x a0=%08x a5=%08x d0=%08x d1=%08x [0x0b03f99c]=%08x\n",
-					_pc, (unsigned)regs.regs[8], (unsigned)regs.regs[13],
-					(unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)fld);
-			}
-		}
-		/* CHANGE-DETECTOR: name the store that writes [0x0b03f99c]. Log the PC the
-		   first times the field's value transitions (esp. 0 -> 0x0000fe67). The store
-		   is just upstream of the logged PC. */
-		{
-			static uae_u32 _last99c = 0xffffffffu;
-			static int _chg = 0;
-			uae_u32 cur = get_long(0x0b03f99cu);
-			if (cur != _last99c && _chg < 20) {
-				_chg++;
-				fprintf(stderr, "F99C_CHG pc=%08x old=%08x new=%08x d0=%08x d1=%08x a1=%08x\n",
-					(unsigned)_pc, (unsigned)_last99c, (unsigned)cur,
-					(unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[9]);
-				fflush(stderr);
-			}
-			_last99c = cur;
-		}
-		/* CURRENT-WALL tractability: the stuck loop 0x0100_72xx-83xx. Log all regs +
-		   the polled memory at the loop entry (LINK) and the BSR.L poll point, to
-		   name whether the loop waits on a device read (hard) or a miscomputed reg
-		   (tractable). */
-		if (_pc == 0x010072a8u || _pc == 0x0100832au || _pc == 0x01007342u) {
-			static int _wl = 0;
-			if (_wl++ < 24) {
-				uae_u32 a0v = (unsigned)regs.regs[8];
-				uae_u32 memA0 = (a0v && !(a0v & 1)) ? (unsigned)get_long(a0v) : 0xDEADBEEF;
-				fprintf(stderr, "WALL pc=%08x d0=%08x d1=%08x d2=%08x a0=%08x a1=%08x a2=%08x mem[a0]=%08x sr=%04x\n",
-					_pc, (unsigned)regs.regs[0], (unsigned)regs.regs[1], (unsigned)regs.regs[2],
-					a0v, (unsigned)regs.regs[9], (unsigned)regs.regs[10], memA0, (unsigned)regs.sr);
-				fflush(stderr);
-			}
-		}
-		/* SKIP-GATE: does the JIT reach the init gate 0x01000c04/c08 (TST.L (0x10,A6);
-		   BNE skip)? log the tested value + flags + branch reach, both configs. */
-		if (_pc == 0x01000c04u || _pc == 0x01000c08u || _pc == 0x01000c0cu || _pc == 0x01000c8eu) {
-			static int _sg = 0;
-			if (_sg++ < 24) {
-				uae_u32 a6 = (unsigned)regs.regs[14];
-				uae_u32 t = (a6 && !((a6+0x10)&1)) ? (unsigned)get_long(a6+0x10) : 0xDEADBEEF;
-				fprintf(stderr, "SKIPGATE pc=%08x [a6+0x10]=%08x a6=%08x sr=%04x nzcv=%08x\n",
-					_pc, t, a6, (unsigned)regs.sr, (unsigned)regflags.nzcv);
-				fflush(stderr);
-			}
-		}
+
+	if (jit_diag_enabled())
+		jit_diag_maybe_print();
+	/* A corrupt fetch pointer is an internal JIT invariant failure, not an
+	   architectural bus error and not permission to reconstruct registers from
+	   stale metadata.  Strict mode checks the canonical direct-address mapping
+	   and fails closed; ordinary execution retains the established fetch path. */
+	if (jit_strict_full_jit_env()) {
+		const uaecptr guest_pc = m68k_getpc();
+		const uae_u8 *expected_pc_p = get_real_address(guest_pc, 0, sz_word);
+		if (regs.pc_p != expected_pc_p)
+			jit_abort("strict full-JIT: noncanonical fetch pointer pc=%08x pc_p=%p expected=%p oldp=%p",
+				guest_pc, (void*)regs.pc_p, (const void*)expected_pc_p,
+				(void*)regs.pc_oldp);
 	}
-	/* If pc_p is outside valid Mac memory range (corrupt), re-derive it. */
-	{
-		uintptr pcp = (uintptr)regs.pc_p;
-		uintptr ram_base = (uintptr)RAMBaseHost;
-		uintptr ram_limit = ram_base + RAMSize;
-		uintptr rom_base = (uintptr)ROMBaseHost;
-		uintptr rom_limit = rom_base + ROMSize;
-		uintptr low_rom_base = rom_base - (uintptr)ROMBaseMac;
-		uintptr low_rom_limit = low_rom_base + ROMSize;
-		bool valid_host_pc = ((pcp >= ram_base && pcp < ram_limit) ||
-		                      (pcp >= rom_base && pcp < rom_limit) ||
-		                      (pcp >= low_rom_base && pcp < low_rom_limit));
-		if (!valid_host_pc || (pcp & 1)) {
-			static int fix_count = 0;
-			uae_u32 safe_pc = regs.pc & ~1u;
-			/* If safe_pc looks like 24-bit sign-extended ROM address
-			   (0xFFxxxxxx with underlying 0x008xxxxx), mask to 24 bits. */
-			if ((safe_pc & 0xFF000000) == 0xFF000000 && (safe_pc & 0x00800000))
-				safe_pc &= 0x00FFFFFF;
-			if (fix_count++ < 50)
-				fprintf(stderr, "JIT: exec_normal bad pc_p=%p regs.pc=%08x safe=%08x "
-					"d0=%08x d1=%08x a0=%08x a7=%08x sr=%04x spc=%08x oldp=%p "
-					"isp=%08x msp=%08x s=%d m=%d\n",
-					(void*)regs.pc_p, regs.pc, safe_pc,
-					regs.regs[0], regs.regs[1], regs.regs[8], regs.regs[15],
-					(unsigned)regs.sr, (unsigned)regs.spcflags, (void*)regs.pc_oldp,
-					(unsigned)regs.isp, (unsigned)regs.msp, regs.s, regs.m);
-			/* Check if the guest address is in valid executable memory:
-			   - Basilisk-style RAM: 0 <= pc < RAMSize
-			   - Previous RAM: 0x04000000 <= pc < 0x04000000 + RAMSize
-			   - ROM: ROMBaseMac <= pc < ROMBaseMac + ROMSize
-			   Anything else (NuBus space, frame buffer, unmapped) is a bus error. */
-			const bool mmu_code_path = jit_allow_ram_dispatch_env() && (regs.mmu_enabled || Uae2026OpcodeTestModeActive());
-			bool valid_mac_pc = (safe_pc < (uae_u32)RAMSize) ||
-				(safe_pc >= 0x04000000u && safe_pc < 0x04000000u + (uae_u32)RAMSize) ||
-				(safe_pc >= (uae_u32)ROMBaseMac && safe_pc < (uae_u32)(ROMBaseMac + ROMSize));
-			if (!valid_mac_pc && !mmu_code_path) {
-				/* Guest PC points to unmapped memory (e.g. NuBus slot probe).
-				   Generate a bus error exception to let the ROM's handler
-				   deal with it, just like real hardware would. */
-				static int buserr_count = 0;
-				if (buserr_count++ < 10)
-					fprintf(stderr, "JIT: bus error for unmapped PC=%08x a7=%08x isp=%08x (triggering Exception 2)\n",
-						safe_pc, m68k_areg(regs, 7), regs.isp);
-				/* Restore a7 from ISP/MSP — the JIT may have desynchronized them */
-				if (regs.s && !regs.m && regs.isp >= 0x1000)
-					m68k_areg(regs, 7) = regs.isp;
-				else if (regs.s && regs.m && regs.msp >= 0x1000)
-					m68k_areg(regs, 7) = regs.msp;
-				Exception(2, safe_pc);
-				return;
-			}
-			/* Valid Mac address — re-derive pc_p from the guest PC.  In RAM/MMU
-			 * mode this must use code-space MMU translation; get_real_address()
-			 * maps low user virtual PCs to stale ROM-overlay shadow bytes.  Do
-			 * not pre-filter virtual PCs through direct physical windows when
-			 * the 040 MMU is active; let the code translation decide validity. */
-			regs.pc = safe_pc;
-			regs.fault_pc = safe_pc;
-			Uae2026JitLastInstructionPc = safe_pc;
-			if (mmu_code_path)
-				regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(safe_pc);
-			else
-				regs.pc_p = get_real_address(safe_pc, 0, sz_word);
-			regs.pc_oldp = regs.pc_p;
+	/* Ordinary mode avoids caching transient zero-filled RAM probes. Strict mode
+	   must not substitute a C semantic loop for translated execution: let the
+	   first-seen tracer observe the code and compile an L2 block normally. */
+	if (!jit_strict_full_jit_env()) {
+		uae_u32 fast_pc = get_virtual_address((uae_u8*)regs.pc_p);
+		if (fast_pc < (uae_u32)ROMBaseMac && *((const uae_u16*)regs.pc_p) == 0) {
+			exec_nostats_limited(MAXRUN);
+			return;
 		}
 	}
 #endif
 	if (!check_for_cache_miss()) {
 		cpu_history pc_hist[MAXRUN];
+#ifdef UAE
 		memset(pc_hist, 0, sizeof(pc_hist));
+#endif
 		int blocklen = 0;
 		int total_cycles = 0;
-		/* Match the original UAE compiler model: start_pc is the guest base
-		 * address and start_pc_p is the host pointer corresponding to that base.
-		 * Using the current pc_p as both base and moving PC pointer makes compiled
-		 * fall-through PCs drift by host-pointer deltas. */
-		start_pc_p = regs.pc_oldp;
-		start_pc = regs.pc;
+		/* Capture the architectural leader before the interpreter tracer advances
+		   pc_p. m68k_getpc() preserves a continuation delta left by the previous
+		   short trace; translated host pointers themselves are not reversible. */
+		start_pc_p = regs.pc_p;
+		start_pc = m68k_getpc() & ~1u;
 #if defined(CPU_AARCH64)
-		jit_lowpc_compile_trace_begin();
 		{
-			uae_u32 trace_a1 = regs.regs[9];
-			if (trace_a1 >= 0x1e00 && trace_a1 < 0x1e40)
-				basilisk_trace_after_table_ready = true;
 			static unsigned long pctrace_count = 0;
 			static unsigned long pctrace_limit = 0;
 			static bool pctrace_init = false;
@@ -1491,8 +1211,10 @@ void execute_normal(void)
 				pctrace_limit = env ? strtoul(env, NULL, 10) : 0;
 				pctrace_init = true;
 			}
-			uae_u32 pc = m68k_getpc();
-			if (pctrace_limit && pctrace_count < pctrace_limit && jit_pctrace_match(pc)) {
+			if (pctrace_limit && pctrace_count < pctrace_limit) {
+				uae_u32 pc = m68k_getpc();
+				if (!jit_pctrace_match(pc))
+					goto jit_pctrace_done;
 				static unsigned long pctrace_words = 0;
 				static bool pctrace_words_init = false;
 				if (!pctrace_words_init) {
@@ -1502,7 +1224,6 @@ void execute_normal(void)
 				}
 				static int pctrace_stack = -1;
 				static int pctrace_mem = -1;
-				static int pctrace_live_words = -1;
 				if (pctrace_stack < 0) {
 					const char *env = getenv("B2_JIT_PCTRACE_STACK");
 					pctrace_stack = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
@@ -1511,14 +1232,9 @@ void execute_normal(void)
 					const char *env = getenv("B2_JIT_PCTRACE_MEM");
 					pctrace_mem = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
 				}
-				if (pctrace_live_words < 0) {
-					const char *env = getenv("B2_JIT_PCTRACE_LIVE");
-					pctrace_live_words = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
-				}
 				unsigned long current_step = pctrace_count++;
-				uintptr_t pcp_phys = (jit_MEMBaseDiff && (uintptr_t)regs.pc_p >= jit_MEMBaseDiff) ? ((uintptr_t)regs.pc_p - jit_MEMBaseDiff) : 0xffffffffu;
-				fprintf(stderr, "PCTRACE %lu %08x phys=%08x pc_p=%p oldp=%p d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x sr=%04x nzcv=%08x x=%08x\n",
-					current_step, pc, (unsigned)pcp_phys, (void*)regs.pc_p, (void*)regs.pc_oldp,
+				fprintf(stderr, "PCTRACE %lu %08x d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x sr=%04x nzcv=%08x x=%08x\n",
+					current_step, pc,
 					regs.regs[0], regs.regs[1], regs.regs[2], regs.regs[3],
 					regs.regs[4], regs.regs[5], regs.regs[6], regs.regs[7],
 					regs.regs[8], regs.regs[9], regs.regs[10], regs.regs[11],
@@ -1526,38 +1242,36 @@ void execute_normal(void)
 					(unsigned)regs.sr, regflags.nzcv, regflags.x);
 				jit_trace_table_log("PCTTABLE", current_step, pc);
 				jit_trace_lowmem400_maybe_dump(current_step, pc);
+				jit_trace_lut_maybe_dump(current_step, pc);
 				if (pctrace_stack) {
 					uaecptr sp = m68k_areg(regs, 7);
 					fprintf(stderr,
-						"PCTSTACK %08x sm4=%08x s0=%08x s4=%08x s8=%08x\n",
+						"PCTSTACK %08x sm4=%08x s0=%08x s4=%08x s8=%08x s12=%08x s16=%08x s20=%08x s24=%08x\n",
 						pc,
 						(unsigned)get_long(sp - 4),
 						(unsigned)get_long(sp + 0),
 						(unsigned)get_long(sp + 4),
-						(unsigned)get_long(sp + 8));
+						(unsigned)get_long(sp + 8),
+						(unsigned)get_long(sp + 12),
+						(unsigned)get_long(sp + 16),
+						(unsigned)get_long(sp + 20),
+						(unsigned)get_long(sp + 24));
 				}
 				if (pctrace_mem) {
 					uaecptr a0v = m68k_areg(regs, 0);
 					uaecptr a3v = m68k_areg(regs, 3);
 					fprintf(stderr,
-						"PCTMEM %08x m1e4=%08x m1e8=%08x m20c=%08x m40b0334=%08x m40b62c4=%08x m40b62ec=%08x "
-						"vec24=%08x vec25=%08x vec26=%08x vec27=%08x vec28=%08x vec29=%08x vec30=%08x vec31=%08x "
-						"ma0m4=%08x ma3=%08x ma3p4=%08x\n",
+						"PCTMEM %08x m1e4=%08x m1e8=%08x m20c=%08x m0c30=%08x m0c64=%08x m0c68=%08x m0c6c=%08x m0c70=%08x m0c74=%08x ma0m4=%08x ma3=%08x ma3p4=%08x\n",
 						pc,
 						(unsigned)get_long(0x1e4),
 						(unsigned)get_long(0x1e8),
 						(unsigned)get_long(0x20c),
-						(unsigned)get_long(0x040b0334),
-						(unsigned)get_long(0x040b62c4),
-						(unsigned)get_long(0x040b62ec),
-						(unsigned)get_long(regs.vbr + 4 * 24),
-						(unsigned)get_long(regs.vbr + 4 * 25),
-						(unsigned)get_long(regs.vbr + 4 * 26),
-						(unsigned)get_long(regs.vbr + 4 * 27),
-						(unsigned)get_long(regs.vbr + 4 * 28),
-						(unsigned)get_long(regs.vbr + 4 * 29),
-						(unsigned)get_long(regs.vbr + 4 * 30),
-						(unsigned)get_long(regs.vbr + 4 * 31),
+						(unsigned)get_long(0x0c30),
+						(unsigned)get_long(0x0c64),
+						(unsigned)get_long(0x0c68),
+						(unsigned)get_long(0x0c6c),
+						(unsigned)get_long(0x0c70),
+						(unsigned)get_long(0x0c74),
 						(unsigned)get_long(a0v >= 4 ? a0v - 4 : a0v),
 						(unsigned)get_long(a3v),
 						(unsigned)get_long(a3v + 4));
@@ -1571,23 +1285,10 @@ void execute_normal(void)
 						fprintf(stderr, " w%lu=%04x", wi, (unsigned)w);
 					}
 					fprintf(stderr, "\n");
-					if (regs.pc_p) {
-						fprintf(stderr, "PCTSHADOW %08x", pc);
-						for (unsigned long wi = 0; wi < pctrace_words; wi++) {
-							uae_u8 *p = regs.pc_p + wi * 2;
-							uae_u16 w = ((uae_u16)p[0] << 8) | p[1];
-							fprintf(stderr, " w%lu=%04x", wi, (unsigned)w);
-						}
-						fprintf(stderr, "\n");
-					}
-					if (pctrace_live_words && pcp_phys != 0xffffffffu) {
-						fprintf(stderr, "PCTLIVE %08x", pc);
-						for (unsigned long wi = 0; wi < pctrace_words; wi++)
-							fprintf(stderr, " w%lu=%04x", wi, (unsigned)Uae2026JitLiveGetWord((uae_u32)pcp_phys + (uae_u32)(wi * 2)));
-						fprintf(stderr, "\n");
-					}
 				}
 			}
+jit_pctrace_done:
+			;
 		}
 #endif
 #if defined(CPU_AARCH64)
@@ -1607,265 +1308,145 @@ void execute_normal(void)
 		   traces one instruction; inhibiting here starves the 60Hz timer
 		   and prevents the Mac OS Device Manager from completing async I/O. */
 		/* tick_inhibit = false; — already false from compile_block */
-		uae_u32 verify_block_pc = m68k_getpc();
+		uae_u32 verify_block_pc = get_virtual_address((uae_u8*)regs.pc_p);
 		const bool verify_this_block = !jit_block_verify_reentrant && jit_verify_block_target_pc(verify_block_pc);
 		if (verify_this_block)
 			jit_block_verify_entry_capture(verify_block_pc);
 #endif
+		int maxrun_limit = MAXRUN;
+		{
+			static int env_maxrun = -1;
+			if (env_maxrun < 0) {
+				const char *env = getenv("B2_JIT_MAXRUN");
+				env_maxrun = (env && *env) ? atoi(env) : MAXRUN;
+			}
+			maxrun_limit = env_maxrun;
+		}
 		for (;;) {
-			uae_u16 *pre_fetch_pcp = (uae_u16 *)regs.pc_p;
-			pc_hist[blocklen++].location = pre_fetch_pcp;
-			int trace_index = blocklen - 1;
-			uae_u32 pc_before_op = m68k_getpc();
+			/* Optional verifier block-split probe. When
+			   B2_FORCE_BLOCK_BREAK_BEFORE=<guest pc> matches after at least one
+			   retired instruction, end the trace so the next dispatch starts at the
+			   requested architectural boundary. */
 			{
-				static int _seenEN = 0;
-				if (!_seenEN && pc_before_op == 0x010001b0u) {
-					_seenEN = 1;
-					fprintf(stderr, "RAMTEST_ENTRY pc=%08x d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
-						"a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x sr=%04x\n",
-						(unsigned)pc_before_op,
-						(unsigned)regs.regs[0],(unsigned)regs.regs[1],(unsigned)regs.regs[2],(unsigned)regs.regs[3],
-						(unsigned)regs.regs[4],(unsigned)regs.regs[5],(unsigned)regs.regs[6],(unsigned)regs.regs[7],
-						(unsigned)regs.regs[8],(unsigned)regs.regs[9],(unsigned)regs.regs[10],(unsigned)regs.regs[11],
-						(unsigned)regs.regs[12],(unsigned)regs.regs[13],(unsigned)regs.regs[14],(unsigned)regs.regs[15],
-						(unsigned)regs.sr);
-					fflush(stderr);
+				static int bb_init = -1;
+				static uae_u32 bb_target = 0;
+				if (bb_init < 0) {
+					const char* e = getenv("B2_FORCE_BLOCK_BREAK_BEFORE");
+					bb_target = (e && *e) ? (uae_u32)strtoul(e, 0, 0) : 0;
+					bb_init = 0;
 				}
-			}
-			uae_u32 opcode = jit_fetch_opcode_for_current_pc(pc_before_op);
+				if (bb_target && blocklen > 0 && m68k_getpc() == bb_target) {
 #if defined(CPU_AARCH64)
-			jit_lowpc_compile_trace_record(trace_index, pc_before_op, opcode, (uintptr)pre_fetch_pcp, (uintptr)regs.pc_p);
+					/* Route to the verifier when armed so a break-before can
+					   bisect a target block to the first diverging op. */
+					if (verify_this_block) {
+						uae_u32 _bpc = pc_hist[0].guest_pc;
+						jit_block_verify_run(pc_hist, blocklen, total_cycles, _bpc);
+						return;
+					}
 #endif
-			Uae2026JitMmuTxnCommit();
-			Uae2026JitPublishFallbackState(pc_before_op, opcode);
-			if (Uae2026OpcodeTestModeActive() && (uae_u16)opcode == 0x4e72u) {
-				m68k_setpc(pc_before_op);
-				Uae2026OpcodeTestModeHandleStopTrailer();
-				return;
-			}
-			if (legacy_ram_direct_movem_long_predec(pc_before_op, (uae_u16)opcode)) {
-				jit_interpreted_op_check_ticks();
-				total_cycles += 4 * CYCLE_UNIT;
-				return;
-			}
-			uae_u32 delay_retpc = 0;
-			bool helper_callsite = (legacy_rom_delay_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
-				jit_op_rom_delay_bsr_callsite(pc_before_op, delay_retpc)) ||
-				(legacy_rom_vbr_lookup_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
-				jit_op_rom_vbr_global_lookup_callsite(pc_before_op, delay_retpc)) ||
-				(legacy_rom_rtc_write_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
-				jit_op_rom_rtc_write_byte_callsite(pc_before_op, delay_retpc)) ||
-				(legacy_rom_rtc_read_bsr_callsite(pc_before_op, (uae_u16)opcode, &delay_retpc) &&
-				jit_op_rom_rtc_read_byte_callsite(pc_before_op, delay_retpc));
-			if (!helper_callsite && legacy_call_push_txn_opcode(pc_before_op, (uae_u16)opcode))
-				legacy_maybe_begin_call_push_txn(pc_before_op, (uae_u16)opcode);
-			else if (!helper_callsite)
-				legacy_maybe_begin_return_pop_txn(pc_before_op, (uae_u16)opcode);
-			if (!helper_callsite) {
-				(*cpufunctbl[opcode])(opcode);
-				jit_execprof_tick(pc_before_op, opcode, 0);
-				Uae2026JitCanonicalizePcAfterFallback();
-			}
-			jit_interpreted_op_check_ticks();
-			total_cycles += 4 * CYCLE_UNIT;
-			/* ARM64 correctness barrier: branch-controlled loops still expose
-			 * endblock/direct-chain state bugs (Bcc/DBcc can stop early or fall
-			 * through into extension words after a few compiled iterations).  If
-			 * the trace builder encounters such a branch, keep this whole trace in
-			 * the interpreter for now.  This is conservative but lets the JIT
-			 * continue compiling straight-line code elsewhere while preserving
-			 * branch-loop correctness. */
-			/* BSR (0x61xx) is a subroutine CALL, not a conditional branch. It must be
-			 * classified with the call/jsr_jmp barrier class, NOT Bcc: lumping it into
-			 * current_is_bcc meant a Bcc-barrier drop (or eventual removal) would also
-			 * compile the bsr through the conditional-branch trace path, breaking
-			 * call/return semantics and corrupting loop-carried pointer state
-			 * (deep-RAM SCSI loop: boot 95->895 ESP cmds + reaches DMA init once bsr
-			 * is kept barriered while true Bcc is dropped). */
-			const bool current_is_bsr = ((opcode & 0xff00u) == 0x6100u);
-			const bool current_is_bcc = ((opcode & 0xf000u) == 0x6000u && (opcode & 0x0f00u) != 0x0000u && !current_is_bsr);
-			const bool current_is_dbcc = ((opcode & 0xf0f8u) == 0x50c8u);
-			const bool current_is_stack_pop_move = (opcode == 0x241fu);
-			const bool current_is_stack_push_pea =
-				(opcode == 0x4850u || opcode == 0x4868u || opcode == 0x4870u ||
-				 opcode == 0x4878u || opcode == 0x4879u || opcode == 0x487au || opcode == 0x487bu);
-			const bool current_is_return = (opcode == 0x4e73u || opcode == 0x4e74u || opcode == 0x4e75u || opcode == 0x4e76u || opcode == 0x4e77u);
-			const bool current_is_link_unlk = ((opcode & 0xfff8u) == 0x4e50u || (opcode & 0xfff8u) == 0x4e58u);
-			/* Immediate bit operations (BTST/BCHG/BCLR/BSET, 0x08xx) have
-			 * extension-word + memory side effects that are still unsafe across
-			 * native continuation; keep the trace in the interpreter. */
-			/* Only memory-EA immediate bit-ops carry extension-word + memory side
-			 * effects unsafe across native continuation. Register-direct forms
-			 * (BTST/BCHG/BCLR/BSET #imm,Dn, EA mode 000) touch only Dn + Z and have
-			 * compiled handlers (op_800/840/880/8c0), so let the trace continue. */
-			const bool current_is_immediate_bitop =
-			    ((opcode & 0xff00u) == 0x0800u) && ((opcode & 0x0038u) != 0x0000u);
-			const bool current_is_ethernet_reset_island = (pc_before_op >= 0x010014a0u && pc_before_op <= 0x010014d0u);
-			const bool current_is_jsr_jmp = ((opcode & 0xffc0u) == 0x4e80u || (opcode & 0xffc0u) == 0x4ec0u);
-			/* JSR (An) — op_4e90..4e97 — dynamic-target subroutine call. This is
-			 * the SCSI hot-loop's last interpreter barrier (0x0438223c). Narrow to
-			 * the (An) register-indirect form only: it has NO extension words and
-			 * the target lives in An, so the compiled op_4e90 handler sets regs.pc_p
-			 * and the block's endblock_pc_inreg path dispatches dynamically.
-			 * BasiliskII compiles JSR(An) natively (op_4e90 comp handler) = reference.
-			 * Broader JSR addressing modes stay barriered (extension-word/target
-			 * metadata still unsafe — see narrow-JSR note near top of file). */
-			const bool current_is_jsr_an = ((opcode & 0xfff8u) == 0x4e90u);
-			/* Optional, default-off: when B2_JIT_LOCKSTEP_NOBCC is set, drop the
-			 * Bcc trace barrier INSIDE the lockstep arming window only, so the
-			 * c74 Bcc-liveness block reaches compile_block and the lockstep DUT
-			 * hook can arm + step the gold interpreter against it. Scoped to the
-			 * window via jit_lockstep_window_pc so normal boots are unperturbed.
-			 *
-			 * B2_JIT_LOCKSTEP_DROP generalizes NOBCC to a comma/space list of
-			 * trace-barrier families to drop inside the same window, so the proven
-			 * lockstep+REGONLY spot-check can be SELF-VALIDATED on a known-good
-			 * low-risk barrier (rts/rte or link/unlk) BEFORE it is trusted on Bcc.
-			 * Recognized tokens: bcc, dbcc, rts (== ret), link (== unlk). Default
-			 * empty => no effect; NOBCC remains a backward-compatible alias for
-			 * dropping bcc. The drop is still scoped to jit_lockstep_window_pc, so
-			 * the spot-check fires exactly at the newly-compiled barrier block. */
-			enum { DROP_BCC = 1, DROP_DBCC = 2, DROP_RET = 4, DROP_LINK = 8, DROP_BSR = 16, DROP_JSR = 32 };
-			static int ls_nobcc = -1;
-			static int ls_dropmask = -1;
-			if (ls_nobcc < 0) ls_nobcc = getenv("B2_JIT_LOCKSTEP_NOBCC") ? 1 : 0;
-			if (ls_dropmask < 0) {
-				ls_dropmask = 0;
-				const char *dl = getenv("B2_JIT_LOCKSTEP_DROP");
-				if (dl && *dl) {
-					if (strstr(dl, "bcc"))  ls_dropmask |= DROP_BCC;
-					if (strstr(dl, "dbcc")) ls_dropmask |= DROP_DBCC;
-					if (strstr(dl, "rts") || strstr(dl, "rte") || strstr(dl, "ret")) ls_dropmask |= DROP_RET;
-					if (strstr(dl, "link") || strstr(dl, "unlk")) ls_dropmask |= DROP_LINK;
-					if (strstr(dl, "bsr"))  ls_dropmask |= DROP_BSR;
-					if (strstr(dl, "jsr"))  ls_dropmask |= DROP_JSR;
+					if (!jit_strict_defer_cold_ram_trace(pc_hist, blocklen))
+						compile_block(pc_hist, blocklen, total_cycles);
+					return;
 				}
 			}
-			const bool in_ls_window = jit_lockstep_window_pc(pc_before_op);
-			/* PRODUCTION Bcc-drop experiment (B2_JIT_DROP_BCC_PROD), optionally SCOPED to a PC
-			 * range [_LO,_HI] (default global). Drops the Bcc trace barrier WITHOUT the lockstep
-			 * window so genuine conditional Bcc compile+chain with no scaffold churn. Default-off. */
-			static int prod_drop_bcc = -1;
-			static uae_u32 prod_lo = 0u, prod_hi = 0xffffffffu;
-			if (prod_drop_bcc < 0) {
-				prod_drop_bcc = getenv("B2_JIT_DROP_BCC_PROD") ? 1 : 0;
-				const char* _lo = getenv("B2_JIT_DROP_BCC_PROD_LO");
-				const char* _hi = getenv("B2_JIT_DROP_BCC_PROD_HI");
-				if (_lo && *_lo) prod_lo = (uae_u32)strtoul(_lo, 0, 0);
-				if (_hi && *_hi) prod_hi = (uae_u32)strtoul(_hi, 0, 0);
-			}
-			const bool prod_drop_here = prod_drop_bcc && pc_before_op >= prod_lo && pc_before_op <= prod_hi;
-			/* Per-class production drops (scoped to [prod_lo,prod_hi]) so the SCSI loop's
-			 * full barrier set (link/bsr/bcc/ret) can compile for the promotion plateau
-			 * test. Default-off. */
-			static int prod_drop_link = -1, prod_drop_ret = -1, prod_drop_bsr = -1, prod_drop_jsr = -1;
-			if (prod_drop_link < 0) prod_drop_link = getenv("B2_JIT_DROP_LINK_PROD") ? 1 : 0;
-			if (prod_drop_ret  < 0) prod_drop_ret  = getenv("B2_JIT_DROP_RET_PROD")  ? 1 : 0;
-			if (prod_drop_bsr  < 0) prod_drop_bsr  = getenv("B2_JIT_DROP_BSR_PROD")  ? 1 : 0;
-			if (prod_drop_jsr  < 0) prod_drop_jsr  = getenv("B2_JIT_DROP_JSR_PROD")  ? 1 : 0;
-			const bool prod_link_here = prod_drop_link && pc_before_op >= prod_lo && pc_before_op <= prod_hi;
-			const bool prod_ret_here  = prod_drop_ret  && pc_before_op >= prod_lo && pc_before_op <= prod_hi;
-			const bool prod_bsr_here  = prod_drop_bsr  && pc_before_op >= prod_lo && pc_before_op <= prod_hi;
-			const bool prod_jsr_here  = prod_drop_jsr  && pc_before_op >= prod_lo && pc_before_op <= prod_hi;
-			const bool drop_bcc  = (((ls_nobcc || (ls_dropmask & DROP_BCC)) && in_ls_window) || prod_drop_here);
-			const bool drop_dbcc = ((ls_dropmask & DROP_DBCC) && in_ls_window);
-			const bool drop_ret  = (((ls_dropmask & DROP_RET)  && in_ls_window) || prod_ret_here);
-			const bool drop_link = (((ls_dropmask & DROP_LINK) && in_ls_window) || prod_link_here);
-			const bool drop_bsr  = (((ls_dropmask & DROP_BSR) && in_ls_window) || prod_bsr_here);
-			const bool drop_jsr  = (((ls_dropmask & DROP_JSR) && in_ls_window) || prod_jsr_here);
-			const bool trace_barrier_op = (current_is_bcc && !drop_bcc) || (current_is_bsr && !drop_bsr) || (current_is_dbcc && !drop_dbcc) || current_is_stack_pop_move || current_is_stack_push_pea || (current_is_return && !drop_ret) || (current_is_link_unlk && !drop_link) || current_is_immediate_bitop || current_is_ethernet_reset_island || (current_is_jsr_jmp && !(drop_jsr && current_is_jsr_an));
-			if (trace_barrier_op) {
-				/* B2_JIT_BARRIER_STATS: per-barrier-type bailout frequency ranking
-				 * (default-off). Names which trace_barrier dominates the boot path
-				 * so native-codegen work can target the highest-frequency barrier. */
-				static int bstats = -1;
-				if (bstats < 0) bstats = getenv("B2_JIT_BARRIER_STATS") ? 1 : 0;
-				if (bstats) {
-					static unsigned long c_bcc=0,c_dbcc=0,c_pop=0,c_push=0,c_ret=0,c_lnk=0,c_bit=0,c_enet=0,c_jmp=0,c_tot=0;
-					if (current_is_bcc && !drop_bcc) c_bcc++;
-					else if (current_is_dbcc) c_dbcc++;
-					else if (current_is_stack_pop_move) c_pop++;
-					else if (current_is_stack_push_pea) c_push++;
-					else if (current_is_return) c_ret++;
-					else if (current_is_link_unlk) c_lnk++;
-					else if (current_is_immediate_bitop) c_bit++;
-					else if (current_is_ethernet_reset_island) c_enet++;
-					else if (current_is_jsr_jmp) c_jmp++;
-					if (++c_tot % 200000 == 0)
-						fprintf(stderr, "JIT_BARRIER_STATS tot=%lu bcc=%lu jsr_jmp=%lu ret=%lu dbcc=%lu link_unlk=%lu push=%lu pop=%lu imm_bitop=%lu enet=%lu pc=0x%08x\n",
-							c_tot, c_bcc, c_jmp, c_ret, c_dbcc, c_lnk, c_push, c_pop, c_bit, c_enet, (unsigned)pc_before_op);
-				}
-				if (verify_this_block) {
-					fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d skipped=trace_barrier pc=%08x op=%04x\n",
-						(unsigned)verify_block_pc, blocklen, (unsigned)pc_before_op, (unsigned)(opcode & 0xffffu));
-					jit_block_verify_entry_reset();
-				}
-				return;
-			}
-			int maxrun_limit = MAXRUN;
+			cpu_history *hist = &pc_hist[blocklen++];
+			hist->location = (uae_u16 *)regs.pc_p;
+			/* Previous's FULLMMU handlers advance regs.pc while the translated
+			   host fetch pointer can remain fixed. Per-op re-anchoring below makes
+			   m68k_getpc() the exact logical PC for both update conventions. */
+			hist->guest_pc = m68k_getpc();
+			uae_u32 opcode = GET_OPCODE;
+			/* GET_OPCODE is host-table ordered under direct addressing. Retain
+			   both the logical opcode and the complete maximum architectural
+			   encoding window; later instructions in this same trace may rewrite
+			   opcode or extension words before compile_block starts. */
+			hist->opcode = (uae_u16)do_get_mem_word(hist->location);
+			memcpy(hist->source, hist->location, JIT_TRACE_SOURCE_BYTES);
+#if defined(CPU_AARCH64)
 			{
-				static int env_maxrun = -1;
-				if (env_maxrun < 0) {
-					const char *env = getenv("B2_JIT_MAXRUN");
-					env_maxrun = (env && *env) ? atoi(env) : MAXRUN;
+				/* Assertion-only first-seen state capture. Cache the environment
+				   contract once so ordinary tracing does not call getenv/strtoul for
+				   every guest instruction. */
+				static unsigned long interpop_count = 0;
+				uae_u32 want = 0;
+				if (jit_interpop_assert_target(&want)) {
+					const uae_u32 pc_now = m68k_getpc();
+					if (want == pc_now && interpop_count < 32) {
+						interpop_count++;
+						fprintf(stderr, "INTERPOP pc=%08x count=%lu op=%04x d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d7=%08x a0=%08x a1=%08x a2=%08x a3=%08x a6=%08x a7=%08x sr=%04x\n",
+							pc_now, interpop_count, opcode,
+							regs.regs[0], regs.regs[1], regs.regs[2], regs.regs[3],
+							regs.regs[4], regs.regs[5], regs.regs[7], regs.regs[8],
+							regs.regs[9], regs.regs[10], regs.regs[11], regs.regs[14],
+							regs.regs[15], regs.sr);
+					}
 				}
-				maxrun_limit = env_maxrun;
 			}
-			bool must_end = helper_callsite || __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
-			/* When the lockstep NOBCC window drops a Bcc barrier, also terminate the
-			 * block AT the Bcc so it actually compiles (otherwise the trace runs on to
-			 * the next barrier — e.g. the c74 CRC loop's trailing DBF — and is skipped,
-			 * leaving the c74 ALU ops uninstrumented). */
-			/* When a lockstep window drops a barrier, terminate the block AT that
-			 * barrier op so it actually compiles (otherwise the trace runs on to
-			 * the next barrier and is skipped, leaving the target ops
-			 * uninstrumented). Generalized from the original drop_bcc/Bcc case to
-			 * every B2_JIT_LOCKSTEP_DROP family. */
-			if ((drop_bcc && current_is_bcc) ||
-			    (drop_dbcc && current_is_dbcc) ||
-			    (drop_ret && current_is_return) ||
-			    (drop_bsr && current_is_bsr) ||
-			    (drop_jsr && current_is_jsr_an) ||
-			    (drop_link && current_is_link_unlk))
-				must_end = true;
-			if (!must_end && end_block(opcode)) {
-				uintptr new_pcp = (uintptr)regs.pc_p;
-				uintptr blk_start = (uintptr)pc_hist[0].location;
-				uintptr cur_insn = (uintptr)pc_hist[blocklen - 1].location;
-				/* Follow forward short branches to keep straight-line code
-				   together, but NEVER follow backward branches.  A backward
-				   branch (target <= current instruction) creates a loop;
-				   unrolling it into a single block causes DBRA/DBcc to
-				   execute a fixed unroll count instead of the runtime
-				   counter value.  End the block at the branch and let
-				   block chaining handle the backward edge. */
-				if (new_pcp > cur_insn && new_pcp < blk_start + 512
-				    && blocklen < 32)
-					continue;
-				must_end = true;
+#endif
+			jit_current_interp_pc = hist->guest_pc;
+			jit_current_interp_opcode = opcode;
+			/* The first-pass tracer executes real interpreter handlers inside the
+			   bridge's MMU exception boundary. Publish the exact opcode state before
+			   any handler can fault; bridge entry only knew the block leader. */
+			jit_publish_code_fetch_state(hist->guest_pc);
+			/* m68k_getpc() is regs.pc + (pc_p - pc_oldp). Re-anchor the
+			   pointer pair before the canonical interpreter handler advances pc_p. */
+			regs.pc_oldp = regs.pc_p;
+			Uae2026JitPublishTraceInstructionState(hist->guest_pc, (uae_u16)opcode);
+			if (jit_guest_instruction_observer_enabled())
+				jit_guest_path_record_trace(jit_current_interp_pc);
+			if (jit_trace_target_pc(jit_current_interp_pc))
+				jit_trace_pc_hit(jit_current_interp_pc, (2u << 16) | (opcode & 0xffff));
+			jit_strict_note_trace_op(jit_current_interp_pc, opcode);
+			(*cpufunctbl[opcode])(opcode);
+			/* FULLMMU handlers update the logical PC but may leave pc_p anchored at
+			   the old block. Translate the retired successor/target before tracing
+			   another opcode, especially across BSR/JSR/RTS/RTE. */
+			{
+				const uae_u32 next_pc = m68k_getpc() & ~1u;
+				jit_publish_code_fetch_state(next_pc);
+				const uintptr_t next_host = Uae2026JitMmuXlateCodeHost(next_pc);
+				regs.pc_p = (uae_u8 *)next_host;
+				regs.pc_oldp = regs.pc_p;
 			}
+			cpu_check_ticks();
+			total_cycles += 4 * CYCLE_UNIT;
+			bool must_end = __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
+			/* A compiled block is a basic block: once the interpreter tracer
+			   executes an instruction classified as control flow, stop tracing
+			   and compile exactly the instructions retired so far.  Following a
+			   sampled forward outcome turns data-dependent control flow into a
+			   reusable trace and requires every later stage to reconstruct side
+			   exits, runtime PCs, flags, and register state perfectly.  The old
+			   policy accumulated opcode- and guest-PC-specific exceptions when
+			   those assumptions failed. */
+			if (!must_end && end_block(opcode))
+				must_end = true;
 			if (must_end) {
 #if defined(CPU_AARCH64)
 				tick_inhibit = false;
-				uae_u32 block_pc = verify_this_block ? verify_block_pc : get_virtual_address((uae_u8*)pc_hist[0].location);
+				uae_u32 block_pc = pc_hist[0].guest_pc;
 				{
 					static int trace_log = 0;
 					if (0 && trace_log++ < 50)
 						fprintf(stderr, "TRACE_END blk=%08x len=%d\n", block_pc, blocklen);
-					static int tseq = 0;
-					if (getenv("B2_JIT_TRACE_SEQ") && block_pc >= 0x01002c00 && block_pc <= 0x01002d00 && tseq++ < 20) {
-						fprintf(stderr, "TRACESEQ blk=%08x len=%d:", block_pc, blocklen);
-						for (int q = 0; q < blocklen; q++)
-							fprintf(stderr, " %08x", (unsigned)get_virtual_address((uae_u8*)pc_hist[q].location));
-						fprintf(stderr, " must_end_bcc=%d dropbcc=%d\n", (drop_bcc && current_is_bcc) ? 1 : 0, drop_bcc);
-					}
 				}
 				if (verify_this_block) {
 					jit_block_verify_run(pc_hist, blocklen, total_cycles, block_pc);
 					return;
 				}
 #endif
-				compile_block(pc_hist, blocklen, total_cycles);
+				if (!jit_strict_defer_cold_ram_trace(pc_hist, blocklen)) {
+					/* Compilation owns comp_pc_p and allocator state, but must not
+					   rewind the architectural continuation reached by tracing. */
+					const uae_u32 successor_pc = m68k_getpc() & ~1u;
+					compile_block(pc_hist, blocklen, total_cycles);
+					jit_publish_code_fetch_state(successor_pc);
+					const uintptr_t successor_host = Uae2026JitMmuXlateCodeHost(successor_pc);
+					regs.pc_p = (uae_u8 *)successor_host;
+					regs.pc_oldp = regs.pc_p;
+				}
 				return;
 			}
 		}
@@ -1875,8 +1456,15 @@ void execute_normal(void)
 void execute_exception(uae_u32 cycles)
 {
 	countdown -= cycles;
-	Exception(regs.jit_exception, 0);
+	const uae_u32 request = regs.jit_exception;
+	const bool has_oldpc = (request & JIT_EXCEPTION_OLDPC_VALID) != 0;
+	const bool is_chk = (request & JIT_EXCEPTION_CHK_N_VALID) != 0;
+	if (is_chk)
+		SET_NFLG((request & JIT_EXCEPTION_CHK_N_SET) != 0);
+	Exception(request & JIT_EXCEPTION_VECTOR_MASK,
+		has_oldpc ? regs.jit_exception_oldpc : 0);
 	regs.jit_exception = 0;
+	regs.jit_exception_oldpc = 0;
 }
 
 /* --- JIT native-call helpers for SR/CCR opcodes --- */
@@ -1936,27 +1524,6 @@ extern "C" void jit_op_eorsr(void)
         regs.sr = (regs.sr & 0xFF00) | ((regs.sr ^ val) & 0xFF);
     }
     MakeFromSR();
-}
-
-/* MOVEC helpers */
-extern "C" void jit_op_movec2(void)
-{
-    uae_u32 ext = regs.jit_exception;
-    int rn = (ext >> 12) & 15;
-    int cr = ext & 0xFFF;
-    uae_u32 *regp = &regs.regs[rn];
-    if (m68k_movec2(cr, regp) && jit_allow_ram_dispatch_env())
-        regs.spcflags |= 0x800;
-}
-
-extern "C" void jit_op_move2c(void)
-{
-    uae_u32 ext = regs.jit_exception;
-    int rn = (ext >> 12) & 15;
-    int cr = ext & 0xFFF;
-    uae_u32 *regp = &regs.regs[rn];
-    if (m68k_move2c(cr, regp) && jit_allow_ram_dispatch_env())
-        regs.spcflags |= 0x800;
 }
 
 /* ================================================================
@@ -2283,121 +1850,57 @@ extern "C" void jit_op_nbcd(void)
 
 /* --- MOVEP helpers --- */
 
-extern "C" void jit_op_mvprm(void)
+extern "C" void jit_op_mvprm(uae_u32 next_pc)
 {
-    /* Move register to peripheral (byte-interleaved write)
-     * jit_exception: bits 0-2 = An, bits 3-5 = Dn, bit 6 = long mode */
+    /* Move register to peripheral (byte-interleaved write).
+     * jit_exception: bits 0-2 = An, bits 3-5 = Dn, bit 6 = long mode.
+     *
+     * The ordered-helper ABI enters with the exact opcode PC.  Every lane is
+     * independently faultable there; the successor becomes architectural only
+     * after the final successful write, matching the interpreter. */
     int an = regs.jit_exception & 7;
     int dn = (regs.jit_exception >> 3) & 7;
     int is_long = (regs.jit_exception >> 6) & 1;
     uae_s16 disp = (uae_s16)(regs.jit_exception >> 16);
     uae_u32 addr = regs.regs[8 + an] + disp;
     uae_u32 val = regs.regs[dn];
-    
+
     if (is_long) {
         put_byte(addr, (val >> 24) & 0xFF); addr += 2;
         put_byte(addr, (val >> 16) & 0xFF); addr += 2;
     }
     put_byte(addr, (val >> 8) & 0xFF); addr += 2;
     put_byte(addr, val & 0xFF);
+    m68k_setpc(next_pc);
 }
 
-extern "C" void jit_op_mvpmr(void)
+extern "C" void jit_op_mvpmr(uae_u32 next_pc)
 {
-    /* Move peripheral to register (byte-interleaved read) */
+    /* All interleaved source reads fault at the opcode PC.  Commit the complete
+       register value before publishing the explicit successor. */
     int an = regs.jit_exception & 7;
     int dn = (regs.jit_exception >> 3) & 7;
     int is_long = (regs.jit_exception >> 6) & 1;
     uae_s16 disp = (uae_s16)(regs.jit_exception >> 16);
     uae_u32 addr = regs.regs[8 + an] + disp;
     uae_u32 val = 0;
-    
+
     if (is_long) {
         val = (get_byte(addr) << 24); addr += 2;
         val |= (get_byte(addr) << 16); addr += 2;
     }
     val |= (get_byte(addr) << 8); addr += 2;
     val |= get_byte(addr);
-    
+
     if (is_long) {
         regs.regs[dn] = val;
     } else {
         regs.regs[dn] = (regs.regs[dn] & 0xFFFF0000) | (val & 0xFFFF);
     }
+    m68k_setpc(next_pc);
 }
 
-/* --- Privileged/flow control helpers --- */
-
-extern "C" void jit_op_mvr2usp(void)
-{
-    int rn = regs.jit_exception & 0xF;
-    regs.usp = regs.regs[rn];
-}
-
-extern "C" void jit_op_mvusp2r(void)
-{
-    int rn = regs.jit_exception & 0xF;
-    regs.regs[rn] = regs.usp;
-}
-
-extern "C" void jit_op_mvsr2(void)
-{
-    /* jit_exception: bits 0-2 = destination register (for Dn mode)
-     * bit 3 = memory destination, bit 4 = word form (vs byte/CCR form) */
-    int reg = regs.jit_exception & 7;
-    int is_mem = (regs.jit_exception >> 3) & 1;
-    int is_word = (regs.jit_exception >> 4) & 1;
-    uae_u16 value;
-
-    if (is_word && !regs.s) {
-        Exception(8, 0);
-        return;
-    }
-
-    MakeSR();
-    /* MakeSR() resolves to the interpreter build that reads the condition
-     * codes from regflags using FLAGBIT_Z=14 (cznv layout).  The JIT writes
-     * its flags into regflags.nzcv using the ARM64 NZCV layout
-     * (N=bit31, Z=bit30, C=bit29, V=bit28; X held in regflags.x at bit29).
-     * When MOVE.W SR,<ea> is reached straight from JIT-set flags, MakeSR()
-     * therefore drops/relocates the CCR bits.  Rebuild the low 5 SR bits
-     * directly from the JIT's own layout so the value matches the
-     * interpreter result. */
-    {
-        const uae_u32 nz = regflags.nzcv;
-        const uae_u16 ccr =
-            (uae_u16)((((regflags.x >> 29) & 1) << 4) | /* X -> SR bit 4 */
-                      (((nz >> 31) & 1) << 3) |         /* N -> SR bit 3 */
-                      (((nz >> 30) & 1) << 2) |         /* Z -> SR bit 2 */
-                      (((nz >> 28) & 1) << 1) |         /* V -> SR bit 1 */
-                      ((nz >> 29) & 1));                /* C -> SR bit 0 */
-        regs.sr = (uae_u16)((regs.sr & ~0x1f) | ccr);
-    }
-    value = is_word ? (regs.sr & 0xffff) : (regs.sr & 0x00ff);
-
-    if (is_mem) {
-        put_word(regs.scratchregs[0], value);
-    } else {
-        regs.regs[reg] = (regs.regs[reg] & ~0xffff) | value;
-    }
-}
-
-extern "C" void jit_op_reset(void)
-{
-    /* RESET instruction — in emulation, this is a no-op */
-}
-
-extern "C" void jit_op_rte(void)
-{
-    /* RTE is exact in RAM/MMU mode because every frame read, SR transition,
-     * stack adjustment, and target prefetch can fault.  Publish the pre-op
-     * state before entering the interpreter implementation so the bridge can
-     * build/restart the same exception frame if any of those accesses escape. */
-    uae_u32 rte_pc = regs.fault_pc ? regs.fault_pc :
-        (Uae2026JitLastInstructionPc ? Uae2026JitLastInstructionPc : m68k_getpc());
-    Uae2026JitPublishFallbackState(rte_pc, 0x4e73u);
-    (*cpufunctbl[0x4e73])(0x4e73);
-}
+/* --- Flow control helpers --- */
 
 extern "C" void jit_op_rtr(void)
 {
@@ -2410,16 +1913,6 @@ extern "C" void jit_op_rtr(void)
     regs.pc = get_long(sp); sp += 4;
     m68k_areg(regs, 7) = sp;
     fill_prefetch_0();
-}
-
-extern "C" void jit_op_stop(void)
-{
-    /* STOP #imm: load SR from immediate and halt */
-    uae_u16 new_sr = (uae_u16)regs.jit_exception;
-    regs.sr = new_sr;
-    MakeFromSR();
-    regs.stopped = 1;
-    regs.spcflags |= 0x002; /* Previous SPCFLAG_STOP */
 }
 
 extern "C" void jit_op_trap(void)
@@ -2438,56 +1931,14 @@ extern "C" void jit_op_trapv(void)
 
 extern "C" void jit_op_moves(void)
 {
-    /* jit_exception: bits 0-15 = extension word, bits 16-17 = size (0=B,1=W,2=L)
-     * scratchregs[0] = effective address */
-    uae_u32 encoded = regs.jit_exception;
-    uae_u16 extra = (uae_u16)(encoded & 0xffff);
-    int size = (encoded >> 16) & 3;
-    uae_u32 addr = regs.scratchregs[0];
-    int regnum = (extra >> 12) & 15;
-
-    if (!regs.s) {
-        Exception(8, 0);
-        return;
-    }
-
-    if (extra & 0x0800) {
-        /* register -> memory */
-        uae_u32 src = regs.regs[regnum & 15];
-        switch (size) {
-        case 0: put_byte(addr, src); break;
-        case 1: put_word(addr, src); break;
-        default: put_long(addr, src); break;
-        }
-    } else {
-        /* memory -> register */
-        switch (size) {
-        case 0: {
-            uae_s8 src = (uae_s8)get_byte(addr);
-            if (extra & 0x8000)
-                m68k_areg(regs, regnum & 7) = (uae_s32)src;
-            else
-                m68k_dreg(regs, regnum & 7) = (m68k_dreg(regs, regnum & 7) & ~0xff) | ((uae_u8)src);
-            break;
-        }
-        case 1: {
-            uae_s16 src = (uae_s16)get_word(addr);
-            if (extra & 0x8000)
-                m68k_areg(regs, regnum & 7) = (uae_s32)src;
-            else
-                m68k_dreg(regs, regnum & 7) = (m68k_dreg(regs, regnum & 7) & ~0xffff) | ((uae_u16)src);
-            break;
-        }
-        default: {
-            uae_u32 src = get_long(addr);
-            if (extra & 0x8000)
-                m68k_areg(regs, regnum & 7) = src;
-            else
-                m68k_dreg(regs, regnum & 7) = src;
-            break;
-        }
-        }
-    }
+    /* MOVES: In user/supervisor mode without real MMU,
+     * this is effectively a normal move.
+     * jit_exception = extension word, scratchregs[0] = EA value.
+     * The extension word encodes: bit 11 = direction (0=EA→Rn, 1=Rn→EA),
+     * bits 15-12 = register.
+     * For now: treat as a no-op since we don't have an MMU. */
+    /* Actually, the interpreter implementation does real memory accesses.
+     * Let's do the same. For simplicity, fall through to interpreter. */
 }
 
 extern "C" void jit_op_chk(void)
@@ -2510,113 +1961,55 @@ extern "C" void jit_op_chk(void)
     }
 }
 
-/* --- CHK2/CAS helpers --- */
-static inline uae_s32 jit_sign_extend_size(uae_u32 v, int size)
-{
-    switch (size) {
-    case 0: return (uae_s32)(uae_s8)v;
-    case 1: return (uae_s32)(uae_s16)v;
-    default: return (uae_s32)v;
-    }
-}
-
-static inline uae_u32 jit_size_mask(int size)
-{
-    switch (size) {
-    case 0: return 0xffu;
-    case 1: return 0xffffu;
-    default: return 0xffffffffu;
-    }
-}
-
 extern "C" void jit_op_chk2(void)
 {
-    uae_u32 enc = regs.jit_exception;
-    int size = (enc >> 16) & 3;
-    uae_u16 extra = enc & 0xffff;
-    uae_u32 addr = regs.scratchregs[0];
-    int regno = (extra >> 12) & 15;
+    /* scratchregs: [0] bounds EA, [1] extension word, [2] element size.
+       CHK2 performs two separately faultable reads in ascending address order.
+       It changes only Z and C; N, V, and X survive exactly as on the 68020+
+       interpreter path.  Trap delivery is deferred through jit_exception so
+       the JIT dispatcher retains the precise current-instruction PC. */
+    const uaecptr ea = regs.scratchregs[0];
+    const uae_u16 extra = (uae_u16)regs.scratchregs[1];
+    const unsigned size = regs.scratchregs[2];
+    uae_s32 lower;
+    uae_s32 upper;
 
-    uae_s32 lower, upper, reg = (uae_s32)regs.regs[regno];
+    regs.jit_exception = 0;
     switch (size) {
-    case 0:
-        lower = (uae_s32)(uae_s8)get_byte(addr);
-        upper = (uae_s32)(uae_s8)get_byte(addr + 1);
-        if ((extra & 0x8000) == 0)
-            reg = (uae_s32)(uae_s8)reg;
-        break;
     case 1:
-        lower = (uae_s32)(uae_s16)get_word(addr);
-        upper = (uae_s32)(uae_s16)get_word(addr + 2);
-        if ((extra & 0x8000) == 0)
-            reg = (uae_s32)(uae_s16)reg;
+        lower = (uae_s32)(uae_s8)get_byte(ea);
+        upper = (uae_s32)(uae_s8)get_byte(ea + 1);
+        break;
+    case 2:
+        lower = (uae_s32)(uae_s16)get_word(ea);
+        upper = (uae_s32)(uae_s16)get_word(ea + 2);
+        break;
+    case 4:
+        lower = (uae_s32)get_long(ea);
+        upper = (uae_s32)get_long(ea + 4);
         break;
     default:
-        lower = (uae_s32)get_long(addr);
-        upper = (uae_s32)get_long(addr + 4);
-        break;
+        /* Generator/helper ABI corruption must fail closed, never become an
+           implicit guest result or interpreter dispatch. */
+        abort();
     }
 
-    SET_ZFLG(upper == reg || lower == reg);
-    int outside = lower <= upper ? (reg < lower || reg > upper) : (reg > upper || reg < lower);
+    uae_s32 value = (uae_s32)regs.regs[(extra >> 12) & 15];
+    if ((extra & 0x8000) == 0) {
+        if (size == 1)
+            value = (uae_s32)(uae_s8)value;
+        else if (size == 2)
+            value = (uae_s32)(uae_s16)value;
+    }
+
+    const bool equal_bound = value == lower || value == upper;
+    const bool outside = lower <= upper
+        ? value < lower || value > upper
+        : value > upper || value < lower;
+    SET_ZFLG(equal_bound);
     SET_CFLG(outside);
-    if ((extra & 0x0800) && outside)
-        Exception(6, 0);
-}
-
-static inline void jit_cas_flags(uae_u32 dst, uae_u32 cmp, int size)
-{
-    uae_u32 mask = jit_size_mask(size);
-    dst &= mask;
-    cmp &= mask;
-    uae_u32 newv = (dst - cmp) & mask;
-    int bits = size == 0 ? 8 : (size == 1 ? 16 : 32);
-    uae_u32 sign = 1u << (bits - 1);
-    int flgs = (cmp & sign) != 0;
-    int flgo = (dst & sign) != 0;
-    int flgn = (newv & sign) != 0;
-    SET_ZFLG(newv == 0);
-    SET_VFLG((flgs != flgo) && (flgn != flgo));
-    SET_CFLG(cmp > dst);
-    SET_NFLG(flgn != 0);
-}
-
-extern "C" void jit_op_cas(void)
-{
-    uae_u32 enc = regs.jit_exception;
-    int size = (enc >> 16) & 3;
-    uae_u16 extra = enc & 0xffff;
-    uae_u32 addr = regs.scratchregs[0];
-    int ru = (extra >> 6) & 7;
-    int rc = extra & 7;
-    uae_u32 dst;
-
-    switch (size) {
-    case 0:
-        dst = get_byte(addr);
-        jit_cas_flags(dst, regs.regs[rc], size);
-        if (GET_ZFLG())
-            put_byte(addr, regs.regs[ru]);
-        else
-            regs.regs[rc] = (regs.regs[rc] & ~0xffu) | (dst & 0xffu);
-        break;
-    case 1:
-        dst = get_word(addr);
-        jit_cas_flags(dst, regs.regs[rc], size);
-        if (GET_ZFLG())
-            put_word(addr, regs.regs[ru]);
-        else
-            regs.regs[rc] = (regs.regs[rc] & ~0xffffu) | (dst & 0xffffu);
-        break;
-    default:
-        dst = get_long(addr);
-        jit_cas_flags(dst, regs.regs[rc], size);
-        if (GET_ZFLG())
-            put_long(addr, regs.regs[ru]);
-        else
-            regs.regs[rc] = dst;
-        break;
-    }
+    if ((extra & 0x0800) != 0 && outside)
+        regs.jit_exception = 6;
 }
 
 /* --- TAS helper --- */
@@ -2652,351 +2045,264 @@ extern "C" void jit_op_tas(void)
 }
 
 /* --- PACK/UNPK helpers --- */
-extern "C" void jit_op_pack(void)
+extern "C" void jit_op_pack(uae_u32 next_pc)
 {
-    /* PACK Dn,Dn,#adj or PACK -(An),-(An),#adj */
+    /* The ordered-helper ABI enters at the opcode PC.  Source reads retain that
+       PC; the predecrement destination write observes the explicit successor,
+       exactly where the interpreter performs m68k_incpc(). */
     int dst_reg = regs.jit_exception & 7;
     int src_reg = (regs.jit_exception >> 3) & 7;
     int predec = (regs.jit_exception >> 6) & 1;
     uae_s16 adj = (uae_s16)(regs.jit_exception >> 16);
-    
+
     uae_u16 val;
     if (predec) {
-        uae_u32 src_addr = regs.regs[8 + src_reg] -= 2;
-        val = get_word(src_addr);
+        /* Canonical 68040 ordering is deliberately not a get_word(): the two
+         source bytes are independently predecrement-addressed, which matters
+         for A7 and for a source/destination register alias.  The architectural
+         source update itself is two bytes for every An. */
+        const uae_u32 source = regs.regs[8 + src_reg];
+        val = (uae_u16)get_byte(source - areg_byteinc[src_reg]);
+        val |= (uae_u16)get_byte(source - 2 * areg_byteinc[src_reg]) << 8;
+        regs.regs[8 + src_reg] -= 2;
     } else {
         val = (uae_u16)regs.regs[src_reg];
     }
-    
+
     val += adj;
-    uae_u8 result = ((val >> 4) & 0xF0) | (val & 0x0F);
-    
+    const uae_u8 result = ((val >> 4) & 0xF0) | (val & 0x0F);
+
     if (predec) {
-        uae_u32 dst_addr = regs.regs[8 + dst_reg] -= 1;
-        put_byte(dst_addr, result);
+        regs.regs[8 + dst_reg] -= areg_byteinc[dst_reg];
+        m68k_setpc(next_pc);
+        put_byte(regs.regs[8 + dst_reg], result);
     } else {
         regs.regs[dst_reg] = (regs.regs[dst_reg] & 0xFFFFFF00) | result;
+        m68k_setpc(next_pc);
     }
 }
 
-extern "C" void jit_op_unpk(void)
+extern "C" void jit_op_unpk(uae_u32 next_pc)
 {
     int dst_reg = regs.jit_exception & 7;
     int src_reg = (regs.jit_exception >> 3) & 7;
     int predec = (regs.jit_exception >> 6) & 1;
     uae_s16 adj = (uae_s16)(regs.jit_exception >> 16);
-    
+
     uae_u8 val;
     if (predec) {
-        uae_u32 src_addr = regs.regs[8 + src_reg] -= 1;
-        val = get_byte(src_addr);
+        regs.regs[8 + src_reg] -= areg_byteinc[src_reg];
+        val = get_byte(regs.regs[8 + src_reg]);
     } else {
         val = (uae_u8)regs.regs[src_reg];
     }
-    
+
     uae_u16 result = ((val & 0xF0) << 4) | (val & 0x0F);
     result += adj;
-    
+
     if (predec) {
-        uae_u32 dst_addr = regs.regs[8 + dst_reg] -= 2;
-        put_word(dst_addr, result);
+        regs.regs[8 + dst_reg] -= 2;
+        m68k_setpc(next_pc);
+        put_word(regs.regs[8 + dst_reg], result);
     } else {
         regs.regs[dst_reg] = (regs.regs[dst_reg] & 0xFFFF0000) | result;
+        m68k_setpc(next_pc);
     }
 }
 
-/* --- 68020 bitfield helpers --- */
-static inline uae_u32 jit_bf_mask(int width)
+/* --- BFFFO helper --- */
+extern "C" void jit_op_bfffo(void)
 {
-    return width >= 32 ? 0xffffffffu : ((1u << width) - 1u);
-}
+    /* Bit Field Find First One.
+     * jit_exception = extension word
+     * scratchregs[0] = effective address or Dn number; scratchregs[1]
+     *                  distinguishes Dn from the full 32-bit memory address.
+     */
+    const uae_u32 ext = regs.jit_exception;
+    const uae_u32 ea_info = regs.scratchregs[0];
+    uae_s32 offset = (ext & 0x800) ? (uae_s32)regs.regs[(ext >> 6) & 7] : (uae_s32)((ext >> 6) & 0x1f);
+    const int width = ((((ext & 0x20) ? regs.regs[ext & 7] : ext) - 1) & 0x1f) + 1;
+    uae_u32 tmp;
 
-static inline uae_u32 jit_bf_rotl32(uae_u32 v, int shift)
-{
-    shift &= 31;
-    return shift ? ((v << shift) | (v >> (32 - shift))) : v;
-}
-
-static inline uae_u32 jit_bf_rotr32(uae_u32 v, int shift)
-{
-    shift &= 31;
-    return shift ? ((v >> shift) | (v << (32 - shift))) : v;
-}
-
-static inline bool jit_helper_live_memory(uae_u32 addr)
-{
-    if (!jit_allow_ram_dispatch_env())
-        return false;
-    const uae_u32 end = addr + 8u;
-    if (end >= addr && ((addr < 0x00020000u && end <= 0x00020000u) ||
-        (addr >= 0x01000000u && end <= 0x01020000u)))
-        return false;
-    return true;
-}
-
-static inline uae_u32 jit_mem_bget(uae_u32 addr) { return jit_helper_live_memory(addr) ? Uae2026JitLiveGetByte(addr) : get_byte(addr); }
-static inline uae_u32 jit_mem_wget(uae_u32 addr) { return jit_helper_live_memory(addr) ? Uae2026JitLiveGetWord(addr) : get_word(addr); }
-static inline uae_u32 jit_mem_lget(uae_u32 addr) { return jit_helper_live_memory(addr) ? Uae2026JitLiveGetLong(addr) : get_long(addr); }
-static inline void jit_mem_bput(uae_u32 addr, uae_u32 val) { if (jit_helper_live_memory(addr)) Uae2026JitLivePutByte(addr, val); else put_byte(addr, val); }
-static inline void jit_mem_wput(uae_u32 addr, uae_u32 val) { if (jit_helper_live_memory(addr)) Uae2026JitLivePutWord(addr, val); else put_word(addr, val); }
-static inline void jit_mem_lput(uae_u32 addr, uae_u32 val) { if (jit_helper_live_memory(addr)) Uae2026JitLivePutLong(addr, val); else put_long(addr, val); }
-
-static uae_u32 jit_bf_get_mem(uae_u32 src, uae_u32 bdata[2], uae_s32 offset, int width)
-{
-    uae_u32 tmp, res, mask;
-
-    offset &= 7;
-    mask = 0xffffffffu << (32 - width);
-    switch ((offset + width + 7) >> 3) {
-    case 1:
-        tmp = jit_mem_bget(src);
-        res = tmp << (24 + offset);
-        bdata[0] = tmp & ~(mask >> (24 + offset));
-        break;
-    case 2:
-        tmp = jit_mem_wget(src);
-        res = tmp << (16 + offset);
-        bdata[0] = tmp & ~(mask >> (16 + offset));
-        break;
-    case 3:
-        tmp = jit_mem_wget(src);
-        res = tmp << (16 + offset);
-        bdata[0] = tmp & ~(mask >> (16 + offset));
-        tmp = jit_mem_bget(src + 2);
-        res |= tmp << (8 + offset);
-        bdata[1] = tmp & ~(mask >> (8 + offset));
-        break;
-    case 4:
-        tmp = jit_mem_lget(src);
-        res = tmp << offset;
-        bdata[0] = tmp & ~(mask >> offset);
-        break;
-    case 5:
-        tmp = jit_mem_lget(src);
-        res = tmp << offset;
-        bdata[0] = tmp & ~(mask >> offset);
-        tmp = jit_mem_bget(src + 4);
-        res |= tmp >> (8 - offset);
-        bdata[1] = tmp & ~(mask << (8 - offset));
-        break;
-    default:
-        res = 0;
-        break;
-    }
-    return res;
-}
-
-static void jit_bf_put_mem(uae_u32 dst, uae_u32 bdata[2], uae_u32 val, uae_s32 offset, int width)
-{
-    offset = (offset & 7) + width;
-    switch ((offset + 7) >> 3) {
-    case 1:
-        jit_mem_bput(dst, bdata[0] | (val << (8 - offset)));
-        break;
-    case 2:
-        jit_mem_wput(dst, bdata[0] | (val << (16 - offset)));
-        break;
-    case 3:
-        jit_mem_wput(dst, bdata[0] | (val >> (offset - 16)));
-        jit_mem_bput(dst + 2, bdata[1] | (val << (24 - offset)));
-        break;
-    case 4:
-        jit_mem_lput(dst, bdata[0] | (val << (32 - offset)));
-        break;
-    case 5:
-        jit_mem_lput(dst, bdata[0] | (val >> (offset - 32)));
-        jit_mem_bput(dst + 4, bdata[1] | (val << (40 - offset)));
-        break;
-    }
-}
-
-extern "C" void jit_op_bitfield(void)
-{
-    enum {
-        JIT_BF_OP_BFTST = 0,
-        JIT_BF_OP_BFEXTU = 1,
-        JIT_BF_OP_BFCHG = 2,
-        JIT_BF_OP_BFEXTS = 3,
-        JIT_BF_OP_BFCLR = 4,
-        JIT_BF_OP_BFFFO = 5,
-        JIT_BF_OP_BFSET = 6
-    };
-
-    uae_u32 encoded = regs.jit_exception;
-    uae_u16 ext = encoded & 0xffff;
-    int op = (encoded >> 16) & 0xff;
-    uae_u32 ea_info = regs.scratchregs[0];
-
-    uae_s32 offset = (ext & 0x0800) ? (uae_s32)regs.regs[(ext >> 6) & 7] : ((ext >> 6) & 0x1f);
-    int width = (((((ext & 0x0020) ? regs.regs[ext & 7] : ext) - 1) & 0x1f) + 1);
-    uae_u32 mask = jit_bf_mask(width);
-    int result_reg = (ext >> 12) & 7;
-
-    if (ea_info & 0x80000000u) {
-        int dreg = ea_info & 7;
-        int reg_offset = offset & 31;
-        uae_u32 rotated = jit_bf_rotl32(regs.regs[dreg], reg_offset);
-        uae_u32 field = rotated >> (32 - width);
-
-        SET_NFLG(((uae_s32)rotated) < 0);
-        SET_ZFLG(field == 0);
-        SET_VFLG(0);
-        SET_CFLG(0);
-
-        switch (op) {
-        case JIT_BF_OP_BFTST:
-            break;
-        case JIT_BF_OP_BFEXTU:
-            regs.regs[result_reg] = field;
-            break;
-        case JIT_BF_OP_BFEXTS:
-            regs.regs[result_reg] = (uae_u32)((uae_s32)rotated >> (32 - width));
-            break;
-        case JIT_BF_OP_BFFFO: {
-            uae_u32 ffo = reg_offset;
-            uae_u32 bit = 1u << (width - 1);
-            while (bit) {
-                if (field & bit)
-                    break;
-                bit >>= 1;
-                ffo++;
-            }
-            regs.regs[result_reg] = ffo;
-            break;
-        }
-        case JIT_BF_OP_BFCHG:
-        case JIT_BF_OP_BFCLR:
-        case JIT_BF_OP_BFSET: {
-            uae_u32 new_field;
-            if (op == JIT_BF_OP_BFCHG)
-                new_field = field ^ mask;
-            else if (op == JIT_BF_OP_BFCLR)
-                new_field = 0;
-            else
-                new_field = mask;
-            uae_u32 preserve = (width == 32) ? 0 : (rotated & ((1u << (32 - width)) - 1u));
-            uae_u32 merged = preserve | (new_field << (32 - width));
-            regs.regs[dreg] = jit_bf_rotr32(merged, reg_offset);
-            break;
-        }
-        }
-        return;
+    if (regs.scratchregs[1]) {
+        const int src_reg = ea_info & 7;
+        offset &= 0x1f;
+        const uae_u32 src = regs.regs[src_reg];
+        tmp = offset ? ((src << offset) | (src >> (32 - offset))) : src;
+    } else {
+        uae_u32 bdata[2];
+        uae_u32 addr = ea_info + (offset >> 3);
+        tmp = get_bitfield(addr, bdata, offset, width);
     }
 
-    uae_u32 dsta = ea_info + (offset >> 3);
-    uae_u32 bdata[2] = { 0, 0 };
-    uae_u32 tmp = jit_bf_get_mem(dsta, bdata, offset, width);
-    uae_u32 field = tmp >> (32 - width);
+    SET_NFLG(((uae_s32)tmp) < 0 ? 1 : 0);
+    tmp >>= (32 - width);
+    SET_ZFLG(tmp == 0);
+    SET_VFLG(0);
+    SET_CFLG(0);
 
-    SET_NFLG(((uae_s32)tmp) < 0);
-    SET_ZFLG(field == 0);
+    uae_u32 mask = 1u << (width - 1);
+    while (mask) {
+        if (tmp & mask)
+            break;
+        mask >>= 1;
+        offset++;
+    }
+    regs.regs[(ext >> 12) & 7] = (uae_u32)offset;
+}
+
+/* --- BFEXTU helper --- */
+extern "C" void jit_op_bfextu(void)
+{
+    /* Bit Field Extract Unsigned. Mirrors the interpreter (gencpu.c i_BFEXTU).
+     * jit_exception = extension word; scratchregs[0] = memory EA or Dn;
+     * scratchregs[1] distinguishes the two. Result -> Dn=(ext>>12)&7. */
+    const uae_u32 ext = regs.jit_exception;
+    const uae_u32 ea_info = regs.scratchregs[0];
+    uae_s32 offset = (ext & 0x800) ? (uae_s32)regs.regs[(ext >> 6) & 7] : (uae_s32)((ext >> 6) & 0x1f);
+    const int width = ((((ext & 0x20) ? regs.regs[ext & 7] : ext) - 1) & 0x1f) + 1;
+    uae_u32 tmp;
+
+    if (regs.scratchregs[1]) {
+        const int src_reg = ea_info & 7;
+        offset &= 0x1f;
+        const uae_u32 src = regs.regs[src_reg];
+        tmp = offset ? ((src << offset) | (src >> (32 - offset))) : src;
+    } else {
+        uae_u32 bdata[2];
+        uae_u32 addr = ea_info + (offset >> 3);
+        tmp = get_bitfield(addr, bdata, offset, width);
+    }
+
+    SET_NFLG(((uae_s32)tmp) < 0 ? 1 : 0);
+    tmp >>= (32 - width);
+    SET_ZFLG(tmp == 0);
+    SET_VFLG(0);
+    SET_CFLG(0);
+    regs.regs[(ext >> 12) & 7] = tmp;
+}
+
+/* --- BFEXTS helper --- */
+extern "C" void jit_op_bfexts(void)
+{
+    /* Bit Field Extract Signed. As BFEXTU but the result is sign-extended
+     * (arithmetic shift). N flag is the field MSB (before the shift), Z is on
+     * the final sign-extended result, matching the interpreter. */
+    const uae_u32 ext = regs.jit_exception;
+    const uae_u32 ea_info = regs.scratchregs[0];
+    uae_s32 offset = (ext & 0x800) ? (uae_s32)regs.regs[(ext >> 6) & 7] : (uae_s32)((ext >> 6) & 0x1f);
+    const int width = ((((ext & 0x20) ? regs.regs[ext & 7] : ext) - 1) & 0x1f) + 1;
+    uae_u32 tmp;
+
+    if (regs.scratchregs[1]) {
+        const int src_reg = ea_info & 7;
+        offset &= 0x1f;
+        const uae_u32 src = regs.regs[src_reg];
+        tmp = offset ? ((src << offset) | (src >> (32 - offset))) : src;
+    } else {
+        uae_u32 bdata[2];
+        uae_u32 addr = ea_info + (offset >> 3);
+        tmp = get_bitfield(addr, bdata, offset, width);
+    }
+
+    SET_NFLG(((uae_s32)tmp) < 0 ? 1 : 0);
+    uae_s32 res = (uae_s32)tmp >> (32 - width);
+    SET_ZFLG(res == 0);
+    SET_VFLG(0);
+    SET_CFLG(0);
+    regs.regs[(ext >> 12) & 7] = (uae_u32)res;
+}
+
+/* --- BFTST/BFCHG/BFCLR/BFSET shared helper ---
+ * Byte-exact mirror of the interpreter (gencpu.c i_BFTST/BFCHG/BFCLR/BFSET):
+ * same get_bitfield/put_bitfield + bdata[] idiom and the same Dn rotate.
+ * op: 0=TST (no write), 1=CHG, 2=CLR, 3=SET.
+ * jit_exception = extension word; scratchregs[0] = memory EA or Dn number;
+ * scratchregs[1] distinguishes the two without stealing an address bit. */
+static inline void jit_bf_rmw(int op)
+{
+    const uae_u32 ext = regs.jit_exception;
+    const uae_u32 ea_info = regs.scratchregs[0];
+    uae_s32 offset = (ext & 0x800) ? (uae_s32)regs.regs[(ext >> 6) & 7] : (uae_s32)((ext >> 6) & 0x1f);
+    const int width = ((((ext & 0x20) ? regs.regs[ext & 7] : ext) - 1) & 0x1f) + 1;
+    const int is_dreg = regs.scratchregs[1] != 0;
+    const int dreg = ea_info & 7;
+    uae_u32 bdata[2];
+    uae_u32 dsta = 0;
+    uae_u32 tmp;
+
+    if (is_dreg) {
+        uae_u32 dv = regs.regs[dreg];
+        offset &= 0x1f;
+        tmp = (dv << offset) | (offset ? (dv >> (32 - offset)) : 0);
+        bdata[0] = tmp & ((1u << (32 - width)) - 1);
+    } else {
+        dsta = ea_info + (offset >> 3);
+        tmp = get_bitfield(dsta, bdata, offset, width);
+    }
+
+    SET_NFLG(((uae_s32)tmp) < 0 ? 1 : 0);
+    tmp >>= (32 - width);
+    SET_ZFLG(tmp == 0);
     SET_VFLG(0);
     SET_CFLG(0);
 
     switch (op) {
-    case JIT_BF_OP_BFTST:
-        break;
-    case JIT_BF_OP_BFEXTU:
-        regs.regs[result_reg] = field;
-        break;
-    case JIT_BF_OP_BFEXTS:
-        regs.regs[result_reg] = (uae_u32)((uae_s32)tmp >> (32 - width));
-        break;
-    case JIT_BF_OP_BFFFO: {
-        uae_u32 ffo = offset;
-        uae_u32 bit = 1u << (width - 1);
-        while (bit) {
-            if (field & bit)
-                break;
-            bit >>= 1;
-            ffo++;
-        }
-        regs.regs[result_reg] = ffo;
-        break;
+    case 1: tmp = tmp ^ (0xffffffffu >> (32 - width)); break; /* BFCHG */
+    case 2: tmp = 0; break;                                   /* BFCLR */
+    case 3: tmp = 0xffffffffu >> (32 - width); break;         /* BFSET */
+    default: return;                                          /* BFTST: flags only */
     }
-    case JIT_BF_OP_BFCHG:
-        jit_bf_put_mem(dsta, bdata, field ^ mask, offset, width);
-        break;
-    case JIT_BF_OP_BFCLR:
-        jit_bf_put_mem(dsta, bdata, 0, offset, width);
-        break;
-    case JIT_BF_OP_BFSET:
-        jit_bf_put_mem(dsta, bdata, mask, offset, width);
-        break;
+
+    if (is_dreg) {
+        tmp = bdata[0] | (tmp << (32 - width));
+        regs.regs[dreg] = (tmp >> offset) | (offset ? (tmp << (32 - offset)) : 0);
+    } else {
+        put_bitfield(dsta, bdata, tmp, offset, width);
     }
 }
+
+extern "C" void jit_op_bftst(void) { jit_bf_rmw(0); }
+extern "C" void jit_op_bfchg(void) { jit_bf_rmw(1); }
+extern "C" void jit_op_bfclr(void) { jit_bf_rmw(2); }
+extern "C" void jit_op_bfset(void) { jit_bf_rmw(3); }
 
 /* --- BFINS helper --- */
 extern "C" void jit_op_bfins(void)
 {
-    /* Bit field insert — complex encoding.
-     * jit_exception = extension word
-     * scratchregs[0] = effective address (for memory EA) or reg number + 0x80000000 for Dn
-     * The extension word:
-     *   bits 15-12: Dn (source data register)
-     *   bit 11: Do (0=offset in ext, 1=offset in Dn)
-     *   bits 10-6: offset or offset reg
-     *   bit 5: Dw (0=width in ext, 1=width in Dn)
-     *   bits 4-0: width or width reg */
-    uae_u32 ext = regs.jit_exception;
-    uae_u32 ea_info = regs.scratchregs[0];
-    
-    int dn = (ext >> 12) & 7;
-    int do_reg = (ext >> 11) & 1;
-    int offset = do_reg ? (regs.regs[(ext >> 6) & 7] & 31) : ((ext >> 6) & 31);
-    int dw_reg = (ext >> 5) & 1;
-    int width = dw_reg ? (regs.regs[ext & 7] & 31) : (ext & 31);
-    if (width == 0) width = 32;
-    
-    uae_u32 ins_data = regs.regs[dn];
-    
-    if (ea_info & 0x80000000) {
-        /* Register destination */
-        int dreg = ea_info & 7;
-        uae_u32 val = regs.regs[dreg];
-        uae_u32 mask = (width == 32) ? 0xFFFFFFFF : ((1u << width) - 1);
-        int shift = 32 - offset - width;
-        if (shift < 0) shift += 32; /* shouldn't happen for reg */
-        val &= ~(mask << shift);
-        val |= ((ins_data & mask) << shift);
-        regs.regs[dreg] = val;
-        
-        /* Set flags based on inserted field */
-        uae_u32 field = (ins_data & mask);
-        SET_NFLG((field >> (width - 1)) & 1);
-        SET_ZFLG(field == 0);
-        SET_VFLG(0);
-        SET_CFLG(0);
+    /* Mirror the interpreter's get_bitfield()/put_bitfield() contract.
+     * jit_exception is the extension word; scratchregs[0] is either the
+     * memory EA or Dn number, with scratchregs[1] selecting a register.  A dynamic
+     * memory offset is a signed 32-bit value and must not be reduced modulo
+     * 32 until after distinguishing the register-destination case. */
+    const uae_u32 ext = regs.jit_exception;
+    const uae_u32 ea_info = regs.scratchregs[0];
+    uae_s32 offset = (ext & 0x800)
+        ? (uae_s32)regs.regs[(ext >> 6) & 7]
+        : (uae_s32)((ext >> 6) & 0x1f);
+    const int width = ((((ext & 0x20) ? regs.regs[ext & 7] : ext) - 1) & 0x1f) + 1;
+    const uae_u32 field_mask = width == 32 ? 0xffffffffu : ((1u << width) - 1);
+    const uae_u32 field = regs.regs[(ext >> 12) & 7] & field_mask;
+
+    if (regs.scratchregs[1]) {
+        const int dreg = ea_info & 7;
+        const unsigned roff = (unsigned)offset & 0x1f;
+        const uae_u32 old = regs.regs[dreg];
+        const uae_u32 rotated = roff ? (old << roff) | (old >> (32 - roff)) : old;
+        const uae_u32 keep_mask = width == 32 ? 0 : ((1u << (32 - width)) - 1);
+        const uae_u32 merged = (rotated & keep_mask) | (field << (32 - width));
+        regs.regs[dreg] = roff ? (merged >> roff) | (merged << (32 - roff)) : merged;
     } else {
-        /* Memory destination — byte-oriented bit manipulation */
-        uae_u32 addr = ea_info;
-        int byte_offset = offset >> 3;
-        int bit_offset = offset & 7;
-        addr += byte_offset;
-        
-        /* Read enough bytes to cover the field */
-        int total_bits = bit_offset + width;
-        int bytes_needed = (total_bits + 7) >> 3;
-        uae_u32 val = 0;
-        for (int i = 0; i < bytes_needed && i < 5; i++) {
-            val = (val << 8) | jit_mem_bget(addr + i);
-        }
-        
-        uae_u32 mask = (width == 32) ? 0xFFFFFFFF : ((1u << width) - 1);
-        int shift = (bytes_needed * 8) - bit_offset - width;
-        val &= ~(mask << shift);
-        val |= ((ins_data & mask) << shift);
-        
-        for (int i = 0; i < bytes_needed && i < 5; i++) {
-            jit_mem_bput(addr + i, (val >> ((bytes_needed - 1 - i) * 8)) & 0xFF);
-        }
-        
-        uae_u32 field = (ins_data & mask);
-        SET_NFLG((field >> (width - 1)) & 1);
-        SET_ZFLG(field == 0);
-        SET_VFLG(0);
-        SET_CFLG(0);
+        uae_u32 bdata[2];
+        const uae_u32 dsta = ea_info + (offset >> 3);
+        (void)get_bitfield(dsta, bdata, offset, width);
+        put_bitfield(dsta, bdata, field, offset, width);
     }
+
+    SET_NFLG((field >> (width - 1)) & 1);
+    SET_ZFLG(field == 0);
+    SET_VFLG(0);
+    SET_CFLG(0);
 }
 
 /* --- ROXL/ROXR register helpers --- */
@@ -3184,176 +2490,12 @@ extern "C" void jit_op_roxrw(void)
     SET_VFLG(0);
 }
 
-/* --- Unsupported/system/cache/FPU-frame helpers --- */
-extern "C" void jit_op_callm(void)
-{
-    op_illg(regs.jit_exception & 0xffff);
-}
-
-extern "C" void jit_op_mmuop030(void)
-{
-    op_illg(regs.jit_exception & 0xffff);
-}
-
-extern "C" void jit_op_mmu_final(void)
-{
-    uae_u16 opcode = regs.jit_exception & 0xffff;
-    if ((opcode & 0x0fe0) == 0x0500) {
-        regs.mmusr = 0;
-        return;
-    }
-    if ((opcode & 0x0fd8) == 0x0548) {
-        return;
-    }
-    op_illg(opcode);
-}
-
-extern "C" void jit_op_frestore(void)
-{
-    if (!regs.s) {
-        Exception(8, 0);
-        return;
-    }
-    /* The current Previous UAE2026 bridge is built without linked FPU frame
-     * helpers.  Treat FRESTORE as a privileged no-op for coverage parity with
-     * the existing FPU-disabled JIT path; full state-frame restoration belongs
-     * with the FPU tranche. */
-}
-
-extern "C" void jit_op_cinva(void)
-{
-    if (!regs.s) {
-        Exception(8, 0);
-        return;
-    }
-    flush_internals();
-}
-
-extern "C" void jit_op_cpusha(void)
-{
-    if (!regs.s) {
-        Exception(8, 0);
-        return;
-    }
-    flush_internals();
-}
-
-extern "C" void jit_op_cache_line(void)
-{
-    if (!regs.s) {
-        Exception(8, 0);
-        return;
-    }
-    flush_internals();
-}
-
-extern "C" void jit_op_bkpt(void)
-{
-    op_illg(regs.jit_exception & 0xffff);
-}
-
-extern "C" void jit_op_rtm(void)
-{
-    op_illg(regs.jit_exception & 0xffff);
-}
-
-extern "C" void jit_op_fsave(void)
-{
-    if (!regs.s) {
-        Exception(8, 0);
-        return;
-    }
-    /* FPU frame helpers are not linked in the current bridge build. */
-}
-
-extern "C" void jit_op_ftrapcc(void)
-{
-    /* FPU condition evaluation belongs to the FPU tranche; keep as no-op. */
-}
-
-extern "C" void jit_op_fdbcc(void)
-{
-    /* FPU condition evaluation belongs to the FPU tranche; keep as no-op. */
-}
-
-extern "C" void jit_op_movep(void)
-{
-    uae_u32 enc = regs.jit_exception;
-    uae_u16 opcode = enc & 0xffff;
-    int kind = (enc >> 16) & 3;
-    int dreg = (opcode >> 9) & 7;
-    uae_u32 addr = regs.scratchregs[0];
-
-    switch (kind) {
-    case 0: { /* memory -> Dn, word */
-        uae_u16 val = (get_byte(addr) << 8) | get_byte(addr + 2);
-        regs.regs[dreg] = (regs.regs[dreg] & ~0xffffu) | val;
-        break;
-    }
-    case 1: { /* memory -> Dn, long */
-        uae_u32 val = (get_byte(addr) << 24) | (get_byte(addr + 2) << 16) |
-                      (get_byte(addr + 4) << 8) | get_byte(addr + 6);
-        regs.regs[dreg] = val;
-        break;
-    }
-    case 2: { /* Dn -> memory, word */
-        uae_u32 val = regs.regs[dreg];
-        put_byte(addr, val >> 8);
-        put_byte(addr + 2, val);
-        break;
-    }
-    case 3: { /* Dn -> memory, long */
-        uae_u32 val = regs.regs[dreg];
-        put_byte(addr, val >> 24);
-        put_byte(addr + 2, val >> 16);
-        put_byte(addr + 4, val >> 8);
-        put_byte(addr + 6, val);
-        break;
-    }
-    }
-}
-
-extern "C" void jit_op_cas2(void)
-{
-    uae_u32 extra = regs.scratchregs[0];
-    int size = ((regs.jit_exception & 0xffff) == 0x0cfc) ? 1 : 2;
-    uae_u32 rn1 = regs.regs[(extra >> 28) & 15];
-    uae_u32 rn2 = regs.regs[(extra >> 12) & 15];
-    int ru1 = (extra >> 22) & 7;
-    int rc1 = (extra >> 16) & 7;
-    int ru2 = (extra >> 6) & 7;
-    int rc2 = extra & 7;
-    uae_u32 dst1 = size == 1 ? get_word(rn1) : get_long(rn1);
-    uae_u32 dst2 = size == 1 ? get_word(rn2) : get_long(rn2);
-
-    jit_cas_flags(dst1, regs.regs[rc1], size);
-    if (GET_ZFLG()) {
-        jit_cas_flags(dst2, regs.regs[rc2], size);
-        if (GET_ZFLG()) {
-            if (size == 1) {
-                put_word(rn1, regs.regs[ru1]);
-                put_word(rn2, regs.regs[ru2]);
-            } else {
-                put_long(rn1, regs.regs[ru1]);
-                put_long(rn2, regs.regs[ru2]);
-            }
-            return;
-        }
-    }
-    if (size == 1) {
-        regs.regs[rc2] = (regs.regs[rc2] & ~0xffffu) | (dst2 & 0xffffu);
-        regs.regs[rc1] = (regs.regs[rc1] & ~0xffffu) | (dst1 & 0xffffu);
-    } else {
-        regs.regs[rc2] = dst2;
-        regs.regs[rc1] = dst1;
-    }
-}
-
 /* --- TRAPcc helper --- */
 extern "C" void jit_op_trapcc(void)
 {
-    int cc = regs.jit_exception & 15;
-    if (cctrue(cc)) {
+    /* The condition was already evaluated; if we get here, trap. */
+    int cond = regs.jit_exception & 1;
+    if (cond) {
         Exception(7, 0);
     }
 }
@@ -3365,35 +2507,117 @@ extern "C" void jit_op_trapcc(void)
  * ================================================================ */
 #ifdef USE_JIT_FPU
 #include "fpu/fpu.h"
+#include <cmath>
+#include <cstring>
+#include <limits>
 
-/* Sync MPFR FP registers → JIT shadow doubles (block entry) */
+/* Sync architectural FP registers and FPSR condition state to the native
+   double shadows whenever execution enters the JIT from C/interpreter code.
+   FP_RESULT is the JIT's lazy condition-code carrier: FBcc compares it with
+   zero, so materialise one canonical representative of each architectural
+   FP class rather than depending on a preceding native FPP instruction. */
 extern "C" void jit_fpu_sync_to_shadow(void)
 {
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+    /* AArch64 FPCR RMode uses 00 nearest, 01 +Inf, 10 -Inf, 11 zero;
+       the 68k field uses nearest, zero, -Inf, +Inf.  Import only RMode and
+       preserve every unrelated host control bit for the return to C. */
+    uae_u64 host_fpcr = 0;
+    __asm__ __volatile__("mrs %0, fpcr" : "=r"(host_fpcr));
+    regs.jit_host_fpcr = host_fpcr;
+    const unsigned guest_round = (fpu_get_fpcr() & FPCR_ROUNDING_MODE) >> 4;
+    static const unsigned arm_round[4] = { 0, 3, 2, 1 };
+    host_fpcr = (host_fpcr & ~(3ULL << 22)) | ((uae_u64)arm_round[guest_round] << 22);
+    __asm__ __volatile__("msr fpcr, %0" : : "r"(host_fpcr) : "memory");
+#endif
 #ifdef FPU_MPFR
     for (int i = 0; i < 8; i++) {
         regs.jit_fpregs[i] = mpfr_get_d(fpu.registers[i].f, MPFR_RNDN);
+        /* MPFR keeps NaN payload/sign outside mpfr_t.  Reconstruct the native
+           double shadow with the same high-order payload mapping used by
+           extract_to_double(), so a later IEEE-single destination can quiet
+           signalling NaNs without losing their architectural payload. */
+        if (mpfr_nan_p(fpu.registers[i].f)) {
+            uae_u64 bits = 0x7ff0000000000000ULL |
+                ((fpu.registers[i].nan_bits >> 11) & 0x000fffffffffffffULL);
+            if (fpu.registers[i].nan_sign)
+                bits |= 0x8000000000000000ULL;
+            std::memcpy(&regs.jit_fpregs[i], &bits, sizeof(bits));
+        }
     }
 #else
     for (int i = 0; i < 8; i++) {
         regs.jit_fpregs[i] = (double)fpu.registers[i];
     }
 #endif
+    const uae_u32 fpcc = fpu_get_fpsr() & FPSR_CCB;
+    const bool negative = (fpcc & FPSR_CCB_NEGATIVE) != 0;
+    if (fpcc & FPSR_CCB_NAN)
+        regs.jit_fp_result = std::copysign(
+            std::numeric_limits<double>::quiet_NaN(), negative ? -1.0 : 1.0);
+    else if (fpcc & FPSR_CCB_INFINITY)
+        regs.jit_fp_result = negative
+            ? -std::numeric_limits<double>::infinity()
+            : std::numeric_limits<double>::infinity();
+    else if (fpcc & FPSR_CCB_ZERO)
+        regs.jit_fp_result = negative ? -0.0 : 0.0;
+    else
+        regs.jit_fp_result = negative ? -1.0 : 1.0;
+    /* Imported shadows are clean. Native emitters set ownership bits at the
+       exact runtime point where an architectural FP value is written. */
+    regs.jit_fp_dirty_mask = 0;
 }
 
-/* Sync JIT shadow doubles → MPFR FP registers (block exit) */
+/* Publish only native-dirty FP values before returning to C or entering an
+   interpreter fallback. Untouched binary64 shadows must never narrow wider
+   architectural MPFR registers, and a clean lazy result must not overwrite an
+   FPSR condition code produced by serviced execution. */
 extern "C" void jit_fpu_sync_from_shadow(void)
 {
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+    __asm__ __volatile__("msr fpcr, %0" : : "r"(regs.jit_host_fpcr) : "memory");
+#endif
+    const uae_u32 dirty = regs.jit_fp_dirty_mask;
 #ifdef FPU_MPFR
     for (int i = 0; i < 8; i++) {
-        mpfr_set_d(fpu.registers[i].f, regs.jit_fpregs[i], MPFR_RNDN);
-        fpu.registers[i].nan_bits = 0xffffffffffffffffULL;
-        fpu.registers[i].nan_sign = 0;
+        if ((dirty & (1u << i)) == 0)
+            continue;
+        const double shadow = regs.jit_fpregs[i];
+        mpfr_set_d(fpu.registers[i].f, shadow, MPFR_RNDN);
+        if (std::isnan(shadow)) {
+            uae_u64 bits = 0;
+            std::memcpy(&bits, &shadow, sizeof(bits));
+            fpu.registers[i].nan_bits = (bits & 0x000fffffffffffffULL) << 11;
+            fpu.registers[i].nan_sign = (bits >> 63) != 0;
+        } else {
+            fpu.registers[i].nan_bits = 0xffffffffffffffffULL;
+            fpu.registers[i].nan_sign = 0;
+        }
     }
 #else
     for (int i = 0; i < 8; i++) {
-        fpu.registers[i] = (fpu_register)regs.jit_fpregs[i];
+        if (dirty & (1u << i))
+            fpu.registers[i] = (fpu_register)regs.jit_fpregs[i];
     }
 #endif
+    if (dirty & (1u << FP_RESULT)) {
+        const double result = regs.jit_fp_result;
+        uae_u32 fpcc = 0;
+        if (std::isnan(result)) {
+            fpcc |= FPSR_CCB_NAN;
+            if (std::signbit(result))
+                fpcc |= FPSR_CCB_NEGATIVE;
+        } else {
+            if (std::signbit(result))
+                fpcc |= FPSR_CCB_NEGATIVE;
+            if (result == 0.0)
+                fpcc |= FPSR_CCB_ZERO;
+            else if (std::isinf(result))
+                fpcc |= FPSR_CCB_INFINITY;
+        }
+        fpu_set_fpsr((fpu_get_fpsr() & ~FPSR_CCB) | fpcc);
+    }
+    regs.jit_fp_dirty_mask = 0;
 }
 
 #endif /* USE_JIT_FPU */

@@ -19,6 +19,7 @@
 
 /* Pulled in early so set_status()'s diagnostic abort can dump a backtrace. */
 #include <execinfo.h>
+#include <cstddef>
 
 /* Rename vendored globals to avoid collisions with Previous-native globals. */
 #define regflags      jit_regflags
@@ -30,6 +31,12 @@
  * Shared compatibility preamble                                        *
  * ------------------------------------------------------------------ */
 #include "uae2026_vendored_preamble.h"
+
+static_assert(offsetof(struct regstruct, scratchregs) == 196, "vendored scratchregs ABI");
+static_assert(offsetof(struct regstruct, jit_scratch_vregs) == 216, "vendored scratch spill ABI");
+static_assert(offsetof(struct regstruct, jit_exception_oldpc) == 284, "vendored exception-PC ABI");
+static_assert(offsetof(struct regstruct, mem_banks) == 400, "vendored bank-table ABI");
+static_assert(offsetof(struct regstruct, cache_tags) == 408, "vendored cache-tag ABI");
 
 /* ------------------------------------------------------------------ *
  * jit_regflags storage (renamed from regflags)                        *
@@ -94,15 +101,6 @@ static struct _addrbank_stub rtarea_bank  = { nullptr, 0 };
 #define PART_7 1
 #define PART_8 1
 #include "uae_cpu_2026/compiler/compemu.cpp"
-#include "uae_cpu_2026/compiler/compemu_b2_gapfill.cpp"
-#include "uae_cpu_2026/compiler/compemu_priority_gapfill.cpp"
-#include "uae_cpu_2026/compiler/compemu_moves_gapfill.cpp"
-#include "uae_cpu_2026/compiler/compemu_pack_gapfill.cpp"
-#include "uae_cpu_2026/compiler/compemu_bitfield_gapfill.cpp"
-#include "uae_cpu_2026/compiler/compemu_trapcc_gapfill.cpp"
-#include "uae_cpu_2026/compiler/compemu_chk2_cas_gapfill.cpp"
-#include "uae_cpu_2026/compiler/compemu_next5_gapfill.cpp"
-#include "uae_cpu_2026/compiler/compemu_final_gapfill.cpp"
 
 /* ------------------------------------------------------------------ *
  * compstbl_arm.cpp — op_smalltbl_0_comp_ff/nf dispatch tables         *

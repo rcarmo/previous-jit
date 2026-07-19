@@ -1994,6 +1994,8 @@ static uintptr current_block_start_target;
 uae_u32 needed_flags;
 static uintptr next_pc_p;
 static uintptr taken_pc_p;
+static uae_u32 next_m68k_pc;
+static uae_u32 taken_m68k_pc;
 static int     branch_cc;
 static int redo_current_block;
 static bool jit_force_runtime_pc_endblock = false;
@@ -2648,7 +2650,20 @@ static inline blockinfo* get_blockinfo(uae_u32 cl)
     return cache_tags[cl + 1].bi;
 }
 
-static inline blockinfo* get_blockinfo_addr(void* addr)
+static inline bool jit_block_identity_matches(const blockinfo *bi, void *addr,
+    uae_u32 guest_pc, uae_u8 supervisor)
+{
+    if (bi->pc_p != addr)
+        return false;
+    if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled)
+        return true;
+    return bi->mmu_identity_valid && bi->guest_pc == guest_pc &&
+        bi->mmu_generation == Uae2026JitMmuGeneration() &&
+        bi->mmu_supervisor == supervisor;
+}
+
+static inline blockinfo* get_blockinfo_addr_key(void* addr, uae_u32 guest_pc,
+    uae_u8 supervisor)
 {
     blockinfo* bi = get_blockinfo(cacheline(addr));
     int safety = 0;
@@ -2661,7 +2676,7 @@ static inline blockinfo* get_blockinfo_addr(void* addr)
                 fprintf(stderr, "JIT: corrupt blockinfo chain bi=%p for addr=%p\n", bi, addr);
             return NULL;
         }
-        if (bi->pc_p == addr)
+        if (jit_block_identity_matches(bi, addr, guest_pc, supervisor))
             return bi;
         bi = bi->next_same_cl;
         if (++safety > 10000) {
@@ -2672,6 +2687,11 @@ static inline blockinfo* get_blockinfo_addr(void* addr)
         }
     }
     return NULL;
+}
+
+static inline blockinfo* get_blockinfo_addr(void* addr)
+{
+    return get_blockinfo_addr_key(addr, regs.pc, (uae_u8)(regs.s != 0));
 }
 
 
@@ -2833,9 +2853,11 @@ void invalidate_block(blockinfo* bi)
     remove_deps(bi);
 }
 
-static inline void create_jmpdep(blockinfo* bi, int i, uae_u32* jmpaddr, uintptr target, bool prefer_direct)
+static inline void create_jmpdep(blockinfo* bi, int i, uae_u32* jmpaddr,
+    uintptr target, uae_u32 target_guest_pc, bool prefer_direct)
 {
-    blockinfo* tbi = get_blockinfo_addr((void*)target);
+    blockinfo* tbi = get_blockinfo_addr_key((void*)target, target_guest_pc,
+        (uae_u8)(regs.s != 0));
 
     Dif(!tbi) {
         jit_abort("Could not create jmpdep!");
@@ -2978,9 +3000,31 @@ void jit_notify_guest_memory_write(uae_u32 address, uae_u32 size)
     jit_invalidate_guest_code_range(address, size, true);
 }
 
-static inline blockinfo* get_blockinfo_addr_new(void* addr)
+static inline bool jit_mmu_execution_key_active(void)
 {
-    blockinfo* bi = get_blockinfo_addr(addr);
+#if defined(CPU_AARCH64)
+    return jit_allow_ram_dispatch_env() && regs.mmu_enabled;
+#else
+    return false;
+#endif
+}
+
+extern "C" void Uae2026CompilerPrepareMmuDispatch(void)
+{
+    if (!jit_mmu_execution_key_active())
+        return;
+    blockinfo *bi = get_blockinfo_addr(regs.pc_p);
+    const uae_u32 cl = cacheline(regs.pc_p);
+    if (bi)
+        raise_in_cl_list(bi);
+    else
+        cache_tags[cl].handler = (cpuop_func*)popall_execute_normal;
+}
+
+static inline blockinfo* get_blockinfo_addr_new(void* addr, uae_u32 guest_pc)
+{
+    const uae_u8 supervisor = (uae_u8)(regs.s != 0);
+    blockinfo* bi = get_blockinfo_addr_key(addr, guest_pc, supervisor);
     int i;
 
     if (!bi) {
@@ -2991,6 +3035,10 @@ static inline blockinfo* get_blockinfo_addr_new(void* addr)
                 bi = hold_bi[i];
                 hold_bi[i] = NULL;
                 bi->pc_p = (uae_u8*)addr;
+                bi->guest_pc = guest_pc;
+                bi->mmu_generation = Uae2026JitMmuGeneration();
+                bi->mmu_supervisor = supervisor;
+                bi->mmu_identity_valid = (uae_u8)(jit_allow_ram_dispatch_env() && regs.mmu_enabled);
                 invalidate_block(bi);
                 add_to_active(bi);
                 add_to_cl_list(bi);
@@ -3004,6 +3052,11 @@ static inline blockinfo* get_blockinfo_addr_new(void* addr)
 }
 
 static void prepare_block(blockinfo* bi);
+
+/* Emitter-backed endblock wrappers are defined after codegen_arm64.cpp. */
+static inline void jit_endblock_runtime_pc(RR4 rr_pc, IM32 cycles);
+static inline uae_u32* jit_endblock_const_pc(IM32 cycles, IMPTR host_pc,
+    uae_u32 guest_pc);
 
 /* Management of blockinfos.
 
@@ -3322,6 +3375,37 @@ STATIC_INLINE void clobber_flags(void);
 #elif defined(CPU_arm) 
 #include "codegen_arm.cpp"
 #endif
+
+/* Dynamic MMU targets (exact helpers and translated indirect jumps) have
+   already published regs.pc independently from regs.pc_p. */
+static inline void jit_endblock_runtime_pc(RR4 rr_pc, IM32 cycles)
+{
+    if (jit_mmu_execution_key_active()) {
+        /* Exact helpers and MMU-safe indirect target translation have already
+           published regs.pc. Other callers must use jit_endblock_const_pc(). */
+        compemu_raw_endblock_mmu_dispatch(rr_pc, cycles);
+        return;
+    }
+    compemu_raw_endblock_pc_inreg(rr_pc, cycles);
+}
+
+/* Constant/trace-known edges must publish the architectural virtual target;
+   a translated host pointer is not reversible when pages are aliased. */
+static inline uae_u32* jit_endblock_const_pc(IM32 cycles, IMPTR host_pc,
+    uae_u32 guest_pc)
+{
+    if (jit_mmu_execution_key_active()) {
+        /* Resolve the logical edge in the live execution context. A translated
+           host pointer captured while tracing may belong to another alias/root. */
+        flush(1);
+        prepare_for_call_2();
+        compemu_raw_mov_l_ri(REG_PAR1, guest_pc);
+        compemu_raw_call((uintptr)Uae2026JitPrepareMmuDispatchTarget);
+        compemu_raw_endblock_mmu_dispatch(REG_RESULT, cycles);
+        return NULL;
+    }
+    return compemu_raw_endblock_pc_isconst(cycles, host_pc);
+}
 
 /********************************************************************
  * Flags status handling. EMIT TIME!                                *
@@ -5340,24 +5424,24 @@ static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr 
     compemu_raw_set_pc_full_i(op_m68k_pc, pc);
 
     prepare_for_call_2();
-    if (helper_kind != UAE2026_JIT_HELPER_GENERIC) {
-        /* Freeze the complete pre-instruction restart tuple. Packing
-           opcode/kind retains the established two-argument helper ABI. */
-        compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
-        compemu_raw_mov_l_ri(REG_PAR2,
-            UAE2026_JIT_HELPER_DESCRIPTOR(arg1, helper_kind));
-        compemu_raw_call((uintptr)Uae2026JitHelperBegin);
-    }
+    /* Freeze the complete pre-instruction restart tuple for every faultable
+       semantic helper. Packing opcode/kind retains the two-argument ABI. */
+    compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
+    compemu_raw_mov_l_ri(REG_PAR2,
+        UAE2026_JIT_HELPER_DESCRIPTOR(jit_compile_current_opcode, helper_kind));
+    compemu_raw_call((uintptr)Uae2026JitHelperBegin);
 
     compemu_raw_mov_l_ri(REG_PAR1, arg1);
     if (has_arg2)
         compemu_raw_mov_l_ri(REG_PAR2, arg2);
     compemu_raw_call(helper);
+    prepare_for_call_2();
+    compemu_raw_call((uintptr)Uae2026JitHelperCommitCurrentPc);
     live.state[PC_P].realreg = -1;
     live.state[PC_P].val = 0;
     set_status(PC_P, INMEM);
     jit_force_runtime_pc_endblock = true;
-    jit_force_runtime_pc_preserve_logical = helper_kind != UAE2026_JIT_HELPER_GENERIC;
+    jit_force_runtime_pc_preserve_logical = true;
 }
 
 static inline void jit_emit_runtime_helper_barrier(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2)
@@ -5385,9 +5469,16 @@ void jit_emit_ordered_semantic_helper_call(uintptr helper, uae_u32 instruction_b
 
     flush(1);
     compemu_raw_set_pc_full_i(op_m68k_pc, op_host_pc);
-    compemu_raw_mov_l_ri(REG_PAR1, next_m68k_pc);
     prepare_for_call_2();
+    compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
+    compemu_raw_mov_l_ri(REG_PAR2,
+        UAE2026_JIT_HELPER_DESCRIPTOR(jit_compile_current_opcode,
+            UAE2026_JIT_HELPER_GENERIC));
+    compemu_raw_call((uintptr)Uae2026JitHelperBegin);
+    compemu_raw_mov_l_ri(REG_PAR1, next_m68k_pc);
     compemu_raw_call(helper);
+    prepare_for_call_2();
+    compemu_raw_call((uintptr)Uae2026JitHelperCommitCurrentPc);
 
     /* The helper owns the final PC triple (successor, trap, or fault).  Forget
        the compile-time PC_P fact and terminate through the runtime value. */
@@ -5395,6 +5486,7 @@ void jit_emit_ordered_semantic_helper_call(uintptr helper, uae_u32 instruction_b
     live.state[PC_P].val = 0;
     set_status(PC_P, INMEM);
     jit_force_runtime_pc_endblock = true;
+    jit_force_runtime_pc_preserve_logical = true;
 }
 
 static void op_fullsr_orsr_w_comp_ff(uae_u32 opcode)
@@ -5928,6 +6020,15 @@ void register_branch(uintptr not_taken, uintptr taken, uae_u8 cond)
 {
     next_pc_p = not_taken;
     taken_pc_p = taken;
+    /* Branch generators still compute translated host pointers for PC_P.
+       Derive their logical targets from the current opcode's known mapping,
+       never from MEMBaseDiff or a runtime reverse translation. */
+    const intptr not_taken_delta = (intptr)not_taken -
+        (intptr)jit_compile_current_op_host_pc;
+    const intptr taken_delta = (intptr)taken -
+        (intptr)jit_compile_current_op_host_pc;
+    next_m68k_pc = jit_compile_current_op_m68k_pc + (uae_s32)not_taken_delta;
+    taken_m68k_pc = jit_compile_current_op_m68k_pc + (uae_s32)taken_delta;
     branch_cc = cond;
 }
 
@@ -5964,12 +6065,14 @@ void register_possible_exception_at_successor(void)
 /* Note: get_handler may fail in 64 Bit environments, if direct_handler_to_use is
  *       outside 32 bit
  */
-static uintptr get_handler_for_edge(const blockinfo *source_bi, int edge_slot, uintptr addr)
+static uintptr get_handler_for_edge(const blockinfo *source_bi, int edge_slot,
+    uintptr addr, uae_u32 guest_pc)
 {
     addr = jit_canonicalize_target_pc(addr);
-    if (jit_force_execute_normal_successor_env() || jit_force_execute_normal_target_env(addr))
+    if (jit_mmu_execution_key_active() || jit_force_execute_normal_successor_env() ||
+        jit_force_execute_normal_target_env(addr))
         return (uintptr)popall_execute_normal;
-    blockinfo* bi = get_blockinfo_addr_new((void*)(uintptr)addr);
+    blockinfo* bi = get_blockinfo_addr_new((void*)(uintptr)addr, guest_pc);
 #if defined(CPU_AARCH64)
     const bool forced_validated = jit_force_nondirect_handler_env() ||
         jit_force_nondirect_target_env(addr);
@@ -5992,7 +6095,7 @@ static uintptr get_handler_for_edge(const blockinfo *source_bi, int edge_slot, u
 
 static uintptr get_handler(uintptr addr)
 {
-    return get_handler_for_edge(NULL, -1, addr);
+    return get_handler_for_edge(NULL, -1, addr, regs.pc);
 }
 
 /* Calls into Previous's MMU/bank layer are ordinary platform-ABI calls.  The
@@ -7731,7 +7834,11 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 
         alloc_blockinfos();
 
-        bi = get_blockinfo_addr_new(pc_hist[0].location);
+        bi = get_blockinfo_addr_new(pc_hist[0].location, pc_hist[0].guest_pc);
+        bi->guest_pc = pc_hist[0].guest_pc;
+        bi->mmu_generation = Uae2026JitMmuGeneration();
+        bi->mmu_supervisor = (uae_u8)(regs.s != 0);
+        bi->mmu_identity_valid = (uae_u8)(jit_allow_ram_dispatch_env() && regs.mmu_enabled);
         bi2 = get_blockinfo(cl);
         const bool bi_was_invalid = (bi->status == BI_INVALID);
 
@@ -7956,6 +8063,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             reg_alloc_run = 0;
             next_pc_p = 0;
             taken_pc_p = 0;
+            next_m68k_pc = 0;
+            taken_m68k_pc = 0;
             branch_cc = 0; // Only to be initialized. Will be set together with next_pc_p
             jit_force_runtime_pc_endblock = false;
             jit_force_runtime_pc_preserve_logical = false;
@@ -8051,8 +8160,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                        native block here so MOVEM starts from a dispatcher entry.
                        This remains native strict JIT (no interpreter fallback). */
                     flush(1);
-                    LOAD_U64(REG_PC_TMP, (uintptr)pc_hist[i].location);
-                    compemu_raw_endblock_pc_inreg(REG_PC_TMP, scaled_cycles(i * 4 * CYCLE_UNIT));
+                    (void)jit_endblock_const_pc(scaled_cycles(i * 4 * CYCLE_UNIT),
+                        (uintptr)pc_hist[i].location, pc_hist[i].guest_pc);
                     if (jit_block_verify_compile_active &&
                         block_m68k_pc == jit_block_verify_compile_pc)
                         jit_block_verify_compiled_ops = i;
@@ -8167,10 +8276,12 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                            sequential successor. */
                         const uintptr write_next_pc =
                             (uintptr)comp_pc_p + (uintptr)m68k_pc_offset;
+                        const uae_u32 write_next_guest_pc = op_m68k_pc +
+                            (uae_u32)(write_next_pc - (uintptr)pc_hist[i].location);
                         live.flags_are_important = 1;
                         flush(1);
-                        LOAD_U64(REG_PC_TMP, write_next_pc);
-                        compemu_raw_endblock_pc_inreg(REG_PC_TMP, retired_cycles);
+                        (void)jit_endblock_const_pc(retired_cycles, write_next_pc,
+                            write_next_guest_pc);
                         forced_interpreter_barrier = true;
                         jit_emitted_guest_memory_write = false;
                         if (jit_block_verify_compile_active &&
@@ -8189,10 +8300,11 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 #endif
                         compemu_raw_maybe_do_nothing(retired_cycles);
                         compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
-                        if (jit_force_runtime_pc_preserve_logical)
-                            compemu_raw_endblock_canonical_pc(REG_PC_TMP, retired_cycles);
+                        if (jit_mmu_execution_key_active() ||
+                            jit_force_runtime_pc_preserve_logical)
+                            compemu_raw_endblock_mmu_dispatch(REG_PC_TMP, retired_cycles);
                         else
-                            compemu_raw_endblock_pc_inreg(REG_PC_TMP, retired_cycles);
+                            jit_endblock_runtime_pc(REG_PC_TMP, retired_cycles);
                         forced_interpreter_barrier = true;
                         break;
                     }
@@ -8221,7 +8333,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 #endif
                         compemu_raw_maybe_do_nothing(retired_cycles);
                         compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
-                        compemu_raw_endblock_pc_inreg(REG_PC_TMP, retired_cycles);
+                        jit_endblock_runtime_pc(REG_PC_TMP, retired_cycles);
                         forced_interpreter_barrier = true;
                         break;
                         }
@@ -8243,7 +8355,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         const uae_u16 dop = (uae_u16)opcode;
                         const bool is_dbcc_cond =
                             (((dop & 0xF0F8) == 0x50C8) && (((dop >> 8) & 0xf) >= 1));
-                        if (is_dbcc_cond) {
+                        if (is_dbcc_cond && !jit_mmu_execution_key_active()) {
                             live.flags_are_important = 1;
                             flush(1);
                             compemu_raw_mov_l_rm(0, (uintptr)specflags);
@@ -8252,7 +8364,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 #endif
                             compemu_raw_maybe_do_nothing(retired_cycles);
                             compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
-                            compemu_raw_endblock_pc_inreg(REG_PC_TMP, retired_cycles);
+                            jit_endblock_runtime_pc(REG_PC_TMP, retired_cycles);
                             forced_interpreter_barrier = true;
                             break;
                         }
@@ -8359,10 +8471,13 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                                 : (side_cond ^ 1);
                             compemu_raw_jcc_l_oponly(skip_cond);
                             uae_u32* patch_skip = (uae_u32*)get_target() - 1;
-                            /* Side exit: load PC and endblock */
-                            LOAD_U64(REG_PC_TMP, side_exit_pc); /* load into x1 for endblock */
-                            compemu_raw_endblock_pc_inreg(REG_PC_TMP,
-                                scaled_cycles((i + 1) * 4 * CYCLE_UNIT));
+                            /* Side exit: carry both the translated host pointer
+                               and the architectural target selected above. */
+                            const uae_u32 side_exit_m68k_pc =
+                                side_exit_pc == next_pc_p ? next_m68k_pc : taken_m68k_pc;
+                            (void)jit_endblock_const_pc(
+                                scaled_cycles((i + 1) * 4 * CYCLE_UNIT),
+                                side_exit_pc, side_exit_m68k_pc);
                             /* Patch skip branch to the traced-path continuation */
                             write_jmp_target(patch_skip, (uintptr)get_target());
                             /* Restore register allocator for traced path */
@@ -8370,6 +8485,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         }
                         next_pc_p = 0;
                         taken_pc_p = 0;
+                        next_m68k_pc = 0;
+                        taken_m68k_pc = 0;
                     }
 #endif
                     if (i < blocklen - 1 && was_comp && (i + 1) % JIT_TICK_INTERVAL == 0) {
@@ -8581,7 +8698,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                             compemu_raw_mov_l_rm(0, (uintptr)specflags);
                             compemu_raw_maybe_do_nothing(retired_cycles);
                             compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
-                            compemu_raw_endblock_pc_inreg(REG_PC_TMP, retired_cycles);
+                            jit_endblock_runtime_pc(REG_PC_TMP, retired_cycles);
                             forced_interpreter_barrier = true;
                             break;
                         }
@@ -8617,7 +8734,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         if (i == blocklen - 1 &&
                             jit_block_verify_compile_active && block_m68k_pc == jit_block_verify_compile_pc) {
                             compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
-                            compemu_raw_endblock_pc_inreg(REG_PC_TMP, retired_cycles);
+                            jit_endblock_runtime_pc(REG_PC_TMP, retired_cycles);
                         } else {
                             compemu_raw_execute_normal_cycles((uintptr)&regs.pc_p, retired_cycles);
                         }
@@ -8633,7 +8750,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 #endif
                         compemu_raw_maybe_do_nothing(retired_cycles);
                         compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
-                        compemu_raw_endblock_pc_inreg(REG_PC_TMP, retired_cycles);
+                        jit_endblock_runtime_pc(REG_PC_TMP, retired_cycles);
                         forced_interpreter_barrier = true;
                         break;
                     }
@@ -8658,8 +8775,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             if (!forced_interpreter_barrier && next_pc_p && taken_pc_p &&
                 was_comp && taken_pc_p == current_block_pc_p)
             {
-                blockinfo* bi1 = get_blockinfo_addr_new((void*)next_pc_p);
-                blockinfo* bi2 = get_blockinfo_addr_new((void*)taken_pc_p);
+                blockinfo* bi1 = get_blockinfo_addr_new((void*)next_pc_p, next_m68k_pc);
+                blockinfo* bi2 = get_blockinfo_addr_new((void*)taken_pc_p, taken_m68k_pc);
                 uae_u8 x = bi1->needed_flags;
 
                 if (x == 0xff) {  /* Block not yet compiled — use conservative single-op lookahead */
@@ -8691,6 +8808,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             if (!forced_interpreter_barrier && next_pc_p) { /* A branch was registered */
                 uintptr t1 = next_pc_p;
                 uintptr t2 = taken_pc_p;
+                uae_u32 g1 = next_m68k_pc;
+                uae_u32 g2 = taken_m68k_pc;
                 int cc = branch_cc; // from gencomp (x86 condition code encoding)
 
 #if defined(CPU_AARCH64)
@@ -8734,6 +8853,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                        the 68k branch is taken. */
                     t1 = taken_pc_p;
                     t2 = next_pc_p;
+                    g1 = taken_m68k_pc;
+                    g2 = next_m68k_pc;
                     if (cc < NATIVE_CC_AL)
                         cc = cc ^ 1;
                     else if (cc > NATIVE_CC_AL)
@@ -8760,30 +8881,34 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 
                 /* predicted outcome */
                 uintptr ct1 = jit_canonicalize_target_pc(t1);
-                tbi = get_blockinfo_addr_new((void*)ct1);
+                tbi = get_blockinfo_addr_new((void*)ct1, g1);
                 match_states(tbi);
 
-                /* Use endblock_pc_isconst for ALL blocks (including DBF)
-                   to enable countdown + direct chaining. */
+                /* Non-MMU blocks retain direct chaining. MMU blocks publish
+                   the virtual edge and return through keyed dispatch. */
                 if (jit_collect_edge_profile(bi))
                     compemu_raw_inc_m((uintptr)&bi->edge_exec_count[0]);
-                tba = compemu_raw_endblock_pc_isconst(scaled_cycles(totcycles), ct1);
-                const bool pred_prefer_direct = jit_source_edge_prefers_direct(bi, 0, ct1);
-                write_jmp_target(tba, get_handler_for_edge(bi, 0, ct1));
-                create_jmpdep(bi, 0, tba, ct1, pred_prefer_direct);
+                tba = jit_endblock_const_pc(scaled_cycles(totcycles), ct1, g1);
+                if (!jit_mmu_execution_key_active()) {
+                    const bool pred_prefer_direct = jit_source_edge_prefers_direct(bi, 0, ct1);
+                    write_jmp_target(tba, get_handler_for_edge(bi, 0, ct1, g1));
+                    create_jmpdep(bi, 0, tba, ct1, g1, pred_prefer_direct);
+                }
 
                 /* not-predicted outcome */
                 write_jmp_target(branchadd, (uintptr)get_target());
                 uintptr ct2 = jit_canonicalize_target_pc(t2);
-                tbi = get_blockinfo_addr_new((void*)ct2);
+                tbi = get_blockinfo_addr_new((void*)ct2, g2);
                 match_states(tbi);
 
                 if (jit_collect_edge_profile(bi))
                     compemu_raw_inc_m((uintptr)&bi->edge_exec_count[1]);
-                tba = compemu_raw_endblock_pc_isconst(scaled_cycles(totcycles), ct2);
-                const bool notpred_prefer_direct = jit_source_edge_prefers_direct(bi, 1, ct2);
-                write_jmp_target(tba, get_handler_for_edge(bi, 1, ct2));
-                create_jmpdep(bi, 1, tba, ct2, notpred_prefer_direct);
+                tba = jit_endblock_const_pc(scaled_cycles(totcycles), ct2, g2);
+                if (!jit_mmu_execution_key_active()) {
+                    const bool notpred_prefer_direct = jit_source_edge_prefers_direct(bi, 1, ct2);
+                    write_jmp_target(tba, get_handler_for_edge(bi, 1, ct2, g2));
+                    create_jmpdep(bi, 1, tba, ct2, g2, notpred_prefer_direct);
+                }
             } else if (!forced_interpreter_barrier) {
                 if (was_comp) {
                     flush(1);
@@ -8806,30 +8931,47 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     data_check_end(4, 64);
 #endif
                     r = live.state[PC_P].realreg;
-                    compemu_raw_endblock_pc_inreg(r, scaled_cycles(totcycles));
+                    if (jit_mmu_execution_key_active()) {
+                        /* A register-only PC_P has no reversible virtual key.
+                           Resolve the trace-known architectural successor in the
+                           live MMU context before leaving generated code. */
+                        const uae_u32 linear_guest_pc =
+                            pc_hist[blocklen - 1].guest_pc +
+                            (uae_u32)((uintptr)comp_pc_p + m68k_pc_offset -
+                                (uintptr)pc_hist[blocklen - 1].location);
+                        (void)jit_endblock_const_pc(scaled_cycles(totcycles),
+                            (uintptr)pc_hist[blocklen - 1].location, linear_guest_pc);
+                    } else {
+                        jit_endblock_runtime_pc(r, scaled_cycles(totcycles));
+                    }
                 } else if (was_comp && isconst(PC_P)) {
                     uintptr v = live.state[PC_P].val;
 #if defined(CPU_AARCH64)
-                    /* ARM64: flush(1) already wrote PC_P to regs.pc_p via
-                       writeback_const. Use direct B chaining through
-                       endblock_pc_isconst — the full PC triple is stored
-                       on its hot path. Do NOT redundantly write PC_P here
-                       (that was the bug — conflicting with flush's write). */
+                    /* PC_P is a translated pointer. Pair it with the trace's
+                       architectural successor before keyed MMU dispatch. */
                     {
                     uae_u32* tba;
                     blockinfo* tbi;
                     uintptr cv = jit_canonicalize_target_pc(v);
-                    tbi = get_blockinfo_addr_new((void*)cv);
+                    const uae_u32 linear_guest_pc =
+                        pc_hist[blocklen - 1].guest_pc +
+                        (uae_u32)(cv - (uintptr)pc_hist[blocklen - 1].location);
+                    tbi = get_blockinfo_addr_new((void*)cv, linear_guest_pc);
                     match_states(tbi);
 #if defined(USE_DATA_BUFFER)
                     data_check_end(4, 64);
 #endif
                     if (jit_collect_edge_profile(bi))
                         compemu_raw_inc_m((uintptr)&bi->edge_exec_count[0]);
-                    tba = compemu_raw_endblock_pc_isconst(scaled_cycles(totcycles), cv);
-                    const bool linear_prefer_direct = jit_source_edge_prefers_direct(bi, 0, cv);
-                    write_jmp_target(tba, get_handler_for_edge(bi, 0, cv));
-                    create_jmpdep(bi, 0, tba, cv, linear_prefer_direct);
+                    tba = jit_endblock_const_pc(scaled_cycles(totcycles), cv,
+                        linear_guest_pc);
+                    if (!jit_mmu_execution_key_active()) {
+                        const bool linear_prefer_direct = jit_source_edge_prefers_direct(bi, 0, cv);
+                        write_jmp_target(tba, get_handler_for_edge(bi, 0, cv,
+                            linear_guest_pc));
+                        create_jmpdep(bi, 0, tba, cv, linear_guest_pc,
+                            linear_prefer_direct);
+                    }
                     }
 #else /* !CPU_AARCH64 */
                     {
@@ -8838,17 +8980,21 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     const uae_u16 final_op = DO_GET_OPCODE(pc_hist[blocklen - 1].location);
                     const bool final_is_braq = ((final_op & 0xff00) == 0x6000 && final_op != 0x6000 && final_op != 0x60ff);
                     uintptr cv = jit_canonicalize_target_pc(v);
-                    tbi = get_blockinfo_addr_new((void*)cv);
+                    const uae_u32 linear_guest_pc = jit_hostpc_to_macpc(cv);
+                    tbi = get_blockinfo_addr_new((void*)cv, linear_guest_pc);
                     match_states(tbi);
 #if defined(USE_DATA_BUFFER)
                     data_check_end(4, 64);
 #endif
                     if (jit_collect_edge_profile(bi))
                         compemu_raw_inc_m((uintptr)&bi->edge_exec_count[0]);
-                    tba = compemu_raw_endblock_pc_isconst(scaled_cycles(totcycles), cv);
+                    tba = jit_endblock_const_pc(scaled_cycles(totcycles), cv,
+                        linear_guest_pc);
                     const bool linear_prefer_direct = jit_source_edge_prefers_direct(bi, 0, cv);
-                    write_jmp_target(tba, get_handler_for_edge(bi, 0, cv));
-                    create_jmpdep(bi, 0, tba, cv, linear_prefer_direct);
+                    write_jmp_target(tba, get_handler_for_edge(bi, 0, cv,
+                        linear_guest_pc));
+                    create_jmpdep(bi, 0, tba, cv, linear_guest_pc,
+                        linear_prefer_direct);
                     }
 #endif /* CPU_AARCH64 */
                 } else {
@@ -8857,7 +9003,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 #if defined(USE_DATA_BUFFER)
                     data_check_end(4, 64);
 #endif
-                    compemu_raw_endblock_pc_inreg(r, scaled_cycles(totcycles));
+                    jit_endblock_runtime_pc(r, scaled_cycles(totcycles));
                 }
             }
         }

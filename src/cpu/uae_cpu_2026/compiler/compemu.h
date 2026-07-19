@@ -614,6 +614,11 @@ typedef struct blockinfo_t {
     uae_u8* nexthandler;
 #endif
     uae_u8* pc_p;
+    /* Physical fetch pointers are not execution identity under an MMU. */
+    uae_u32 guest_pc;
+    uae_u32 mmu_generation;
+    uae_u8 mmu_supervisor;
+    uae_u8 mmu_identity_valid;
 
     uae_u32 c1;
     uae_u32 c2;

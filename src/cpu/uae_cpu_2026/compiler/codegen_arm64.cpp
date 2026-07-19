@@ -886,6 +886,31 @@ LOWFUNC(NONE,NONE,2,compemu_raw_endblock_canonical_pc,(RR4 rr_pc, IM32 cycles))
 }
 LENDFUNC(NONE,NONE,2,compemu_raw_endblock_canonical_pc,(RR4 rr_pc, IM32 cycles))
 
+/* MMU correctness path: publish a translated host PC, preserve the separate
+ * logical regs.pc, and leave through execute_normal instead of the physical-
+ * pointer cache tag.  execute_normal retraces/selects using the logical key. */
+LOWFUNC(NONE,NONE,2,compemu_raw_endblock_mmu_dispatch,(RR4 rr_pc, IM32 cycles))
+{
+    LOAD_U64(REG_WORK3, (uintptr)&countdown);
+    LDR_wXi(REG_WORK1, REG_WORK3, 0);
+    const uae_u32 dispatch_cycles = cycles > 0 ? (uae_u32)cycles : 1u;
+    if (dispatch_cycles <= 0xfffu)
+        SUB_wwi(REG_WORK1, REG_WORK1, dispatch_cycles);
+    else {
+        LOAD_U32(REG_WORK2, dispatch_cycles);
+        SUB_www(REG_WORK1, REG_WORK1, REG_WORK2);
+    }
+    STR_wXi(REG_WORK1, REG_WORK3, 0);
+    LOAD_U64(REG_WORK3, (uintptr)&regs.pc_p);
+    STR_xXi(rr_pc, REG_WORK3, 0);
+    LOAD_U64(REG_WORK3, (uintptr)&regs.pc_oldp);
+    STR_xXi(rr_pc, REG_WORK3, 0);
+    uae_u32* dispatch_exit = (uae_u32*)get_target();
+    B_i(0);
+    write_jmp_target(dispatch_exit, (uintptr)popall_execute_normal);
+}
+LENDFUNC(NONE,NONE,2,compemu_raw_endblock_mmu_dispatch,(RR4 rr_pc, IM32 cycles))
+
 STATIC_INLINE uae_u32* compemu_raw_endblock_pc_isconst(IM32 cycles, IMPTR v)
 {
 	/* v is always >= NATMEM_OFFSET and < NATMEM_OFFSET + max. Amiga mem */

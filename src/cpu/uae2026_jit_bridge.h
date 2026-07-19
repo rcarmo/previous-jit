@@ -41,7 +41,10 @@ void Uae2026JitBridgeSyncOpcodeTestShadow(void);
 void Uae2026JitBridgeShutdown(void);
 void Uae2026JitHelperBegin(uint32_t op_pc, uint32_t descriptor);
 void Uae2026JitHelperCommitLogicalPc(uint32_t logical_pc, uint32_t flag_authority);
+void Uae2026JitHelperCommitCurrentPc(void);
 void Uae2026JitHelperClear(void);
+uintptr_t Uae2026JitPrepareMmuDispatchTarget(uint32_t logical_pc);
+uint32_t Uae2026JitMmuGeneration(void);
 void Uae2026JitMmuTxnBeginCallPushTarget(uint32_t pc, uint32_t target_pc);
 void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uint32_t pc, uint32_t opcode);
 void Uae2026JitMmuTxnBeginReturnPopCurrentA7ByOpcode(uint32_t pc, uint32_t opcode);
@@ -67,7 +70,12 @@ static inline void Uae2026JitHelperBegin(uint32_t op_pc, uint32_t descriptor) {
 static inline void Uae2026JitHelperCommitLogicalPc(uint32_t logical_pc, uint32_t flag_authority) {
     (void)logical_pc; (void)flag_authority;
 }
+static inline void Uae2026JitHelperCommitCurrentPc(void) {}
 static inline void Uae2026JitHelperClear(void) {}
+static inline uintptr_t Uae2026JitPrepareMmuDispatchTarget(uint32_t logical_pc) {
+    (void)logical_pc; return 0;
+}
+static inline uint32_t Uae2026JitMmuGeneration(void) { return 0; }
 static inline void Uae2026JitMmuTxnBeginCallPushTarget(uint32_t pc, uint32_t target_pc) {
     (void)pc; (void)target_pc;
 }

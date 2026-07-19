@@ -122,6 +122,7 @@ struct bridge_jit_helper_state {
 };
 
 static bridge_jit_helper_state bridge_helper_state{};
+static uae_u32 mmu_translation_generation = 1;
 }
 
 /* Bit-position conversion between Previous's legacy flag layout and the
@@ -210,6 +211,46 @@ extern "C" void Uae2026JitHelperBegin(uae_u32 op_pc, uae_u32 descriptor)
     Uae2026JitLastFlags.x = jit_regflags.x;
     mmu_restart = true;
     mmu_opcode = bridge_helper_state.opcode;
+}
+
+extern "C" uae_u32 Uae2026JitMmuGeneration(void)
+{
+    return mmu_translation_generation;
+}
+
+extern "C" uintptr_t Uae2026JitPrepareMmuDispatchTarget(uae_u32 logical_pc)
+{
+    /* Used by compiled constant edges. Translation is faultable, so callers
+     * publish the logical target before entering. Keep the architectural PC
+     * distinct from the translated executable-shadow address. */
+    regs.pc = logical_pc;
+    regs.fault_pc = logical_pc;
+    regs.instruction_pc = logical_pc;
+    Uae2026JitLastInstructionPc = logical_pc;
+    mmu_restart = true;
+    mmu_opcode = 0xffff;
+    const uintptr_t host = Uae2026JitMmuXlateCodeHost(logical_pc);
+    regs.pc_p = (uae_u8 *)host;
+    regs.pc_oldp = regs.pc_p;
+    return host;
+}
+
+extern "C" void Uae2026JitHelperCommitCurrentPc(void)
+{
+    if (!bridge_helper_state.active)
+        return; /* An exact helper already committed and cleared its outcome. */
+    if (bridge_helper_state.phase != bridge_jit_helper_phase::pre_semantic)
+        jit_abort("JIT semantic helper invalid post-call phase %u",
+            (unsigned)bridge_helper_state.phase);
+
+    /* Direct-address helper code advances pc_p. If it did not explicitly write
+     * regs.pc, the only valid logical successor is the same opcode-relative
+     * byte delta. This uses the known pre-helper tuple, never MEMBaseDiff. */
+    uae_u32 logical_pc = regs.pc;
+    if (logical_pc == bridge_helper_state.op_pc && regs.pc_p && regs.pc_oldp)
+        logical_pc = bridge_helper_state.op_pc +
+            (uae_s32)((intptr_t)regs.pc_p - (intptr_t)regs.pc_oldp);
+    Uae2026JitHelperCommitLogicalPc(logical_pc, UAE2026_JIT_FLAGS_ARE_JIT);
 }
 
 extern "C" void Uae2026JitHelperCommitLogicalPc(uae_u32 logical_pc, uae_u32 flag_authority)
@@ -1418,6 +1459,7 @@ extern "C" void Uae2026JitBridgeRequestBlockExit(unsigned int source)
 }
 
 extern "C" uintptr_t Uae2026CompilerCacheTagsTable(void);
+extern "C" void Uae2026CompilerPrepareMmuDispatch(void);
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
 
 extern "C" void Uae2026JitBridgeCompileExecute(void)
@@ -1465,6 +1507,10 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
     mmu_opcode = 0xffff;
     regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(dispatch_pc);
     regs.pc_oldp = regs.pc_p;
+    /* The generated entry stub indexes cache_tags by translated host pointer.
+     * Promote only the block matching the full logical/context key; otherwise
+     * force execute_normal() to trace/compile that exact alias. */
+    Uae2026CompilerPrepareMmuDispatch();
 
     bool handled_mmu_exception = false;
     int prb = setjmp(__exbuf);

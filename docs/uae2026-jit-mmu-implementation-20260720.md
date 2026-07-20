@@ -171,6 +171,30 @@ Focused evidence:
   absent; boot mounts root and reaches first-user-process loading before a
   later Mach IPC panic.
 
+## MOVES postincrement write-fault commitment
+
+The later init-loader failure was not stale PFLUSH state. The passing default
+path deliberately faults once at virtual address `1`; the native RAM/MMU path
+then differed by faulting again at the retry mapping `0x2000`. Both accesses
+were `_copyoutmsg` DFC stores using `MOVES.B D0,(A1)+` (`0x0e19/0x0800`)
+and `MOVES.L D1,(A1)+` (`0x0e99/0x1800`).
+
+The exact 68040 handlers commit A1's postincrement and the post-extension PC
+before these non-restartable write faults. The helper catch path restored the
+pre-op A1/fault-PC tuple. Forced-fault interpreter/JIT vectors now cover both
+byte and long forms. The bridge reapplies the committed `(An)+` increment and
+canonical post-extension tuple only when opcode, direction, `mmu_opcode`, SSW
+size/function code, restart state, and fault address all agree. Word and other
+EA forms remain excluded pending oracle coverage.
+
+Focused evidence:
+
+- `/workspace/tmp/previous-moves-postinc-oracle-pre` — both new cells fail
+  before the fix, solely on A1 and `FAULT_PC`;
+- `/workspace/tmp/previous-moves-postinc-oracle-post` — exact cells 2/2;
+- `/workspace/tmp/previous-moves-postinc-fault-matrix-all` — all forced-fault
+  cells 15/15, score 100, handoff disabled.
+
 ## Final gates still required
 
 Before push, run serially on an idle host:

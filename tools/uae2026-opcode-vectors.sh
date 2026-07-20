@@ -23,7 +23,8 @@ declare -a TEST_ORDER=(
 
 declare -a FAULT_TEST_ORDER=(
   fault_bsr_target_fetch fault_jsr_target_fetch fault_rts_target_fetch fault_rtr_target_fetch fault_rte_return_fetch fault_trap_frame_write
-  fault_write_byte_d2 fault_write_byte_postinc moves_dfc_write_fault moves_sfc_read_fault movem_predec_write_fault
+  fault_write_byte_d2 fault_write_byte_postinc moves_dfc_write_fault moves_dfc_byte_postinc_fault moves_dfc_long_postinc_fault
+  moves_sfc_read_fault movem_predec_write_fault
 )
 
 declare -A TESTS
@@ -316,6 +317,27 @@ DATA_FAULT_ADDR[moves_dfc_write_fault]="0400A000"
 DATA_FAULT_SIZE[moves_dfc_write_fault]=L
 DATA_FAULT_WRITE[moves_dfc_write_fault]=1
 DUMP_MEM_LONGS[moves_dfc_write_fault]="0400A000"
+
+# Exact _copyoutmsg loader forms from the native RAM/MMU frontier.  The 68040
+# commits the (An)+ update and reports the post-extension PC before these DFC
+# write faults; the JIT bridge must preserve that non-restartable tuple.
+TESTS[moves_dfc_byte_postinc_fault]="7001 4E7B 0001 702F 0E19 0800 2010"
+INIT_REGS[moves_dfc_byte_postinc_fault]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A000 00000000 00000000 00000000 00000000 00000000 04010000 2700"
+MEM_LONGS[moves_dfc_byte_postinc_fault]="0400A000 11223344"
+EXPECT_EXCEPTION[moves_dfc_byte_postinc_fault]=2
+DATA_FAULT_ADDR[moves_dfc_byte_postinc_fault]="0400A000"
+DATA_FAULT_SIZE[moves_dfc_byte_postinc_fault]=B
+DATA_FAULT_WRITE[moves_dfc_byte_postinc_fault]=1
+DUMP_MEM_LONGS[moves_dfc_byte_postinc_fault]="0400A000"
+
+TESTS[moves_dfc_long_postinc_fault]="7001 4E7B 0001 223C 2F65 7463 0E99 1800 2010"
+INIT_REGS[moves_dfc_long_postinc_fault]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A000 00000000 00000000 00000000 00000000 00000000 04010000 2700"
+MEM_LONGS[moves_dfc_long_postinc_fault]="0400A000 11223344"
+EXPECT_EXCEPTION[moves_dfc_long_postinc_fault]=2
+DATA_FAULT_ADDR[moves_dfc_long_postinc_fault]="0400A000"
+DATA_FAULT_SIZE[moves_dfc_long_postinc_fault]=L
+DATA_FAULT_WRITE[moves_dfc_long_postinc_fault]=1
+DUMP_MEM_LONGS[moves_dfc_long_postinc_fault]="0400A000"
 
 TESTS[moves_sfc_read_fault]="7001 4E7B 0000 0E90 0000 2010"
 INIT_REGS[moves_sfc_read_fault]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 2700"

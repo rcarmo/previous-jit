@@ -815,17 +815,13 @@ static bool bridge_normalize_proven_moves_fault_tuple(uae_u32 pc)
         return false;
     const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(pc);
     const uae_u16 ext = (uae_u16)Uae2026JitLiveGetWord(pc + 2);
-    if (opcode != 0x0e90u)
-        return false;
 
     /* Interpreter-oracle covered MOVES.L shapes:
      *   0e90 0800  MOVES.L D0,(A0) through DFC; non-restartable write reports
      *              the post-extension PC and clears fault_pc/effective EA.
      *   0e90 0000  MOVES.L (A0),D0 through SFC; restartable read reports the
-     *              MOVES opcode PC but still clears fault_pc/effective EA.
-     * Do not generalize to other MOVES extension words without a matching
-     * forced-fault oracle. */
-    if (!mmu_restart && ext == 0x0800u && regs.mmu_ssw == 0x0401u) {
+     *              MOVES opcode PC but still clears fault_pc/effective EA. */
+    if (opcode == 0x0e90u && !mmu_restart && ext == 0x0800u && regs.mmu_ssw == 0x0401u) {
         const uae_u32 post_pc = pc + 4;
         regs.fault_pc = 0;
         regs.instruction_pc = post_pc;
@@ -833,11 +829,43 @@ static bool bridge_normalize_proven_moves_fault_tuple(uae_u32 pc)
         m68k_setpc(post_pc);
         return true;
     }
-    if (mmu_restart && ext == 0x0000u && regs.mmu_ssw == 0x0501u) {
+    if (opcode == 0x0e90u && mmu_restart && ext == 0x0000u && regs.mmu_ssw == 0x0501u) {
         regs.fault_pc = 0;
         regs.instruction_pc = pc;
         regs.mmu_effective_addr = 0;
         m68k_setpc(pc);
+        return true;
+    }
+
+    /* Exact _copyoutmsg forms covered by forced-fault interpreter oracles:
+     *   0e19 0800  MOVES.B D0,(A1)+ through DFC
+     *   0e99 1800  MOVES.L D1,(A1)+ through DFC
+     * For a non-restartable register-to-memory MOVES write, the 68040 commits
+     * the postincrement before the bus cycle and reports the post-extension PC.
+     * bridge_restore_autoea_fault_side_effects() conservatively rolls native
+     * postincrements back first, so reapply only the matching fault-address
+     * tuple here.  Keep word and other EA modes excluded until oracle-covered. */
+    int postinc = 0;
+    unsigned expected_size = 0;
+    if ((opcode & 0xfff8u) == 0x0e18u) {
+        postinc = areg_byteinc[opcode & 7u];
+        expected_size = 0x0020u;
+    } else if ((opcode & 0xfff8u) == 0x0e98u) {
+        postinc = 4;
+        expected_size = 0x0000u;
+    }
+    const unsigned expected_ssw = 0x0400u | expected_size | (regs.dfc & 0x0007u);
+    if (postinc > 0 && !mmu_restart && (ext & 0x0800u) && mmu_opcode == opcode &&
+        regs.mmu_ssw == expected_ssw) {
+        const int areg = opcode & 7u;
+        if (m68k_areg(regs, areg) != regs.mmu_fault_addr)
+            return false;
+        m68k_areg(regs, areg) = regs.mmu_fault_addr + (uae_u32)postinc;
+        const uae_u32 post_pc = pc + 4;
+        regs.fault_pc = 0;
+        regs.instruction_pc = post_pc;
+        regs.mmu_effective_addr = 0;
+        m68k_setpc(post_pc);
         return true;
     }
     return false;

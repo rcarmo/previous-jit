@@ -4582,9 +4582,11 @@ static void jit_runtime_rts(uae_u32 opcode)
         Uae2026JitExactRts();
     else
         m68k_do_rts();
+    /* The stack pop is architecturally committed before target translation.
+       A target-fetch fault must not re-pop or restore the old stack pointer. */
+    Uae2026JitMmuTxnCommit();
     Uae2026JitHelperCommitLogicalPc(regs.pc,
         UAE2026_JIT_FLAGS_ARE_JIT);
-    Uae2026JitMmuTxnCommit();
 }
 
 static void jit_runtime_bsr(uae_u32 opcode)
@@ -4609,9 +4611,11 @@ static void jit_runtime_bsr(uae_u32 opcode)
         }
         m68k_do_bsr(oldpc, offset);
     }
+    /* The return-address push is architecturally committed before target
+       translation. A target-fetch fault must not replay or roll back it. */
+    Uae2026JitMmuTxnCommit();
     Uae2026JitHelperCommitLogicalPc(regs.pc,
         UAE2026_JIT_FLAGS_ARE_JIT);
-    Uae2026JitMmuTxnCommit();
 }
 
 static void jit_runtime_jsr(uae_u32 opcode)
@@ -4619,9 +4623,9 @@ static void jit_runtime_jsr(uae_u32 opcode)
     const uae_u32 op_pc = regs.pc;
     Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(op_pc, opcode);
     Uae2026JitExactJsr(opcode);
+    Uae2026JitMmuTxnCommit();
     Uae2026JitHelperCommitLogicalPc(regs.pc,
         UAE2026_JIT_FLAGS_ARE_JIT);
-    Uae2026JitMmuTxnCommit();
 }
 
 static void jit_runtime_trap(uae_u32 opcode)

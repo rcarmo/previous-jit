@@ -390,11 +390,6 @@ static uae_u32 bridge_live_peek_long(uae_u32 addr)
     return bridge_live_readable(addr, 4) ? bridge_live_peek_word(addr) << 16 | bridge_live_peek_word(addr + 2) : 0;
 }
 
-static bool bridge_video_alias_addr(uae_u32 addr)
-{
-    return addr >= 0x0b000000u && addr < 0x0b040000u;
-}
-
 static bool bridge_mmio_addr(uae_u32 addr)
 {
     return addr >= 0x02000000u && addr < 0x02200000u;
@@ -428,67 +423,6 @@ static bool bridge_try_handle_mmio_byte_op(void)
     jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
     jit_regflags.x = regflags.x;
     return true;
-}
-
-static bool bridge_finish_video_alias_word_op(uae_u32 result)
-{
-    SET_ZFLG(((uae_u16)result) == 0);
-    SET_NFLG((result & 0x8000u) != 0);
-    SET_VFLG(0);
-    SET_CFLG(0);
-    m68k_setpc(regs.fault_pc + 2);
-    regs.instruction_pc = regs.fault_pc + 2;
-    regs.fault_pc = 0;
-    regs.mmu_fault_addr = 0;
-    regs.mmu_effective_addr = 0;
-    return true;
-}
-
-static bool bridge_finish_video_alias_long_op(uae_u32 result)
-{
-    SET_ZFLG(result == 0);
-    SET_NFLG((result & 0x80000000u) != 0);
-    SET_VFLG(0);
-    SET_CFLG(0);
-    m68k_setpc(regs.fault_pc + 2);
-    regs.instruction_pc = regs.fault_pc + 2;
-    regs.fault_pc = 0;
-    regs.mmu_fault_addr = 0;
-    regs.mmu_effective_addr = 0;
-    return true;
-}
-
-static bool bridge_try_handle_video_alias_word_op(void)
-{
-    const uae_u32 addr = regs.mmu_fault_addr;
-    if (!bridge_video_alias_addr(addr))
-        return false;
-    const uae_u16 opcode = (uae_u16)bridge_live_peek_word(regs.fault_pc);
-    if (regs.fault_pc == 0x04084dcau && opcode == 0x4650u) { /* NOT.W (A0) */
-        const uae_u16 result = (uae_u16)~(uae_u16)Uae2026JitLiveGetWord(addr);
-        Uae2026JitLivePutWord(addr, result);
-        return bridge_finish_video_alias_word_op(result);
-    }
-    if (regs.fault_pc == 0x040846e0u && opcode == 0x3080u) { /* MOVE.W D0,(A0) */
-        const uae_u16 result = (uae_u16)regs.regs[0];
-        Uae2026JitLivePutWord(addr, result);
-        return bridge_finish_video_alias_word_op(result);
-    }
-    if (regs.fault_pc == 0x04086526u && opcode == 0x3283u) { /* MOVE.W D3,(A1) */
-        const uae_u16 result = (uae_u16)regs.regs[3];
-        Uae2026JitLivePutWord(addr, result);
-        return bridge_finish_video_alias_word_op(result);
-    }
-    if (regs.fault_pc >= 0x0408670eu && regs.fault_pc <= 0x04086760u && opcode == 0x24d9u) { /* MOVE.L (A1)+,(A2)+ */
-        if (!bridge_video_alias_addr(regs.regs[9]) || !bridge_video_alias_addr(regs.regs[10]))
-            return false;
-        const uae_u32 result = Uae2026JitLiveGetLong(regs.regs[9]);
-        Uae2026JitLivePutLong(regs.regs[10], result);
-        regs.regs[9] += 4;
-        regs.regs[10] += 4;
-        return bridge_finish_video_alias_long_op(result);
-    }
-    return false;
 }
 
 static bool bridge_shadow_host_readable(const uae_u8 *host, size_t bytes)
@@ -969,37 +903,9 @@ static bool bridge_rollback_mmu_txn(uae_u32 fault_pc)
     bridge_clear_mmu_txn();
     switch (txn.kind) {
         case bridge_mmu_txn_kind::call_push: {
-            const bool canonicalize_target_fetch = txn.aux1 && txn.pc == 0x05027706u;
-            if (canonicalize_target_fetch && regs.mmu_fault_addr != txn.aux1) {
-                if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
-                    fprintf(stderr,
-                            "JIT_CALL_TARGET_ROLLBACK_TXN_MISS fault_pc=%08x op_pc=%08x op=%04x addr=%08x target=%08x sp=%08x\n",
-                            (unsigned)fault_pc, (unsigned)txn.pc, (unsigned)txn.opcode,
-                            (unsigned)regs.mmu_fault_addr, (unsigned)txn.aux1,
-                            (unsigned)m68k_areg(regs, 7));
-                }
-                return false;
-            }
-            if (canonicalize_target_fetch) {
-                /* Confirmed user JSR target-fetch seam: the target instruction
-                 * fetch faults after the return address push has architecturally
-                 * completed.  Preserve that post-push stack and frame the bus
-                 * error at the target PC; returning to the JSR opcode would
-                 * replay the push.  Keep this out of early low-PC probes, which
-                 * still require the older retry/rollback behaviour. */
-                bridge_set_active_a7(txn.side_new);
-                regs.fault_pc = txn.aux1;
-                regs.instruction_pc = txn.aux1;
-                m68k_setpc(txn.aux1);
-                if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
-                    fprintf(stderr,
-                            "JIT_CALL_TARGET_CANONICALIZE_TXN fault_pc=%08x op_pc=%08x op=%04x addr=%08x sp=%08x oldsp=%08x newsp=%08x\n",
-                            (unsigned)fault_pc, (unsigned)txn.pc, (unsigned)txn.opcode,
-                            (unsigned)regs.mmu_fault_addr, (unsigned)m68k_areg(regs, 7),
-                            (unsigned)txn.side_old, (unsigned)txn.side_new);
-                }
-                return true;
-            }
+            /* A live call transaction now means the exact helper faulted before
+             * semantic commit (for example while writing the return address).
+             * Target translation runs only after Uae2026JitMmuTxnCommit(). */
             bridge_set_active_a7(txn.pre_a7);
             if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
                 fprintf(stderr,
@@ -1069,16 +975,6 @@ static bool bridge_is_bsr_opcode(uae_u16 opcode)
     return (opcode & 0xff00u) == 0x6100u;
 }
 
-static bool bridge_is_absolute_control_opcode(uae_u16 opcode)
-{
-    return opcode == 0x4eb9u || opcode == 0x4ef9u;
-}
-
-static bool bridge_is_stack_push_opcode(uae_u16 opcode)
-{
-    return (opcode & 0xff00u) == 0x2f00u;
-}
-
 static void bridge_restore_call_target_fault_side_effects(uae_u32 fault_pc)
 {
     const uae_u32 fault_addr = regs.mmu_fault_addr;
@@ -1091,37 +987,7 @@ static void bridge_restore_call_target_fault_side_effects(uae_u32 fault_pc)
      * exception delivery instead of undoing it here. */
     if (fault_addr + 4u == m68k_areg(regs, 7))
         return;
-    if (bridge_rollback_mmu_txn(fault_pc))
-        return;
-
-    /* Native BSR lowers A7 and stores the return address before control reaches
-     * the target fetch.  If that target fetch raises a 040 MMU fault, retrying
-     * the BSR without rollback pushes the return address a second time.  The
-     * low virtual post-root failure at 00003372 -> 00012b04 has exactly this
-     * signature; the published fault_pc can be two bytes before the live BSR
-     * word, so scan a tiny window around it rather than trusting only fop. */
-    for (int delta = 0; delta <= 2; delta += 2) {
-        const uae_u32 op_pc = fault_pc + (uae_u32)delta;
-        if (!bridge_live_readable(op_pc, 2))
-            continue;
-        const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(op_pc);
-        if (!bridge_is_bsr_opcode(opcode))
-            continue;
-        if (op_pc != fault_pc) {
-            const uae_u16 fault_opcode = bridge_live_peek_word(fault_pc);
-            if (bridge_is_absolute_control_opcode(fault_opcode) || bridge_is_stack_push_opcode(fault_opcode))
-                continue;
-        }
-        const uae_u32 restored_sp = m68k_areg(regs, 7) + 4;
-        bridge_set_active_a7(restored_sp);
-        if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
-            fprintf(stderr,
-                    "JIT_CALL_TARGET_ROLLBACK fault_pc=%08x op_pc=%08x op=%04x addr=%08x sp=%08x\n",
-                    (unsigned)fault_pc, (unsigned)op_pc, (unsigned)opcode,
-                    (unsigned)fault_addr, (unsigned)restored_sp);
-        }
-        return;
-    }
+    (void)bridge_rollback_mmu_txn(fault_pc);
 }
 
 static void bridge_restore_autoea_fault_side_effects(uae_u32 fault_pc, bool restartable)
@@ -1590,11 +1456,6 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
             regs.instruction_pc = post_pc;
             regs.mmu_effective_addr = 0;
             m68k_setpc(post_pc);
-        } else if (prb == 2 && !mmu_restart &&
-            (regs.fault_pc == 0x0500b6aeu || regs.fault_pc == 0x0500bc98u)) {
-            regs.fault_pc += 2;
-            regs.instruction_pc = regs.fault_pc;
-            m68k_setpc(regs.fault_pc);
         }
         const bool bridge_rte_fault = bridge_live_peek_word(regs.fault_pc) == 0x4e73u;
         /* If a RAM/MMU fault escapes while RTE has only partially completed,
@@ -1644,8 +1505,6 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                 m68k_setpc(regs.fault_pc);
         }
         if (prb == 2 && bridge_try_handle_mmio_byte_op())
-            return;
-        if (prb == 2 && bridge_try_handle_video_alias_word_op())
             return;
         {
             static unsigned long exc_log_count = 0;

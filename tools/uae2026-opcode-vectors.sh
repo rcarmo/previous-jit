@@ -17,7 +17,7 @@ declare -a TEST_ORDER=(
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
   chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
   jsr_an_call_return bsr_word_call_return seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_movem_restore_full_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
-  pack_dn_edge unpk_dn_edge moves_write_read move_l_imm_special_long
+  pack_dn_edge unpk_dn_edge moves_write_read move_l_imm_special_long video_alias_not_word video_alias_move_word video_alias_copy_long
   movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip movec_tc_roundtrip movec_urp_roundtrip movec_srp_roundtrip movec_itt0_roundtrip movec_dtt0_roundtrip pflush_all ptest_dtt_hit
 )
 
@@ -179,6 +179,12 @@ TESTS[moves_write_read]="41F9 0400 A000 203C DEAD BEEF 0E90 0800 2010"
 TESTS[move_l_imm_special_long]="41F9 0400 A000 217C 0100 1C84 0000 2010"
 ALL_SPECIAL[move_l_imm_special_long]=1
 DUMP_MEM_LONGS[move_l_imm_special_long]="0400A000"
+# Address-independent regressions for the old fixed-ROM-PC video-alias bridge
+# handlers. These execute at the harness PC, so only the normal translated bank
+# helpers can satisfy them.
+TESTS[video_alias_not_word]="41F9 0B00 0000 30FC 1234 4650 3010"
+TESTS[video_alias_move_word]="41F9 0B00 0004 203C 0000 A55A 3080 3210"
+TESTS[video_alias_copy_long]="43F9 0B00 0008 45F9 0B00 0010 22BC 1122 3344 24D9 202A FFFC"
 TESTS[movec_vbr_roundtrip]="203C 1234 0000 4E7B 0801 4E7A 1801"
 TESTS[movec_sfc_roundtrip]="7005 4E7B 0000 4E7A 1000"
 TESTS[movec_dfc_roundtrip]="7003 4E7B 0001 4E7A 1001"

@@ -727,10 +727,11 @@ static inline bool jit_pc_in_env_ranges(const char *env_name, uae_u32 pc)
 		int range_count;
 		range_pair ranges[64];
 	};
-	static cache_entry caches[3] = {
+	static cache_entry caches[4] = {
 		{"B2_JIT_VERIFY_PCS", 0, 0, {}},
 		{"B2_JIT_FLUSH_OP_PCS", 0, 0, {}},
 		{"B2_JIT_TRACE_PCS", 0, 0, {}},
+		{"B2_JIT_RESTORE_BARRIER_PCS", 0, 0, {}},
 	};
 	cache_entry *cache = NULL;
 	for (size_t ci = 0; ci < sizeof(caches) / sizeof(caches[0]); ci++) {
@@ -1341,6 +1342,15 @@ static inline bool jit_restore_barrier(const char *token)
 		jit_env_has_csv_token("B2_JIT_RESTORE_BARRIERS", "all");
 }
 
+static inline bool jit_restore_barrier_at_pc(const char *token, uae_u32 pc)
+{
+	if (!jit_restore_barrier(token))
+		return false;
+	const char *ranges = getenv("B2_JIT_RESTORE_BARRIER_PCS");
+	return !ranges || !*ranges ||
+		jit_pc_in_env_ranges("B2_JIT_RESTORE_BARRIER_PCS", pc);
+}
+
 static inline bool jit_force_exact_exec_nostats_opcode(uae_u16 op)
 {
 	(void)op;
@@ -1353,7 +1363,7 @@ static inline bool jit_force_exact_exec_nostats_pc(uae_u32 pc)
 	return false;
 }
 
-static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
+static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op, uae_u32 pc)
 {
 	/* ARM64: zero hardcoded barriers.
 	   MOVE16 uses readlong/writelong in gencomp.c.
@@ -1361,25 +1371,26 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op)
 	   MOVEM uses readlong/writelong in gencomp.c.
 	   PC_P uses 64-bit eviction/reload in tomem/do_load_reg. */
 
-	/* Environment-gated barriers for debugging (B2_JIT_RESTORE_BARRIERS). */
-	if (jit_restore_barrier("sr")) {
+	/* Environment-gated barriers for debugging (B2_JIT_RESTORE_BARRIERS).
+	   B2_JIT_RESTORE_BARRIER_PCS optionally confines them to logical PCs. */
+	if (jit_restore_barrier_at_pc("sr", pc)) {
 		if (table68k[op].mnemo == i_MV2SR && table68k[op].size == sz_word)
 			return true;
 	}
-	if (jit_restore_barrier("jsr") && (op & 0xffc0) == 0x4e80)
+	if (jit_restore_barrier_at_pc("jsr", pc) && (op & 0xffc0) == 0x4e80)
 		return true;
-	if (jit_restore_barrier("jmp") && (op & 0xffc0) == 0x4ec0)
+	if (jit_restore_barrier_at_pc("jmp", pc) && (op & 0xffc0) == 0x4ec0)
 		return true;
-	if (jit_restore_barrier("ret") &&
+	if (jit_restore_barrier_at_pc("ret", pc) &&
 		(op == 0x4e73 || op == 0x4e74 || op == 0x4e75 || op == 0x4e76 || op == 0x4e77))
 		return true;
-	if (jit_restore_barrier("branch") && (op & 0xf000) == 0x6000)
+	if (jit_restore_barrier_at_pc("branch", pc) && (op & 0xf000) == 0x6000)
 		return true;
-	if (jit_restore_barrier("movem") && (op & 0xfb80) == 0x4880)
+	if (jit_restore_barrier_at_pc("movem", pc) && (op & 0xfb80) == 0x4880)
 		return true;
-	if (jit_restore_barrier("aline") && (op & 0xf000) == 0xa000)
+	if (jit_restore_barrier_at_pc("aline", pc) && (op & 0xf000) == 0xa000)
 		return true;
-	if (jit_restore_barrier("emulop") && (op & 0xff00) == 0x7100)
+	if (jit_restore_barrier_at_pc("emulop", pc) && (op & 0xff00) == 0x7100)
 		return true;
 
 	return false;
@@ -8072,7 +8083,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             }
             for (int _i = 0; optlev > 0 && _i < blocklen; _i++) {
                 uae_u16 _op = do_get_mem_word(pc_hist[_i].location);
-                if (jit_restore_barrier("dbcc") && (_op & 0xF0F8) == 0x50C8) {
+                if (jit_restore_barrier_at_pc("dbcc", pc_hist[_i].guest_pc) &&
+                    (_op & 0xF0F8) == 0x50C8) {
                     optlev = 0;
                     break;
                 }
@@ -8243,7 +8255,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 #if defined(CPU_AARCH64)
                 /* Per-instruction interpreter barriers are empty in production;
                    the strict-only probe exercises the fail-closed fallback path. */
-                if (jit_force_interpreter_barrier_opcode((uae_u16)opcode) ||
+                if (jit_force_interpreter_barrier_opcode((uae_u16)opcode, op_m68k_pc) ||
                     jit_strict_probe_opcode_fallback())
                     allow_l2 = false;
 #endif
@@ -8780,7 +8792,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                             (uae_u32)opcode, next_pc);
                     }
 
-                    if (jit_force_interpreter_barrier_opcode((uae_u16)opcode)) {
+                    if (jit_force_interpreter_barrier_opcode((uae_u16)opcode, op_m68k_pc)) {
                         /* Interpreter barrier opcodes already executed via the
                            fallback call above. Runtime keeps using the normal
                            execute_normal() handoff. In verifier mode, if the

@@ -130,6 +130,20 @@ FPU-immediate + DBF sequence and exercises both edges over block reuse.
 The implementation did not require a generated `compemu.cpp` edit after the
 call/return producer tranche; source/generated parity is preserved.
 
+### Scoped restore-barrier discriminator
+
+`B2_JIT_RESTORE_BARRIER_PCS` optionally confines an enabled
+`B2_JIT_RESTORE_BARRIERS` family to logical-PC ranges. It is default-off; an
+unset or empty range retains the existing whole-family diagnostic behaviour.
+The filter applies to the per-opcode barriers and the DBcc block downgrade.
+
+This was needed because restoring every `0x6xxx` branch prevented the RAM/MMU
+boot from reaching the post-reset timer calibration routine. A single-op run at
+`0x04382df4` executed the wrap-extension `BEQ` exactly, then observed for 150
+seconds. It produced no later ESP Select, Inquiry, or SCSI command, eliminating
+that Bcc/CCR boundary as the no-handoff stall cause. Artifact:
+`/workspace/tmp/previous-timer-beq-exact-20260720-073257`.
+
 ## Final gates still required
 
 Before push, run serially on an idle host:

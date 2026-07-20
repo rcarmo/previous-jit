@@ -42,6 +42,7 @@ void Uae2026JitBridgeShutdown(void);
 void Uae2026JitHelperBegin(uint32_t op_pc, uint32_t descriptor);
 void Uae2026JitHelperCommitLogicalPc(uint32_t logical_pc, uint32_t flag_authority);
 void Uae2026JitHelperCommitCurrentPc(void);
+void Uae2026JitHelperCommitArchitecturalPc(void);
 void Uae2026JitHelperClear(void);
 uintptr_t Uae2026JitPrepareMmuDispatchTarget(uint32_t logical_pc);
 uint32_t Uae2026JitMmuGeneration(void);
@@ -72,6 +73,7 @@ static inline void Uae2026JitHelperCommitLogicalPc(uint32_t logical_pc, uint32_t
     (void)logical_pc; (void)flag_authority;
 }
 static inline void Uae2026JitHelperCommitCurrentPc(void) {}
+static inline void Uae2026JitHelperCommitArchitecturalPc(void) {}
 static inline void Uae2026JitHelperClear(void) {}
 static inline uintptr_t Uae2026JitPrepareMmuDispatchTarget(uint32_t logical_pc) {
     (void)logical_pc; return 0;

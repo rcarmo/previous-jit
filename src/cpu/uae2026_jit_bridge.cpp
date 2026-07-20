@@ -281,6 +281,22 @@ extern "C" void Uae2026JitHelperCommitCurrentPc(void)
     Uae2026JitHelperCommitLogicalPc(logical_pc, UAE2026_JIT_FLAGS_ARE_JIT);
 }
 
+extern "C" void Uae2026JitHelperCommitArchitecturalPc(void)
+{
+    if (!bridge_helper_state.active)
+        return;
+    if (bridge_helper_state.phase != bridge_jit_helper_phase::pre_semantic)
+        jit_abort("JIT semantic helper invalid architectural-PC phase %u",
+            (unsigned)bridge_helper_state.phase);
+
+    /* Native Previous helpers can advance both halves of the direct-PC tuple:
+     * instruction words move pc_p while 68040 MMU operand fetches move regs.pc.
+     * The architectural successor is therefore m68k_getpc(), not either field
+     * in isolation. This policy is selected explicitly by those helpers. */
+    Uae2026JitHelperCommitLogicalPc(m68k_getpc(),
+        UAE2026_JIT_FLAGS_ARE_JIT);
+}
+
 extern "C" void Uae2026JitHelperCommitLogicalPc(uae_u32 logical_pc, uae_u32 flag_authority)
 {
     if (!bridge_helper_state.active ||

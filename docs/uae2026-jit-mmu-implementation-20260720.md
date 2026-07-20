@@ -90,6 +90,22 @@ All runs used `PREVIOUS_UAE2026_JIT_RAM=1` and
 | Post-cleanup call/return, byte-write, video aliases | `/workspace/tmp/previous-bridge-cleanup-final-20260720-000659` | 9/9, score 100 |
 | RTE post-commit target fetch | `/workspace/tmp/previous-rte-fetch-final-20260720-000829` | 1/1, score 100; raw interpreter/JIT tuples match |
 | DBF keyed edge after FPU fallback | `/workspace/tmp/previous-dbf-keyed-fix-20260720-0446` | 5/5, score 100; exact six-byte FPU-immediate + DBF taken/fall-through cell included |
+| FPU mixed-PC outcome after translation promotion | `/workspace/tmp/previous-fpu-archpc-fix-20260720-0522`; trace `/workspace/tmp/previous-fpu-archpc-trace-20260720-0525` | 1/1, score 100; compiled FPP at `01001002` exits to legal DBF at `01001008` |
+
+The first RAM/MMU no-handoff boot attempt at
+`/workspace/tmp/previous-final-ram-mmu-nohandoff-dbf-fix-20260720-0450`
+reached ROM FPP `01005252` twice through fallback, then promoted it on the third
+visit and incorrectly committed `01005254`; extension words `5822`, `0001`, and
+DBF displacement `ff98` were subsequently decoded as opcodes, producing line-F
+at `0100525a`. The bounded trace is
+`/workspace/tmp/previous-fpu-dbf-pctrace-20260720-0515`.
+
+Native Previous FPU helpers can advance both PC tuple components: generated JIT
+code advances `pc_p` over opcode/extension words while 68040 MMU operand fetches
+advance logical `regs.pc`. Their explicit outcome policy now commits
+`m68k_getpc()`, not either field in isolation. Other semantic-helper policies are
+unchanged. The permanent regression uses three loop visits so the FPP service is
+actually promoted before its successor is checked.
 
 The final RAM/MMU boot discriminator exposed one integration defect not reached
 by the original identity cells: keyed mode allowed compilation to continue past

@@ -1298,7 +1298,8 @@ extern "C" uae_u32 Uae2026JitMmuGetLong(uae_u32 addr);
 extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
 
 static inline void jit_emit_runtime_helper_barrier(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2);
-static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2, uae_u32 helper_kind);
+static inline void jit_emit_runtime_helper_barrier_arch_pc(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2);
+static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2, uae_u32 helper_kind, bool architectural_pc);
 
 static inline bool jit_force_optlev1_opcode(uae_u16 op)
 {
@@ -5146,7 +5147,7 @@ static void op_system_control_comp_ff(uae_u32 opcode)
     const uae_u32 helper_kind = opcode == 0x4e73
         ? UAE2026_JIT_HELPER_RTE : UAE2026_JIT_HELPER_GENERIC;
     jit_emit_runtime_helper_barrier_kind((uintptr)jit_runtime_system_control,
-        jit_compile_current_op_host_pc, opcode, 0, false, helper_kind);
+        jit_compile_current_op_host_pc, opcode, 0, false, helper_kind, false);
 }
 
 static void op_cache_control_comp_ff(uae_u32 opcode)
@@ -5197,7 +5198,7 @@ static void op_rts_comp_ff(uae_u32 opcode)
     uae_u32 m68k_pc_offset_thisinst = m68k_pc_offset;
     jit_emit_runtime_helper_barrier_kind((uintptr)jit_runtime_rts,
         (uintptr)(comp_pc_p + m68k_pc_offset_thisinst), opcode, 0, false,
-        UAE2026_JIT_HELPER_RETURN);
+        UAE2026_JIT_HELPER_RETURN, false);
 }
 
 static void op_bsr_comp_ff(uae_u32 opcode)
@@ -5205,14 +5206,14 @@ static void op_bsr_comp_ff(uae_u32 opcode)
     uae_u32 m68k_pc_offset_thisinst = m68k_pc_offset;
     uintptr op_pc = jit_compile_current_op_host_pc ? jit_compile_current_op_host_pc : (uintptr)(comp_pc_p + m68k_pc_offset_thisinst);
     jit_emit_runtime_helper_barrier_kind((uintptr)jit_runtime_bsr, op_pc,
-        opcode, 0, false, UAE2026_JIT_HELPER_CALL);
+        opcode, 0, false, UAE2026_JIT_HELPER_CALL, false);
 }
 
 static void op_jsr_mmu_comp_ff(uae_u32 opcode)
 {
     jit_emit_runtime_helper_barrier_kind((uintptr)jit_runtime_jsr,
         jit_compile_current_op_host_pc, opcode, 0, false,
-        UAE2026_JIT_HELPER_CALL);
+        UAE2026_JIT_HELPER_CALL, false);
 }
 
 static void jit_runtime_aline_trap(uae_u32 opcode)
@@ -5354,8 +5355,8 @@ static void op_fpu_semantic_comp_ff(uae_u32 opcode)
 {
     const uintptr op_pc = jit_compile_current_op_host_pc
         ? jit_compile_current_op_host_pc : (uintptr)(comp_pc_p + m68k_pc_offset);
-    jit_emit_runtime_helper_barrier((uintptr)jit_runtime_fpu_semantic,
-        op_pc, opcode, 0, false);
+    jit_emit_runtime_helper_barrier_arch_pc(
+        (uintptr)jit_runtime_fpu_semantic, op_pc, opcode, 0, false);
 }
 
 static void op_fdbcc_comp_ff(uae_u32 opcode)
@@ -5425,7 +5426,7 @@ static void op_illegal_trap_comp_ff(uae_u32 opcode)
         (uintptr)(comp_pc_p + m68k_pc_offset_thisinst), opcode, 0, false);
 }
 
-static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2, uae_u32 helper_kind)
+static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2, uae_u32 helper_kind, bool architectural_pc)
 {
     if (!pc)
         jit_abort("runtime semantic helper: missing exact opcode PC");
@@ -5449,7 +5450,9 @@ static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr 
         compemu_raw_mov_l_ri(REG_PAR2, arg2);
     compemu_raw_call(helper);
     prepare_for_call_2();
-    compemu_raw_call((uintptr)Uae2026JitHelperCommitCurrentPc);
+    compemu_raw_call(architectural_pc
+        ? (uintptr)Uae2026JitHelperCommitArchitecturalPc
+        : (uintptr)Uae2026JitHelperCommitCurrentPc);
     live.state[PC_P].realreg = -1;
     live.state[PC_P].val = 0;
     set_status(PC_P, INMEM);
@@ -5460,7 +5463,14 @@ static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr 
 static inline void jit_emit_runtime_helper_barrier(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2)
 {
     jit_emit_runtime_helper_barrier_kind(helper, pc, arg1, arg2, has_arg2,
-        UAE2026_JIT_HELPER_GENERIC);
+        UAE2026_JIT_HELPER_GENERIC, false);
+}
+
+static inline void jit_emit_runtime_helper_barrier_arch_pc(uintptr helper,
+    uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2)
+{
+    jit_emit_runtime_helper_barrier_kind(helper, pc, arg1, arg2, has_arg2,
+        UAE2026_JIT_HELPER_GENERIC, true);
 }
 
 void jit_emit_ordered_semantic_helper_call(uintptr helper, uae_u32 instruction_bytes)

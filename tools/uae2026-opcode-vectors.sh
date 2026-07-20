@@ -55,9 +55,10 @@ TESTS[sr_ops_combo]="46FC 2700 007C 0010 027C F7FF 0A7C 0004 40C0"
 
 TESTS[scc_vc_vs]="203C 7FFF FFFF 5280 58C1 59C2"
 # ROM regression shape at 0x01005252: a six-byte FPU-immediate fallback
-# followed by DBF. The first DBF edge is taken and the reused block then falls
-# through; keyed MMU dispatch must never publish the displacement word as PC.
-TESTS[dbf_after_fpu_runtime_edge]="7401 F23C 5822 0001 51CA FFF8"
+# followed by DBF. Three visits cross the translation threshold: the semantic
+# helper must publish the full architectural successor after native Previous
+# advances both the logical and direct-PC tuple halves.
+TESTS[dbf_after_fpu_runtime_edge]="7402 F23C 5822 0001 51CA FFF8"
 TESTS[dbvc_loop_v_set]="7001 243C 7FFF FFFF 5282 4E71 58C8 FFFA"
 TESTS[dbvs_loop_v_clear]="7001 7400 4E71 59C8 FFFA"
 TESTS[dbvc_not_taken_v_clear]="7001 7400 58C8 0002 7207"

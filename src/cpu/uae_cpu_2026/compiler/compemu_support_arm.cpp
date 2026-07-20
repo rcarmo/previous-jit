@@ -4624,7 +4624,11 @@ static void jit_runtime_bsr(uae_u32 opcode)
     /* The return-address push is architecturally committed before target
        translation. A target-fetch fault must not replay or roll back it. */
     Uae2026JitMmuTxnCommit();
-    Uae2026JitHelperCommitLogicalPc(regs.pc,
+    /* The exact MMU handler advances logical regs.pc; the direct-address
+       implementation advances pc_p. m68k_getpc() is the common architectural
+       target. Committing raw regs.pc in the latter case replays BSR and pushes
+       one return address per dispatch. */
+    Uae2026JitHelperCommitLogicalPc(m68k_getpc(),
         UAE2026_JIT_FLAGS_ARE_JIT);
 }
 

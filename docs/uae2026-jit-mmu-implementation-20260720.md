@@ -91,6 +91,16 @@ All runs used `PREVIOUS_UAE2026_JIT_RAM=1` and
 | RTE post-commit target fetch | `/workspace/tmp/previous-rte-fetch-final-20260720-000829` | 1/1, score 100; raw interpreter/JIT tuples match |
 | DBF keyed edge after FPU fallback | `/workspace/tmp/previous-dbf-keyed-fix-20260720-0446` | 5/5, score 100; exact six-byte FPU-immediate + DBF taken/fall-through cell included |
 | FPU mixed-PC outcome after translation promotion | `/workspace/tmp/previous-fpu-archpc-fix-20260720-0522`; trace `/workspace/tmp/previous-fpu-archpc-trace-20260720-0525` | 1/1, score 100; compiled FPP at `01001002` exits to legal DBF at `01001008` |
+| Promoted long-BSR call/return | pre-fix `/workspace/tmp/previous-bsr-long-promoted-prefx-20260720-0602`; fixed `/workspace/tmp/previous-bsr-long-archpc-fix-20260720-0605` | pre-fix timeout with repeated call/push; fixed 1/1, score 100, A7 restored |
+
+A later RAM/MMU boot at
+`/workspace/tmp/previous-final-ram-mmu-nohandoff-fpu-fix-20260720-0530`
+advanced through FPU and disk reads but stopped after ROM SCSI reset at
+`04387150`. The next instruction sequence contains long BSR at `04387156`.
+A promoted harness replica proved the helper was committing raw `regs.pc` after
+the direct-address implementation advanced `pc_p`: the BSR replayed and pushed
+A7 down by four bytes per dispatch. BSR now commits `m68k_getpc()`, which is the
+common architectural target for both exact-MMU and direct-PC implementations.
 
 The first RAM/MMU no-handoff boot attempt at
 `/workspace/tmp/previous-final-ram-mmu-nohandoff-dbf-fix-20260720-0450`

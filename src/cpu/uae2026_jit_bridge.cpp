@@ -310,7 +310,15 @@ extern "C" void Uae2026JitHelperCommitLogicalPc(uae_u32 logical_pc, uae_u32 flag
     if (flag_authority == UAE2026_JIT_FLAGS_ARE_PREVIOUS) {
         jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
         jit_regflags.x = regflags.x;
-    } else if (flag_authority != UAE2026_JIT_FLAGS_ARE_JIT) {
+    } else if (flag_authority == UAE2026_JIT_FLAGS_ARE_JIT) {
+        /* Canonical helper exits deliberately return through execute_normal in
+         MMU mode.  The next opcode can therefore be an interpreter fallback,
+         whose condition-code macros read Previous's separate regflags symbol.
+         Mirror the authoritative JIT result now; waiting for the outer bridge
+         return lets that fallback consume the pre-helper CCR. */
+        regflags.cznv = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);
+        regflags.x = jit_regflags.x;
+    } else {
         jit_abort("invalid JIT semantic helper flag authority %u", flag_authority);
     }
 

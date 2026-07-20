@@ -42,6 +42,8 @@ extern "C" {
 
     uae_u32 prev_get_bitfield(uae_u32, uae_u32 *, int, int) __asm__("get_bitfield");
     void prev_put_bitfield(uae_u32, uae_u32 *, uae_u32, int, int) __asm__("put_bitfield");
+    uae_u32 prev_x_get_bitfield(uae_u32, uae_u32 *, int, int) __asm__("x_get_bitfield");
+    void prev_x_put_bitfield(uae_u32, uae_u32 *, uae_u32, int, int) __asm__("x_put_bitfield");
     void prev_fpuop_dbcc(uae_u32, uae_u16)           __asm__("fpuop_dbcc");
     void prev_fpuop_scc(uae_u32, uae_u16)            __asm__("fpuop_scc");
     void prev_fpuop_trapcc(uae_u32, uaecptr, uae_u16) __asm__("fpuop_trapcc");
@@ -66,11 +68,20 @@ extern "C" {
 /* The audited compiler is C++; Previous's CPU and FPU cores are C. */
 uae_u32 get_bitfield(uae_u32 src, uae_u32 *data, int offset, int width)
 {
-    return prev_get_bitfield(src, data, offset, width);
+    /* Generated 68040 handlers select x_get_bitfield whenever the MMU core is
+       active. Helper-backed compiled bitfields must make the same selection:
+       the direct accessor treats a logical address as physical and therefore
+       reads the wrong byte for non-identity virtual mappings. */
+    return regs.mmu_enabled
+        ? prev_x_get_bitfield(src, data, offset, width)
+        : prev_get_bitfield(src, data, offset, width);
 }
 void put_bitfield(uae_u32 dst, uae_u32 *data, uae_u32 value, int offset, int width)
 {
-    prev_put_bitfield(dst, data, value, offset, width);
+    if (regs.mmu_enabled)
+        prev_x_put_bitfield(dst, data, value, offset, width);
+    else
+        prev_put_bitfield(dst, data, value, offset, width);
 }
 void fpuop_dbcc(uae_u32 opcode, uae_u32 extra) { prev_fpuop_dbcc(opcode, (uae_u16)extra); }
 void fpuop_scc(uae_u32 opcode, uae_u32 extra) { prev_fpuop_scc(opcode, (uae_u16)extra); }

@@ -14,7 +14,7 @@ declare -a TEST_ORDER=(
   aslw_mem_hardfail lsrw_mem_hardfail rolw_mem_hardfail asrw_mem_edge roxlw_mem_edge roxrw_mem_edge
   addx_l_reg_xset subx_l_reg_xset negx_l_reg_xset addx_l_reg_xclr addx_l_predec_xset
   cmpm_l_equal tst_l_postinc_neg neg_l_postinc negx_l_postinc_xset cmp_l_postinc_d1_eq and_l_postinc_d0
-  bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
+  bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bftst_mem_alignment bftst_mem_compiled_prefix bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
   chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
   jsr_an_call_return bsr_word_call_return bsr_long_call_return bsr_after_frame_writes link_frame_tuple seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_movem_restore_full_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
   pack_dn_edge unpk_dn_edge moves_write_read move_l_imm_special_long video_alias_not_word video_alias_move_word video_alias_copy_long
@@ -133,6 +133,15 @@ TESTS[bfset_reg_edge]="203C FF00 00FF EEC0 0208"
 TESTS[bfclr_reg_edge]="203C FFFF FFFF ECC0 0208"
 TESTS[bfchg_reg_edge]="203C FF00 FF00 EAC0 0208"
 TESTS[bftst_reg_edge]="203C 8000 0000 E8C0 0008"
+# ROM dma_start alignment check at 0x04386f8a: BFTST 7(A2){4:4} must set Z
+# for an aligned node whose address byte has a zero low nibble.
+TESTS[bftst_mem_alignment]="45F9 0400 A000 103C 0068 1540 0007 E8EA 0104 0007 6704 7001 6002 7002"
+# Exact promoted ROM prefix at 0x04386f84: TST leaves Z clear, the first BEQ
+# falls through, then helper-backed BFTST must replace that live CCR with Z set
+# before the following (fallback) BEQ consumes it.
+TESTS[bftst_mem_compiled_prefix]="244B 4A8B 671C E8EA 0104 0007 6704 7001 6002 7002"
+INIT_REGS[bftst_mem_compiled_prefix]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A100 0400A110 0400A120 0400A000 0400A140 0400A150 0400A160 04010000 2710"
+MEM_LONGS[bftst_mem_compiled_prefix]="0400A004 00000000"
 TESTS[bfins_reg_edge]="7042 203C FFFF 0000 EFC0 0200"
 TESTS[bfins_dreg_imm]="203C 0000 00A5 4281 EFC1 0108"
 TESTS[bfins_dreg_narrow]="203C 0000 000F 2200 EFC1 0204"

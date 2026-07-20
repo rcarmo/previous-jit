@@ -10,6 +10,7 @@ extern "C" {
 
 bool Uae2026OpcodeTestModeSetup(void);
 bool Uae2026OpcodeTestModeActive(void);
+bool Uae2026OpcodeTestModeHandleStopTrailerAt(uint32_t logical_pc);
 bool Uae2026OpcodeTestModeHandleStopTrailer(void);
 bool Uae2026OpcodeTestModeHandleExpectedException(int vector);
 bool Uae2026OpcodeTestShouldFaultCode(uint32_t addr, int size);

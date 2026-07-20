@@ -316,16 +316,21 @@ bool Uae2026OpcodeTestModeActive(void)
 	return opcode_test_mode_active;
 }
 
-bool Uae2026OpcodeTestModeHandleStopTrailer(void)
+bool Uae2026OpcodeTestModeHandleStopTrailerAt(uint32_t logical_pc)
 {
-	if (!opcode_test_mode_active || get_word(m68k_getpc()) != 0x4e72)
+	if (!opcode_test_mode_active || get_word(logical_pc) != 0x4e72)
 		return false;
-	regs.sr = get_word(m68k_getpc() + 2);
+	regs.sr = get_word(logical_pc + 2);
 	MakeFromSR();
 	regs.stopped = 1;
 	set_special(SPCFLAG_STOP);
-	m68k_setpc(m68k_getpc() + 4);
+	m68k_setpc(logical_pc + 4);
 	return true;
+}
+
+bool Uae2026OpcodeTestModeHandleStopTrailer(void)
+{
+	return Uae2026OpcodeTestModeHandleStopTrailerAt(m68k_getpc());
 }
 
 static int opcode_test_size_bytes(int size)

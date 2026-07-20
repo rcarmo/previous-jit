@@ -4,6 +4,7 @@
 
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
 extern "C" bool Uae2026OpcodeTestModeActive(void);
+extern "C" bool Uae2026OpcodeTestModeHandleStopTrailerAt(uae_u32 logical_pc);
 extern "C" uae_u32 Uae2026JitLastInstructionPc;
 extern "C" uae_u32 Uae2026JitLastSr;
 extern "C" uae_u32 Uae2026JitLastA7;
@@ -1033,6 +1034,8 @@ void exec_nostats(void)
 			jit_guest_path_record_reference(before_pc);
 		if (jit_trace_target_pc(before_pc))
 			jit_trace_pc_hit(before_pc, (2u << 16) | (opcode & 0xffff));
+		if (opcode == 0x4e72 && Uae2026OpcodeTestModeHandleStopTrailerAt(before_pc))
+			return;
 		if (trace_this) {
 			fprintf(stderr,
 				"TRACEWINJ BEFORE step=%lu pc=%08x op=%04x regs.pc=%08x pc_p=%p oldp=%p d0=%08x d1=%08x d2=%08x d3=%08x a0=%08x a1=%08x a2=%08x a3=%08x a7=%08x sr=%04x nzcv=%08x x=%08x\n",
@@ -1108,6 +1111,8 @@ static void exec_nostats_limited(int maxrun_limit)
 			jit_guest_path_record_nostats(pc);
 		if (jit_trace_target_pc(pc))
 			jit_trace_pc_hit(pc, (2u << 16) | (opcode & 0xffff));
+		if (opcode == 0x4e72 && Uae2026OpcodeTestModeHandleStopTrailerAt(pc))
+			return;
 		(*cpufunctbl[opcode])(opcode);
 		cpu_check_ticks();
 		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL) || ++run_count >= maxrun_limit)
@@ -1399,6 +1404,11 @@ jit_pctrace_done:
 			if (jit_trace_target_pc(jit_current_interp_pc))
 				jit_trace_pc_hit(jit_current_interp_pc, (2u << 16) | (opcode & 0xffff));
 			jit_strict_note_trace_op(jit_current_interp_pc, opcode);
+			if (opcode == 0x4e72 &&
+				Uae2026OpcodeTestModeHandleStopTrailerAt(hist->guest_pc)) {
+				tick_inhibit = false;
+				return;
+			}
 			(*cpufunctbl[opcode])(opcode);
 			/* FULLMMU handlers update the logical PC but may leave pc_p anchored at
 			   the old block. Translate the retired successor/target before tracing

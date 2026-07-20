@@ -141,6 +141,11 @@ static inline bool jit_allow_ram_dispatch_env(void)
    hardware polling loops inside native chaining for minutes. */
 #define JIT_DISPATCH_BUDGET 4096
 int32 jit_countdown = JIT_DISPATCH_BUDGET;
+/* Native MMU blocks return to the outer C dispatcher at every keyed edge.
+   Publish their nominal retired CPU cycles there so Previous's cycle-driven
+   devices advance even when a tight polling loop never executes an interpreter
+   opcode. The outer dispatcher clears/consumes this once per generated entry. */
+uae_u32 jit_native_retired_cpu_cycles = 0;
 #define countdown jit_countdown
 
 enum {

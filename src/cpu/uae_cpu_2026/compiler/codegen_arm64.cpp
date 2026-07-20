@@ -891,6 +891,17 @@ LENDFUNC(NONE,NONE,2,compemu_raw_endblock_canonical_pc,(RR4 rr_pc, IM32 cycles))
  * pointer cache tag.  execute_normal retraces/selects using the logical key. */
 LOWFUNC(NONE,NONE,2,compemu_raw_endblock_mmu_dispatch,(RR4 rr_pc, IM32 cycles))
 {
+    /* scaled_cycles is expressed in CYCLE_UNIT fractions. Publish whole CPU
+       cycles for the safe outer C dispatcher before returning through
+       execute_normal. MMU blocks always end here, so assignment (not addition)
+       prevents stale deltas from surviving a generated dispatcher entry. */
+    const uae_u32 retired_cpu_cycles = cycles > 0
+        ? ((uae_u32)cycles / CYCLE_UNIT ? (uae_u32)cycles / CYCLE_UNIT : 1u)
+        : 0u;
+    LOAD_U32(REG_WORK2, retired_cpu_cycles);
+    LOAD_U64(REG_WORK3, (uintptr)&jit_native_retired_cpu_cycles);
+    STR_wXi(REG_WORK2, REG_WORK3, 0);
+
     LOAD_U64(REG_WORK3, (uintptr)&countdown);
     LDR_wXi(REG_WORK1, REG_WORK3, 0);
     const uae_u32 dispatch_cycles = cycles > 0 ? (uae_u32)cycles : 1u;

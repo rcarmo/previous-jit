@@ -95,6 +95,7 @@ static bool ensure_aarch64_jit_runtime_ready(void)
 }
 
 extern void jit_one_tick(void);
+extern "C" void Uae2026JitCpuChargeCyclesNoEvents(int cycles);
 
 void m68k_do_compile_execute(void)
 {
@@ -133,8 +134,18 @@ void m68k_do_compile_execute(void)
 		if (use_sync_ticks || use_retirement_ticks)
 			tick_inhibit = true;
 #endif
+		/* A prior generated entry must never leak a retirement delta through a
+		   C/interpreter-only path. Native MMU endblocks overwrite this immediately
+		   before returning from the generated dispatcher. */
+		jit_native_retired_cpu_cycles = 0;
 		((compiled_handler)(pushall_call_handler))();
 #if defined(CPU_AARCH64)
+		{
+			const uae_u32 retired_cpu_cycles = jit_native_retired_cpu_cycles;
+			jit_native_retired_cpu_cycles = 0;
+			if (retired_cpu_cycles)
+				Uae2026JitCpuChargeCyclesNoEvents((int)retired_cpu_cycles);
+		}
 		if (use_sync_ticks && !use_retirement_ticks) {
 			/* Drive the 60Hz tick by WALL-CLOCK at this safe block-dispatch
 			   boundary. The async tick thread stays inhibited for thread-safety

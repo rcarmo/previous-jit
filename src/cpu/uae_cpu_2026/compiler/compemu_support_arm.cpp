@@ -4038,6 +4038,15 @@ static int writereg(int r)
         int pin_vreg = b2_force_scratch_alias_vreg();
         if (pin_vreg >= 0 && isinreg(pin_vreg)) {
             int pin_host = live.state[pin_vreg].realreg;
+            const char *debug = getenv("B2_FORCE_SCRATCH_DEBUG");
+            if (debug && *debug && strcmp(debug, "0") != 0) {
+                fprintf(stderr,
+                    "PIN_ATTEMPT scratch_vreg=%d arch_vreg=%d host=%d locked=%d nholds=%d pc=%08x\n",
+                    r, pin_vreg, pin_host,
+                    (pin_host >= 0 && pin_host < N_REGS) ? live.nat[pin_host].locked : -1,
+                    (pin_host >= 0 && pin_host < N_REGS) ? live.nat[pin_host].nholds : -1,
+                    get_virtual_address(comp_pc_p));
+            }
             if (pin_host >= 0 && pin_host < N_REGS && !live.nat[pin_host].locked) {
                 if (isinreg(r) && live.state[r].realreg != pin_host)
                     disassociate(r);

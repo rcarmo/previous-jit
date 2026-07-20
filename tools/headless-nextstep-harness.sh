@@ -15,7 +15,6 @@ DESKTOP_POLL="${PREVIOUS_DESKTOP_POLL:-30}"
 STABLE_WAIT="${PREVIOUS_STABLE_WAIT:-0}"
 SHOW_STATUSBAR="${PREVIOUS_SHOW_STATUSBAR:-FALSE}"
 SHOW_DRIVE_LED="${PREVIOUS_SHOW_DRIVE_LED:-FALSE}"
-TEXT_LOG_LEVEL="${PREVIOUS_TEXT_LOG_LEVEL:-1}"
 
 # JIT defaults: enable the AArch64 JIT bridge with the RAM/MMU dispatch and
 # the conservative RTE-fault interpreter handoff oracle, since that is the
@@ -76,7 +75,7 @@ cat > "$OUTDIR/home/.previous/previous.cfg" <<EOF
 [Log]
 sLogFileName = stderr
 sTraceFileName = stderr
-nTextLogLevel = $TEXT_LOG_LEVEL
+nTextLogLevel = 5
 nAlertDlgLogLevel = 1
 bConfirmQuit = FALSE
 
@@ -196,7 +195,6 @@ set -e
   echo "rtc_chip=$RTC_CHIP"
   echo "rtc_chip_bool=$RTC_CHIP_BOOL"
   echo "rtc_unix_time=$RTC_UNIX_TIME"
-  echo "text_log_level=$TEXT_LOG_LEVEL"
   if [[ -f "$OUTDIR/result.env" ]]; then
     cat "$OUTDIR/result.env"
   fi

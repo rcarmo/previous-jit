@@ -89,6 +89,17 @@ All runs used `PREVIOUS_UAE2026_JIT_RAM=1` and
 | TC, roots, TTRs, PFLUSHA, PTESTR | `/workspace/tmp/previous-mmu-control-matrix-20260719-235734` | 7/7, score 100 |
 | Post-cleanup call/return, byte-write, video aliases | `/workspace/tmp/previous-bridge-cleanup-final-20260720-000659` | 9/9, score 100 |
 | RTE post-commit target fetch | `/workspace/tmp/previous-rte-fetch-final-20260720-000829` | 1/1, score 100; raw interpreter/JIT tuples match |
+| DBF keyed edge after FPU fallback | `/workspace/tmp/previous-dbf-keyed-fix-20260720-0446` | 5/5, score 100; exact six-byte FPU-immediate + DBF taken/fall-through cell included |
+
+The final RAM/MMU boot discriminator exposed one integration defect not reached
+by the original identity cells: keyed mode allowed compilation to continue past
+a DBF even though its `PC_P` is runtime-selected. When a reused block changed
+from its traced loop edge to fall-through, later linear finalisation could
+publish the DBF displacement word as the next opcode PC. Keyed compilation now
+stops at DBF while its generated predicate and `register_branch()` logical edge
+pair are live, then uses the ordinary two-edge keyed finaliser. Non-MMU runtime
+`PC_P` dispatch is unchanged. The permanent regression vector mirrors the ROM's
+FPU-immediate + DBF sequence and exercises both edges over block reuse.
 
 The implementation did not require a generated `compemu.cpp` edit after the
 call/return producer tranche; source/generated parity is preserved.

@@ -8390,7 +8390,18 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         const uae_u16 dop = (uae_u16)opcode;
                         const bool is_dbcc_cond =
                             (((dop & 0xF0F8) == 0x50C8) && (((dop >> 8) & 0xf) >= 1));
-                        if (is_dbcc_cond && !jit_mmu_execution_key_active()) {
+                        if (is_dbcc_cond) {
+                            if (jit_mmu_execution_key_active() &&
+                                next_pc_p && taken_pc_p) {
+                                /* DBF registers both static edges before making
+                                   PC_P dynamic. No reversible logical PC can be
+                                   recovered from PC_P under MMU aliases, so stop
+                                   while its predicate and explicit logical edge
+                                   pair are still live; the normal two-edge
+                                   finaliser dispatches the selected keyed target.
+                                   Other DBcc forms do not yet register that pair. */
+                                break;
+                            }
                             live.flags_are_important = 1;
                             flush(1);
                             compemu_raw_mov_l_rm(0, (uintptr)specflags);

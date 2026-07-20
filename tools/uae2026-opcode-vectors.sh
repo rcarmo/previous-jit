@@ -6,7 +6,7 @@
 
 declare -a TEST_ORDER=(
   ori_sr_hardfail andi_sr_hardfail eori_sr_hardfail move_from_sr_hardfail move_to_sr_hardfail sr_ops_combo
-  scc_vc_vs dbvc_loop_v_set dbvs_loop_v_clear dbvc_not_taken_v_clear dbvs_not_taken_v_set
+  scc_vc_vs dbf_after_fpu_runtime_edge dbvc_loop_v_set dbvs_loop_v_clear dbvc_not_taken_v_clear dbvs_not_taken_v_set
   divs_word_hardfail divu_word_hardfail divs_neg_by_neg_edge divs_by_minus_one_edge divs_zero_dividend_edge divs_overflow_edge
   divu_exact_edge divu_with_remainder_edge divu_overflow_edge
   mull_32_hardfail divl_32_hardfail mull_unsigned_32 mull_signed_32 divl_unsigned_32 divl_signed_32
@@ -54,6 +54,10 @@ TESTS[move_to_sr_hardfail]="46FC 2500 40C0"
 TESTS[sr_ops_combo]="46FC 2700 007C 0010 027C F7FF 0A7C 0004 40C0"
 
 TESTS[scc_vc_vs]="203C 7FFF FFFF 5280 58C1 59C2"
+# ROM regression shape at 0x01005252: a six-byte FPU-immediate fallback
+# followed by DBF. The first DBF edge is taken and the reused block then falls
+# through; keyed MMU dispatch must never publish the displacement word as PC.
+TESTS[dbf_after_fpu_runtime_edge]="7401 F23C 5822 0001 51CA FFF8"
 TESTS[dbvc_loop_v_set]="7001 243C 7FFF FFFF 5282 4E71 58C8 FFFA"
 TESTS[dbvs_loop_v_clear]="7001 7400 4E71 59C8 FFFA"
 TESTS[dbvc_not_taken_v_clear]="7001 7400 58C8 0002 7207"

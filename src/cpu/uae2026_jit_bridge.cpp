@@ -1352,6 +1352,7 @@ extern "C" void Uae2026JitBridgeRequestBlockExit(unsigned int source)
 
 extern "C" uintptr_t Uae2026CompilerCacheTagsTable(void);
 extern "C" void Uae2026CompilerPrepareMmuDispatch(void);
+extern "C" void Uae2026CompilerRefreshDirectBase(void);
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
 
 extern "C" void Uae2026JitBridgeCompileExecute(void)
@@ -1838,6 +1839,10 @@ extern "C" void Uae2026JitBridgeInit(void)
                 fprintf(stderr, "UAE2026 bridge: mprotect(shadow) failed (%s)\n", strerror(errno));
             } else {
                 jit_MEMBaseDiff = (uintptr_t)shadow;
+                /* compiler_init() runs before the sparse shadow exists, so its
+                 * direct-jump bank table still contains a zero base. Refresh it
+                 * now, before any generated JSR/JMP can materialize PC_P. */
+                Uae2026CompilerRefreshDirectBase();
                 /* Clear pc_p/pc_oldp so execute_normal() re-derives from regs.pc. *
                  * Also set the compiler unit's RAM/ROM host windows for guards.   */
                 regs.pc_p = nullptr;

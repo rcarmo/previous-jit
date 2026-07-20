@@ -5626,6 +5626,12 @@ static void *jit_io_bank[7] = {
     (void *)jit_bank_xlate,
 };
 
+extern "C" void Uae2026CompilerRefreshDirectBase(void)
+{
+    for (int bank = 0; bank < 65536; ++bank)
+        baseaddr[bank] = (uae_u8 *)MEMBaseDiff;
+}
+
 void compiler_init(void)
 {
     static bool initialized = false;
@@ -5636,8 +5642,8 @@ void compiler_init(void)
 
     flush_icache = lazy_flush ? flush_icache_lazy : flush_icache_hard;
 
+    Uae2026CompilerRefreshDirectBase();
     for (int bank = 0; bank < 65536; ++bank) {
-        baseaddr[bank] = (uae_u8 *)MEMBaseDiff;
         /* Point every bank at the interpreter-backed handler so the JIT
          * special-memory (distrust) path dispatches real device emulation
          * instead of dereferencing a NULL stub. Only the distrust path uses

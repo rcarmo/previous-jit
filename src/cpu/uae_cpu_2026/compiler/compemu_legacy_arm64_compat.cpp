@@ -1183,7 +1183,22 @@ void execute_normal(void)
 				guest_pc, (void*)regs.pc_p, (const void*)expected_pc_p,
 				(void*)regs.pc_oldp);
 	}
-	/* Ordinary mode avoids caching transient zero-filled RAM probes. Strict mode
+	/* Previous's accepted default-boot policy keeps the structurally risky ROM
+	   control-flow region on exact interpreter semantics.  The replacement
+	   compiler has no equivalent of the former trace-barrier set; compiling the
+	   whole ROM makes the old opt-in F1 policy the default and stalls at the
+	   known 0x010072xx frontier.  Keep product ROM-only execution explicit and
+	   side-effect free here.  Opcode tests and RAM/MMU JIT remain translated and
+	   continue to exercise the runbook contracts. */
+	{
+		const char *ram = getenv("PREVIOUS_UAE2026_JIT_RAM");
+		const bool ram_jit = ram && *ram && strcmp(ram, "0") != 0;
+		if (!ram_jit && !Uae2026OpcodeTestModeActive()) {
+			exec_nostats();
+			return;
+		}
+	}
+	/* Ordinary RAM mode avoids caching transient zero-filled probes. Strict mode
 	   must not substitute a C semantic loop for translated execution: let the
 	   first-seen tracer observe the code and compile an L2 block normally. */
 	if (!jit_strict_full_jit_env()) {

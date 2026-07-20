@@ -16,6 +16,13 @@ to prove that the bridge and generated code preserve the architectural state tha
 > for current contracts and focused evidence. Historical audit sections are kept
 > as provenance; statements that the BSR scan, fixed-PC JSR exception, or
 > `0500b6ae`/`0500bc98` compatibility cases remain are superseded.
+>
+> **Default-boot scope:** `PREVIOUS_UAE2026_JIT_RAM=0` product execution retains
+> the accepted exact-interpreter ROM policy. The replacement compiler lacks the
+> former trace-barrier set and otherwise turns the opt-in F1 whole-ROM strategy
+> into the default, stalling at `0x010072xx`. Opcode tests and
+> `PREVIOUS_UAE2026_JIT_RAM=1` continue through translated execution and are the
+> authoritative MMU/JIT correctness gates described by this contract.
 
 ## Source of truth
 

@@ -1714,12 +1714,16 @@ extern "C" void Uae2026JitBridgeInit(void)
     }
 
     const previous_uae2026_prefs prefs = snapshot_bridge_prefs();
-    if (!prefs.requested) {
+    const char *opcode_test_hex = getenv("B2_TEST_HEX");
+    const bool opcode_test_requested = opcode_test_hex && *opcode_test_hex;
+    const bool translated_mode_requested =
+        env_truthy("PREVIOUS_UAE2026_JIT_RAM", false) || opcode_test_requested;
+    if (!prefs.requested || !translated_mode_requested) {
         UseJIT = false;
         jit_active = false;
         fprintf(stderr,
-                "UAE2026 bridge: %s; regstruct=%zu bytes; cpu_compatible=%s; fpu_strict=%s; special_mem_default=%d\n",
-                update_bridge_summary(), sizeof(regstruct),
+                "UAE2026 bridge: %s; translated_mode=%s; regstruct=%zu bytes; cpu_compatible=%s; fpu_strict=%s; special_mem_default=%d\n",
+                update_bridge_summary(), bool_word(translated_mode_requested), sizeof(regstruct),
                 bool_word(prefs.cpu_compatible), bool_word(prefs.fpu_strict),
                 Uae2026CompilerPrefsSpecialMemDefault());
         return;

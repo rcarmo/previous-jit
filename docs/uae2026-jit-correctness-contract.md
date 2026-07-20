@@ -20,7 +20,11 @@ to prove that the bridge and generated code preserve the architectural state tha
 > **Default-boot scope:** `PREVIOUS_UAE2026_JIT_RAM=0` product execution retains
 > the accepted exact-interpreter ROM policy. The replacement compiler lacks the
 > former trace-barrier set and otherwise turns the opt-in F1 whole-ROM strategy
-> into the default, stalling at `0x010072xx`. Opcode tests and
+> into the default, stalling at `0x010072xx`. This policy is enforced before JIT
+> bridge activation so asynchronous interrupts and exception frames remain owned
+> by the standard 68040 interpreter loop; an inner `exec_nostats()` substitute
+> was rejected after it reached `root on sd@` and then panicked with a bad
+> exception-stack format. Opcode tests (`B2_TEST_HEX`) and
 > `PREVIOUS_UAE2026_JIT_RAM=1` continue through translated execution and are the
 > authoritative MMU/JIT correctness gates described by this contract.
 

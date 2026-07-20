@@ -16,7 +16,7 @@ declare -a TEST_ORDER=(
   cmpm_l_equal tst_l_postinc_neg neg_l_postinc negx_l_postinc_xset cmp_l_postinc_d1_eq and_l_postinc_d0
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
   chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
-  jsr_an_call_return bsr_word_call_return bsr_long_call_return seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_movem_restore_full_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
+  jsr_an_call_return bsr_word_call_return bsr_long_call_return bsr_after_frame_writes link_frame_tuple seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_movem_restore_full_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
   pack_dn_edge unpk_dn_edge moves_write_read move_l_imm_special_long video_alias_not_word video_alias_move_word video_alias_copy_long
   movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip movec_tc_roundtrip movec_urp_roundtrip movec_srp_roundtrip movec_itt0_roundtrip movec_dtt0_roundtrip pflush_all ptest_dtt_hit
 )
@@ -142,6 +142,19 @@ TESTS[bsr_word_call_return]="6100 0008 7201 6000 0006 702B 4E75 7402"
 # the same call site three times so the final visit executes compiled BSR; it
 # must publish the callee target, and RTS must return after the six-byte call.
 TESTS[bsr_long_call_return]="7402 61FF 0000 000C 51CA FFF8 6000 0006 702B 4E75 7201"
+# Three visits promote the timer-reader control-flow shape: frame creation and
+# a local stack push precede long BSR in one trace. The call must begin from a
+# coherent clean native entry, then cleanup must restore A6/A7 exactly.
+TESTS[bsr_after_frame_writes]="7802 4E56 0000 2F02 61FF 0000 0010 588F 4E5E 51CC FFEE 6000 0006 702A 4E75 7201"
+INIT_REGS[bsr_after_frame_writes]="00000000 00000000 CAFEBABE 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A000 04010000 0010"
+DUMP_MEM_LONGS[bsr_after_frame_writes]="0400FFF8 0400FFFC"
+# Timer-reader prologue shape: LINK.W A6,#0 followed by MOVE.L D2,-(SP).
+# Capture the pushed D2, saved old A6, new frame pointer, and live stack before
+# removing the local and executing UNLK. This catches continuation lifetime or
+# stack-address corruption across consecutive MMU bank writes.
+TESTS[link_frame_tuple]="4E56 0000 2F02 2017 222F 0004 260E 280F 588F 4E5E"
+INIT_REGS[link_frame_tuple]="00000000 00000000 CAFEBABE 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A000 04010000 0010"
+DUMP_MEM_LONGS[link_frame_tuple]="0400FFF8 0400FFFC"
 TESTS[seam_movea_a0_chain]="2050 2008"
 INIT_REGS[seam_movea_a0_chain]="04018258 00000009 04018258 00000014 00036074 00000002 00000000 00000000 04018258 050941AD 0000E06C 0000E068 0401AE94 0401B908 03FFFF80 03FFFF58 0010"
 MEM_LONGS[seam_movea_a0_chain]="04018258 04018758"

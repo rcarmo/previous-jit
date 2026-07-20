@@ -1392,6 +1392,12 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op, uae_u32 pc)
 		return true;
 	if (jit_restore_barrier_at_pc("emulop", pc) && (op & 0xff00) == 0x7100)
 		return true;
+	if (jit_restore_barrier_at_pc("link", pc) &&
+		((op & 0xfff8) == 0x4e50 || (op & 0xfff8) == 0x4808))
+		return true;
+	if (jit_restore_barrier_at_pc("move-apdi", pc) &&
+		table68k[op].mnemo == i_MOVE && table68k[op].dmode == Apdi)
+		return true;
 
 	return false;
 }

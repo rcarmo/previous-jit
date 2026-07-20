@@ -6713,6 +6713,22 @@ int check_for_cache_miss(void)
 
     if (bi) {
         int cl = cacheline(regs.pc_p);
+#if defined(CPU_AARCH64)
+        /* Reaching execute_normal through a stale predecessor edge does not
+           invalidate an otherwise active cacheline-primary block.  Treat the
+           already-installed native handler as a hit; recompiling it would
+           replace the handler, stale its dependency chains again, and create
+           a self-sustaining recompile/cache-flush loop.  MMU mode has already
+           selected bi through the full logical execution key above. */
+        if (bi->status == BI_ACTIVE &&
+            cache_tags[cl].handler == bi->handler_to_use &&
+            bi->handler_to_use != (cpuop_func*)popall_execute_normal &&
+            bi->handler_to_use != (cpuop_func*)popall_recompile_block) {
+            if (jit_diag_enabled())
+                jit_diag_execute_normal_cache_hit++;
+            return 1;
+        }
+#endif
         if (bi != cache_tags[cl + 1].bi) {
             raise_in_cl_list(bi);
 #if defined(CPU_AARCH64)

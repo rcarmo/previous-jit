@@ -876,3 +876,13 @@ The set_dhtu / guard / ordering hypotheses were all refuted by parity diff + mea
 BasiliskII); the lever was the recompile, not set_dhtu. The REMAINING grind (0x010068fa / 0x01007e52) is pure
 REGION COVERAGE — non-scoped ROM regions running interp barriers — NOT chaining. Next frontier = the SEPARATE
 early-ROM 0x010005xx bad-pc_p hang under global native-compile (distinct bug). Chain bug: CLOSED + validated.
+
+## REGRESSION REPAIR (2026-07-20): restore active-primary hit after compiler replacement
+
+The 2026-07-19 bulk compiler replacement restored the upstream `check_for_cache_miss()` condition and silently
+lost the `9ecfc74`/`e04d965` AArch64 active-primary hit. After the MMU runbook and sparse-shadow startup-order
+repair, the default ROM gate therefore rebuilt active blocks continuously: in a matched 14-second probe,
+`fresh=1184`, `recomp=2048760`, `flush_hard=111` (115 by probe end), followed later by frame corruption at
+`0x0100786e`. Reinstating the full-key-safe active-primary check produced `fresh=104`, `recomp=0`,
+`flush_hard=11`, no MMU fault, and a live process at the same bound. The MMU lookup has already selected the
+block by logical execution key before this check, so the repair does not reintroduce physical-only alias hits.

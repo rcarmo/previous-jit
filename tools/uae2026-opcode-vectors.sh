@@ -16,7 +16,7 @@ declare -a TEST_ORDER=(
   cmpm_l_equal tst_l_postinc_neg neg_l_postinc negx_l_postinc_xset cmp_l_postinc_d1_eq and_l_postinc_d0
   bfextu_reg_edge bfexts_reg_edge bfffo_reg_edge bfset_reg_edge bfclr_reg_edge bfchg_reg_edge bftst_reg_edge bftst_mem_alignment bftst_mem_compiled_prefix bfins_reg_edge bfins_dreg_imm bfins_dreg_narrow
   chk2_long_in_range cas_long_match_update cas2_word_match_update movep_roundtrip movem_long_predec_roundtrip
-  jsr_an_call_return bsr_word_call_return bsr_long_call_return bsr_after_frame_writes link_frame_tuple seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_movem_restore_full_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
+  jsr_an_call_return bsr_word_call_return bsr_long_call_return bsr_after_frame_writes fdstrategy_lea_push_bsr rte_format0_irq_frame link_frame_tuple seam_movea_a0_chain seam_a0_a1_chain seam_user_stack_push seam_movem_restore_frame seam_movem_restore_full_frame seam_hash_lookup_chain seam_jsr_user_stack seam_hash_call_chain seam_byte_store_d2_fault_shape seam_byte_copy_postinc_fault_shape
   pack_dn_edge unpk_dn_edge moves_write_read move_l_imm_special_long video_alias_not_word video_alias_move_word video_alias_copy_long
   movec_vbr_roundtrip movec_sfc_roundtrip movec_dfc_roundtrip movec_tc_roundtrip movec_urp_roundtrip movec_srp_roundtrip movec_itt0_roundtrip movec_dtt0_roundtrip pflush_all ptest_dtt_hit
 )
@@ -163,6 +163,19 @@ TESTS[bsr_long_call_return]="7402 61FF 0000 000C 51CA FFF8 6000 0006 702B 4E75 7
 TESTS[bsr_after_frame_writes]="7802 4E56 0000 2F02 61FF 0000 0010 588F 4E5E 51CC FFEE 6000 0006 702A 4E75 7201"
 INIT_REGS[bsr_after_frame_writes]="00000000 00000000 CAFEBABE 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A000 04010000 0010"
 DUMP_MEM_LONGS[bsr_after_frame_writes]="0400FFF8 0400FFFC"
+# Kernel _fdstrategy shape at 0x0408187a: form A2=A3+0xba, push A1 then A2,
+# and enter a long-BSR callee. Revisit it three times so LEA and the two stack
+# writes must survive promotion and the call helper boundary together.
+TESTS[fdstrategy_lea_push_bsr]="6000 000C 202F 0004 222F 0008 4E75 7802 40C0 46FC 2300 3400 48C2 45EB 00BA 2F09 2F0A 61FF FFFF FFE0 508F 46C2 51CC FFE2 4E71"
+INIT_REGS[fdstrategy_lea_push_bsr]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A100 00000000 0400A000 00000000 00000000 0400A600 04010000 2700"
+DUMP_MEM_LONGS[fdstrategy_lea_push_bsr]="0400FFF4 0400FFF8 0400FFFC"
+# Successful 68040 format-0 level-6 interrupt return. The frame vector word
+# 0x0078 is the exact shape seen in the NeXT kernel hardclock path; RTE must
+# retire all eight bytes before executing the restored target.
+TESTS[rte_format0_irq_frame]="4E73 4E71 4E71 4E71 7201"
+INIT_REGS[rte_format0_irq_frame]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 2700"
+MEM_LONGS[rte_format0_irq_frame]="04010000 23000100 04010002 TEST+0008 04010006 00780000"
+DUMP_MEM_LONGS[rte_format0_irq_frame]="04010000 04010004 04010008"
 # Timer-reader prologue shape: LINK.W A6,#0 followed by MOVE.L D2,-(SP).
 # Capture the pushed D2, saved old A6, new frame pointer, and live stack before
 # removing the local and executing UNLK. This catches continuation lifetime or

@@ -13,6 +13,7 @@
 
 #include "uae2026_vendored_preamble.h"
 #include "uae2026_compiler_prefs_shim.h"
+#include "uae2026_jit_bridge.h"
 #include "cpu_emulation.h"
 #include <cassert>
 #include <cstddef>
@@ -255,6 +256,18 @@ int m68k_do_specialties(void)
             Exception(24 + intr, 0);
             regs.intmask = intr;
             prev_doint();
+
+            /* Exception_mmu() enters the vector through indirect-PC
+             * m68k_setpci(): it publishes the architectural handler PC but
+             * intentionally leaves pc_p/pc_oldp untouched.  That is correct
+             * inside the interpreter, but the next JIT dispatcher iteration
+             * indexes its cache with pc_p.  Retaining the interrupted block's
+             * host pointer therefore resumes that block with the newly pushed
+             * interrupt frame still on A7, skipping the handler and its RTE.
+             * Translate the explicit vector PC now and publish the complete
+             * tuple before returning to generated dispatch. */
+            if (regs.mmu_enabled)
+                (void)Uae2026JitPrepareMmuDispatchTarget(regs.pc);
         }
         lastintr = intr;
     }

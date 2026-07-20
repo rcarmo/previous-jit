@@ -144,6 +144,33 @@ seconds. It produced no later ESP Select, Inquiry, or SCSI command, eliminating
 that Bcc/CCR boundary as the no-handoff stall cause. Artifact:
 `/workspace/tmp/previous-timer-beq-exact-20260720-073257`.
 
+## Interrupt vector dispatch PC contract
+
+A RAM/MMU run after the DMA/CCR repair exposed a valid level-6 format-0
+interrupt frame at `A7=0x040010f4` (`SR=0x2300`, saved
+`PC=0x04081b98`, vector word `0x0078`), followed by execution at
+`0x04081b9c` with the frame still active. The apparent pointer corruption
+(`0x1b840078`) was the saved-PC/vector tail of an older unretired frame.
+
+The causal boundary was the active JIT `m68k_do_specialties()` shim:
+Previous's MMU `Exception()` enters a vector with indirect
+`m68k_setpci()`, which updates logical `regs.pc` but intentionally leaves
+`regs.pc_p/pc_oldp` unchanged. Returning to JIT dispatch therefore indexed
+the interrupted native block and skipped the interrupt handler and RTE.
+Accepted interrupts now translate the explicit vector PC through
+`Uae2026JitPrepareMmuDispatchTarget()` and publish the complete PC triple
+before returning to generated dispatch.
+
+Focused evidence:
+
+- `/workspace/tmp/previous-interrupt-vector-pc-fix-focused-20260720-124132`
+  — successful format-0 level-6 RTE plus target-fetch-fault RTE, 2/2,
+  score 100, handoff disabled;
+- `/workspace/tmp/previous-headless-20260720-124157`
+  — the former `0x04081b9c / 0x1b840090` floppy initialisation fault is
+  absent; boot mounts root and reaches first-user-process loading before a
+  later Mach IPC panic.
+
 ## Final gates still required
 
 Before push, run serially on an idle host:

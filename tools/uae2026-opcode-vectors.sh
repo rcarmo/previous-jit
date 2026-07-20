@@ -6,7 +6,7 @@
 
 declare -a TEST_ORDER=(
   ori_sr_hardfail andi_sr_hardfail eori_sr_hardfail move_from_sr_hardfail move_to_sr_hardfail sr_ops_combo
-  scc_vc_vs dbf_after_fpu_runtime_edge dbvc_loop_v_set dbvs_loop_v_clear dbvc_not_taken_v_clear dbvs_not_taken_v_set
+  scc_vc_vs dbf_after_fpu_runtime_edge dbeq_alignment_loop dbvc_loop_v_set dbvs_loop_v_clear dbvc_not_taken_v_clear dbvs_not_taken_v_set
   divs_word_hardfail divu_word_hardfail divs_neg_by_neg_edge divs_by_minus_one_edge divs_zero_dividend_edge divs_overflow_edge
   divu_exact_edge divu_with_remainder_edge divu_overflow_edge
   mull_32_hardfail divl_32_hardfail mull_unsigned_32 mull_signed_32 divl_unsigned_32 divl_signed_32
@@ -59,6 +59,12 @@ TESTS[scc_vc_vs]="203C 7FFF FFFF 5280 58C1 59C2"
 # helper must publish the full architectural successor after native Previous
 # advances both the logical and direct-PC tuple halves.
 TESTS[dbf_after_fpu_runtime_edge]="7402 F23C 5822 0001 51CA FFF8"
+# ROM bzero alignment shape at 0x043819d8: BRA enters DBEQ first, then at most
+# three CLR/SUBQ iterations. This catches keyed DBcc reuse that republishes the
+# loop leader without retaining the decremented low word.
+TESTS[dbeq_alignment_loop]="7005 7202 6004 4218 5380 57C9 FFFA 7407"
+INIT_REGS[dbeq_alignment_loop]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0400A040 0400A100 0400A200 0400A300 0400A400 0400A500 0400A600 04010000 2700"
+DUMP_MEM_LONGS[dbeq_alignment_loop]="0400A040"
 TESTS[dbvc_loop_v_set]="7001 243C 7FFF FFFF 5282 4E71 58C8 FFFA"
 TESTS[dbvs_loop_v_clear]="7001 7400 4E71 59C8 FFFA"
 TESTS[dbvc_not_taken_v_clear]="7001 7400 58C8 0002 7207"

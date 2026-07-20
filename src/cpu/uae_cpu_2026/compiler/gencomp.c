@@ -2608,6 +2608,11 @@ gen_opcode (unsigned int opcode)
 	 case 13:
 	 case 14:
 	 case 15:
+#if defined(CPU_aarch64) || defined(CPU_AARCH64)
+	    start_brace();
+	    comprintf("\tuintptr dbcc_taken=get_const(offs);\n"
+		      "\tuintptr dbcc_fallthrough=get_const(PC_P);\n");
+#endif
 	    comprintf("\tmov_l_rr(nsrc,src);\n");
 #if defined(CPU_aarch64) || defined(CPU_AARCH64)
 	    /* cont90j: aliasing-immune in-place low-16 decrement. The old
@@ -2636,7 +2641,13 @@ gen_opcode (unsigned int opcode)
 	       hardware NZCV or regflags.nzcv — fixing the SR leakage. */
 	    comprintf("\tdbcc_cond_move_ne_w(PC_P, offs, nsrc);\n");
 #if defined(CPU_aarch64) || defined(CPU_AARCH64)
-	    comprintf("\tsave_and_discard_flags_in_nzcv();\n");
+	    /* DBcc cases 2-15 combine the architectural condition and terminal
+	       counter test into the selected PC_P. Register both static edges using
+	       a fresh equality predicate against the taken target; keyed MMU dispatch
+	       cannot infer the logical target from that translated host pointer. */
+	    comprintf("\tsave_and_discard_flags_in_nzcv();\n"
+		      "\tdbcc_test_target_eq(PC_P, offs);\n"
+		      "\tregister_branch(dbcc_fallthrough,dbcc_taken,%d);\n", NATIVE_CC_EQ);
 #endif
 	    break;
 	 default: assert(0);

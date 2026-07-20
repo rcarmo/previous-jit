@@ -1417,6 +1417,23 @@ MIDFUNC(3,dbcc_cond_move_ne_w,(RW4 d, RR4 s, RR4 src_w))
 }
 MENDFUNC(3,dbcc_cond_move_ne_w,(RW4 d, RR4 s, RR4 src_w))
 
+/* Convert the composite DBcc decision into one final host predicate after PC_P
+   has selected the fall-through or taken translated target. Architectural CCR
+   was saved before the DBcc condition/decrement plumbing, so this comparison is
+   edge-only and may be discarded by the normal finaliser flush. */
+MIDFUNC(2,dbcc_test_target_eq,(RR4 current, RR4 target))
+{
+	current = readreg(current);
+	target = readreg(target);
+	CMP_xx(current, target);
+	unlock2(target);
+	unlock2(current);
+	live.flags_in_flags = TRASH;
+	live.flags_on_stack = VALID;
+	flags_carry_inverted = false;
+}
+MENDFUNC(2,dbcc_test_target_eq,(RR4 current, RR4 target))
+
 /* Call a C helper function from JIT-compiled code.
  * This emits a BL instruction to the given address.
  * Used by the JIT to call interpreter-helper functions for

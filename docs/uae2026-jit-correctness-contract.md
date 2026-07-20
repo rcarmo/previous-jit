@@ -9,6 +9,14 @@ The goal is not to make the current boot progress by local patches.  The goal is
 to prove that the bridge and generated code preserve the architectural state that
 68040 software depends on.
 
+> **2026-07-20 implementation update:** the 2026-07-19 MMU repair runbook has
+> replaced physical-only block identity, split MOVEC ownership, host-derived
+> logical-PC exits, and the call/return opcode-window recovery described in older
+> sections below. See [the implementation record](uae2026-jit-mmu-implementation-20260720.md)
+> for current contracts and focused evidence. Historical audit sections are kept
+> as provenance; statements that the BSR scan, fixed-PC JSR exception, or
+> `0500b6ae`/`0500bc98` compatibility cases remain are superseded.
+
 ## Source of truth
 
 Use these sources in this order:

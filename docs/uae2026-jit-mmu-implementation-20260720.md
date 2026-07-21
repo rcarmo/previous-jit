@@ -273,6 +273,33 @@ Focused evidence:
   so this is proof of the flag-ABI repair and a new boot frontier, not a final
   RAM/MMU gate pass.
 
+## Dispatch-boundary interrupt-pin poll restoration
+
+The compiler replacement at `2ca977e` accidentally removed
+`jit_poll_interrupt_pins_for_dispatch()` and its call from the outer native
+block dispatcher. That regressed the already audited Clause 6/7 contract:
+device state can make `intlev()` deliverable without first setting a specialty
+bit, while Previous's interpreter polls the pins after every instruction.
+Wall-clock tick delivery and native cycle charging do not replace that poll.
+
+The proven implementation from `4a2a74f` is restored unchanged in semantics:
+RAM/MMU dispatch samples `intlev()` at every safe native block boundary and
+surfaces `SPCFLAG_INT` when the level exceeds `regs.intmask` or the level-7 edge
+rule matches. Delivery remains in `m68k_do_specialties()`, after `MakeSR()` has
+synchronised JIT flags. Non-RAM dispatch is unchanged, and the bounded
+`B2_JIT_TRACE_DISPATCH_INT` diagnostic remains default-off.
+
+Evidence:
+
+- serial unity-object rebuild and final link passed;
+- `/workspace/tmp/previous-dispatch-poll-restored-nohandoff-20260721-194940`
+  — clean RAM/MMU no-handoff run emitted the diagnostic cap of 256
+  `JIT_DISPATCH_INT` events, proving the restored seam is live; it reached
+  `root on sd0` and remained active for the corrected 1200-second desktop
+  window with zero panic, IPC `strange rights`, or bad-exception-frame matches;
+  desktop was not reached, so this is a contract-restoration proof rather than
+  the final no-handoff gate pass.
+
 ## Final gates still required
 
 Before push, run serially on an idle host:

@@ -1297,6 +1297,8 @@ static uae_u16 jit_compile_current_opcode = 0xffff;
 extern "C" struct flag_struct Uae2026JitLastFlags;
 extern "C" uae_u32 Uae2026JitLastInstructionPc;
 extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
+extern "C" void Uae2026JitFlagsToInterpreter(void);
+extern "C" void Uae2026InterpreterFlagsToJit(void);
 extern "C" void Uae2026JitExactRts(void);
 extern "C" void Uae2026JitExactBsr(uae_u32 opcode);
 extern "C" void Uae2026JitExactJsr(uae_u32 opcode);
@@ -8750,6 +8752,11 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                        every association before crossing the first C boundary. */
                     prepare_for_call_1();
                     prepare_for_call_2();
+                    /* The unity JIT and Previous cpuemu objects use different
+                       packed flag layouts. Convert at the actual ABI boundary;
+                       a raw shared-word handoff makes fallback Bcc/Scc consume
+                       ARM NZCV bits as legacy C/Z/N/V. */
+                    compemu_raw_call((uintptr)Uae2026JitFlagsToInterpreter);
 #ifdef USE_JIT_FPU
                     /* The interpreter now owns architectural MPFR state. First
                        publish only native-dirty shadows, then re-import the
@@ -8762,6 +8769,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     compemu_raw_mov_l_ri(REG_PAR1, (uae_u32)cft_map(opcode));
                     compemu_raw_mov_l_rr(REG_PAR2, R_REGSTRUCT);
                     compemu_raw_call((uintptr)cputbl[cft_map(opcode)]);
+                    compemu_raw_call((uintptr)Uae2026InterpreterFlagsToJit);
 #ifdef USE_JIT_FPU
                     compemu_raw_call_preserve_nzcv((uintptr)jit_fpu_sync_to_shadow);
 #endif

@@ -168,6 +168,23 @@ static inline uae_u32 bridge_cznv_jit_to_legacy(uae_u32 jit)
 extern "C" uae_u32 Uae2026BridgeCznvLegacyToJit(uae_u32 v) { return bridge_cznv_legacy_to_jit(v); }
 extern "C" uae_u32 Uae2026BridgeCznvJitToLegacy(uae_u32 v) { return bridge_cznv_jit_to_legacy(v); }
 
+/* Inline compiler fallbacks call Previous's separately compiled cpuemu handlers.
+ * Publish flags in that translation unit's legacy layout before the call, then
+ * import its result into the ARM64-native JIT layout afterwards.  The two
+ * structs deliberately share no raw-copy ABI: CZNV uses 15/14/8/0 versus
+ * 31/30/29/28, and X uses bit 8 versus bit 29. */
+extern "C" void Uae2026JitFlagsToInterpreter(void)
+{
+    regflags.cznv = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);
+    regflags.x = (jit_regflags.x & (1u << 29)) ? (1u << 8) : 0;
+}
+
+extern "C" void Uae2026InterpreterFlagsToJit(void)
+{
+    jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
+    jit_regflags.x = (regflags.x & (1u << 8)) ? (1u << 29) : 0;
+}
+
 static inline uae_u16 bridge_sr_with_jit_flags(uae_u16 sr)
 {
     const uae_u32 legacy = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);

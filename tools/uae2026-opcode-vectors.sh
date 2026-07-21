@@ -374,3 +374,10 @@ TESTS[scc_ls_carry_clr]="203C 0000 0002 223C 0000 0001 B081 53C2"   # SLS  => fa
 TESTS[scc_cc_carry_clr]="203C 0000 0002 223C 0000 0001 B081 54C2"   # SCC  => true  => 0xFF
 TESTS[scc_cs_carry_clr]="203C 0000 0002 223C 0000 0001 B081 55C2"   # SCS  => false => 0x00
 TEST_ORDER+=(scc_hi_carry_set scc_ls_carry_set scc_cc_carry_set scc_cs_carry_set scc_hi_carry_clr scc_ls_carry_clr scc_cc_carry_clr scc_cs_carry_clr)
+
+# Cross-block carry consumer matching the kernel's ipc_right_copyin_header
+# decision tree: CMP.L D0,D1 sets borrow, BEQ falls through, and the successor
+# block must restore that carry before BCS. D2=2 is the correct taken path;
+# stale host NZCV incorrectly leaves D2=1.
+TESTS[bcc_carry_fallthrough_restore]="203C 0004 0000 223C 0003 0000 B280 6706 6508 7401 6006 7403 6002 7402"
+TEST_ORDER+=(bcc_carry_fallthrough_restore)

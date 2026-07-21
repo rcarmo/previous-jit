@@ -229,6 +229,50 @@ Focused evidence after the repair:
   The VNC driver timed out during its initial framebuffer capture, so this is a
   boot-frontier discriminator, not desktop evidence.
 
+## Inline fallback flag-layout boundary
+
+After MOVES was corrected, RAM/MMU boot reached Mach IPC but alternated between
+`ipc_right_copyin_header: strange rights` and
+`ipc_object_copyout_type_compat: strange rights`. The input rights values were
+valid. In the copyin case, `CMP.L D0,D1` compared `0x00040000` with `0x00030000`
+and produced JIT NZCV `0xa0000000` (N=1, C=1), so the following BCS had to take
+the `0x00040000` arm.
+
+GDB at the actual inline fallback handler proved the ABI mismatch:
+
+- generated `cpuemu_31.c` entered `op_6501_31_ff` with the correct architectural
+  opcode `0x6514`;
+- the handler's `cctrue(5)` reads Previous's legacy `regflags.cznv`, where C is
+  bit 8;
+- the unity JIT had published the same shared word in ARM NZCV layout, where C
+  is bit 29, so the handler observed legacy `cznv=0` and fell through;
+- X had the same raw-copy defect (Previous bit 8 versus JIT bit 29).
+
+Inline fallback now calls one central bridge service before and after the
+separately compiled interpreter handler. It converts all N/Z/C/V and X bits
+between the two layouts; no generated handler or opcode-specific condition is
+special-cased.
+
+Focused evidence:
+
+- pre-fix exact handler breakpoint:
+  `/workspace/tmp/previous-ipc-bcs-gdb2-075e96b-20260721-064648` —
+  `pc=04059e9c`, `opcode=6514`, legacy `cznv=00000000`;
+- live/store oracle:
+  `/workspace/tmp/previous-ipc-cmp-flush-075e96b-20260721-055031` —
+  repeated offending operands have matching live/stored JIT
+  `nzcv=a0000000`, excluding CMP codegen and boundary flush;
+- permanent compiled-to-fallback carry vector:
+  `/workspace/tmp/previous-opcode-harness-20260721-074104` — 1/1,
+  score 100 at `0x04010000`, RAM/MMU JIT enabled, handoff disabled, and log
+  confirms `JIT_FALLBACK op=6508` at the forced successor block;
+- no-handoff A/B:
+  `/workspace/tmp/previous-fallback-flags-abi-20260721-074135` — the 900-second
+  run contains zero IPC `strange rights` panics and remains active in
+  hardclock/SCSI interrupt work after `root on sd@`. It does not reach desktop,
+  so this is proof of the flag-ABI repair and a new boot frontier, not a final
+  RAM/MMU gate pass.
+
 ## Final gates still required
 
 Before push, run serially on an idle host:

@@ -23,7 +23,7 @@ declare -a TEST_ORDER=(
 
 declare -a FAULT_TEST_ORDER=(
   fault_bsr_target_fetch fault_jsr_target_fetch fault_rts_target_fetch fault_rtr_target_fetch fault_rte_return_fetch fault_rte_user_write_long
-  fault_trap_frame_write fault_write_byte_d2 fault_write_byte_postinc moves_dfc_write_fault moves_dfc_byte_postinc_fault moves_dfc_long_postinc_fault
+  fault_restart_flags_after_exact fault_trap_frame_write fault_write_byte_d2 fault_write_byte_postinc moves_dfc_write_fault moves_dfc_byte_postinc_fault moves_dfc_long_postinc_fault
   moves_sfc_read_fault movem_predec_write_fault
 )
 
@@ -295,6 +295,19 @@ DATA_FAULT_ADDR[fault_rte_user_write_long]="0400A000"
 DATA_FAULT_SIZE[fault_rte_user_write_long]=L
 DATA_FAULT_WRITE[fault_rte_user_write_long]=1
 DUMP_MEM_LONGS[fault_rte_user_write_long]="04010000 04010004 04010008 0400A000"
+
+# After RTE enters user mode, the exact first-pass MOVEQ owns Z before the
+# following SEQ consumes it. MOVEQ #1 makes final CCR deterministic before the
+# canonical non-restartable long-write fault. Without exact-path ABI conversion
+# D1 stays zero; with it D1 captures $ff from the intermediate Z=1 state.
+TESTS[fault_restart_flags_after_exact]="4E73 7000 57C1 7401 23C0 0400 A000 7201"
+INIT_REGS[fault_restart_flags_after_exact]="FFFFFFFF 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 2700"
+MEM_LONGS[fault_restart_flags_after_exact]="04010000 00100100 04010002 TEST+0002 04010006 00000000 0400A000 11223344"
+EXPECT_EXCEPTION[fault_restart_flags_after_exact]=2
+DATA_FAULT_ADDR[fault_restart_flags_after_exact]="0400A000"
+DATA_FAULT_SIZE[fault_restart_flags_after_exact]=L
+DATA_FAULT_WRITE[fault_restart_flags_after_exact]=1
+DUMP_MEM_LONGS[fault_restart_flags_after_exact]="04010000 04010004 04010008 0400A000"
 
 TESTS[fault_trap_frame_write]="4E40 7201"
 INIT_REGS[fault_trap_frame_write]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"

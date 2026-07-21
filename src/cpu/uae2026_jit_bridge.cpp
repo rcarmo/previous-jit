@@ -129,18 +129,13 @@ static bool compiler_initialized = false;
 }
 
 /* Bit-position conversion between Previous's legacy flag layout and the
- * vendored UAE2026 JIT layout.  Both structs name the field `cznv` but
- * they store the N/Z/C/V bits at different positions:
+ * vendored UAE2026 JIT layout:
  *
- *   Previous legacy (src/cpu/newcpu.h):       N=15  Z=14  C=8   V=0
- *   UAE2026 JIT     (src/cpu/uae_cpu_2026/m68k.h): N=7   Z=6   C=0   V=11
+ *   Previous legacy (src/cpu/newcpu.h):            N=15 Z=14 C=8  V=0  X=8
+ *   UAE2026 AArch64 (src/cpu/uae_cpu_2026/m68k.h): N=31 Z=30 C=29 V=28 X=29
  *
- * The bridge previously did a raw u32 copy across the boundary, which
- * silently shuffled the meaning of every set CCR bit and caused the JIT
- * to evaluate Bcc / Scc / addx-style condition tests using stale or
- * mis-positioned flags after every interpreter handler call.  Use the
- * helpers below at every JIT<->legacy flag-state boundary so the JIT
- * sees the same CCR the legacy handler just left. */
+ * The structs have the same two-word shape but no raw-copy ABI. Use these
+ * helpers at every JIT<->legacy boundary, including restart snapshots. */
 static inline uae_u32 bridge_cznv_legacy_to_jit(uae_u32 legacy)
 {
     /* Legacy Previous (src/cpu/newcpu.h) stores CCR in cznv with
@@ -166,6 +161,16 @@ static inline uae_u32 bridge_cznv_jit_to_legacy(uae_u32 jit)
     return legacy;
 }
 
+static inline uae_u32 bridge_x_legacy_to_jit(uae_u32 legacy)
+{
+    return (legacy & (1u << 8)) ? (1u << 29) : 0;
+}
+
+static inline uae_u32 bridge_x_jit_to_legacy(uae_u32 jit)
+{
+    return (jit & (1u << 29)) ? (1u << 8) : 0;
+}
+
 extern "C" uae_u32 Uae2026BridgeCznvLegacyToJit(uae_u32 v) { return bridge_cznv_legacy_to_jit(v); }
 extern "C" uae_u32 Uae2026BridgeCznvJitToLegacy(uae_u32 v) { return bridge_cznv_jit_to_legacy(v); }
 
@@ -177,19 +182,19 @@ extern "C" uae_u32 Uae2026BridgeCznvJitToLegacy(uae_u32 v) { return bridge_cznv_
 extern "C" void Uae2026JitFlagsToInterpreter(void)
 {
     regflags.cznv = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);
-    regflags.x = (jit_regflags.x & (1u << 29)) ? (1u << 8) : 0;
+    regflags.x = bridge_x_jit_to_legacy(jit_regflags.x);
 }
 
 extern "C" void Uae2026InterpreterFlagsToJit(void)
 {
     jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
-    jit_regflags.x = (regflags.x & (1u << 8)) ? (1u << 29) : 0;
+    jit_regflags.x = bridge_x_legacy_to_jit(regflags.x);
 }
 
 static inline uae_u16 bridge_sr_with_jit_flags(uae_u16 sr)
 {
     const uae_u32 legacy = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);
-    const uae_u16 ccr = (uae_u16)(((jit_regflags.x & 1u) << 4) |
+    const uae_u16 ccr = (uae_u16)((((jit_regflags.x >> 29) & 1u) << 4) |
         (((legacy >> 15) & 1u) << 3) |
         (((legacy >> 14) & 1u) << 2) |
         (((legacy >> 0) & 1u) << 1) |
@@ -228,7 +233,9 @@ extern "C" void Uae2026JitHelperBegin(uae_u32 op_pc, uae_u32 descriptor)
     Uae2026JitLastInstructionPc = op_pc;
     Uae2026JitLastSr = bridge_sr_with_jit_flags(regs.sr);
     Uae2026JitLastA7 = m68k_areg(regs, 7);
-    Uae2026JitLastFlags.cznv = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);
+    /* Restart snapshots stay in their producer's JIT layout. The catch
+     * boundary converts both words before restoring Previous's regflags. */
+    Uae2026JitLastFlags.cznv = jit_regflags.nzcv;
     Uae2026JitLastFlags.x = jit_regflags.x;
     mmu_restart = true;
     mmu_opcode = bridge_helper_state.opcode;
@@ -328,7 +335,7 @@ extern "C" void Uae2026JitHelperCommitLogicalPc(uae_u32 logical_pc, uae_u32 flag
 
     if (flag_authority == UAE2026_JIT_FLAGS_ARE_PREVIOUS) {
         jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
-        jit_regflags.x = regflags.x;
+        jit_regflags.x = bridge_x_legacy_to_jit(regflags.x);
     } else if (flag_authority == UAE2026_JIT_FLAGS_ARE_JIT) {
         /* Canonical helper exits deliberately return through execute_normal in
          MMU mode.  The next opcode can therefore be an interpreter fallback,
@@ -336,7 +343,7 @@ extern "C" void Uae2026JitHelperCommitLogicalPc(uae_u32 logical_pc, uae_u32 flag
          Mirror the authoritative JIT result now; waiting for the outer bridge
          return lets that fallback consume the pre-helper CCR. */
         regflags.cznv = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);
-        regflags.x = jit_regflags.x;
+        regflags.x = bridge_x_jit_to_legacy(jit_regflags.x);
     } else {
         jit_abort("invalid JIT semantic helper flag authority %u", flag_authority);
     }
@@ -351,7 +358,7 @@ extern "C" void Uae2026JitHelperCommitLogicalPc(uae_u32 logical_pc, uae_u32 flag
     Uae2026JitLastInstructionPc = logical_pc;
     Uae2026JitLastSr = bridge_sr_with_jit_flags(regs.sr);
     Uae2026JitLastA7 = m68k_areg(regs, 7);
-    Uae2026JitLastFlags.cznv = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);
+    Uae2026JitLastFlags.cznv = jit_regflags.nzcv;
     Uae2026JitLastFlags.x = jit_regflags.x;
     mmu_restart = true;
     mmu_opcode = 0xffff;
@@ -464,7 +471,7 @@ static bool bridge_try_handle_mmio_byte_op(void)
     m68k_setpc(pc);
     handler(opcode);
     jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
-    jit_regflags.x = regflags.x;
+    jit_regflags.x = bridge_x_legacy_to_jit(regflags.x);
     return true;
 }
 
@@ -1433,9 +1440,9 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
 
     /* Since regs is now the shared symbol with JIT fields at correct
      * offsets (via newcpu.h restructure), no register sync is needed.
-     * Sync the flag struct between Previous's cznv layout and JIT's nzcv. */
+     * The separate flag structs require conversion of both words. */
     jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
-    jit_regflags.x    = regflags.x;
+    jit_regflags.x = bridge_x_legacy_to_jit(regflags.x);
 
     /* Native bank-dispatch helpers dereference regs.mem_banks directly.  Keep
      * this stamped at every bridge entry because compiler/bootstrap paths can
@@ -1496,7 +1503,8 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
         if (regs.s && m68k_areg(regs, 7) == 0 && regs.isp >= 0x1000)
             bridge_set_active_a7(regs.isp);
         if (mmu_restart) {
-            regflags = Uae2026JitLastFlags;
+            regflags.cznv = bridge_cznv_jit_to_legacy(Uae2026JitLastFlags.cznv);
+            regflags.x = bridge_x_jit_to_legacy(Uae2026JitLastFlags.x);
             const uae_u32 restart_pc = regs.fault_pc ? regs.fault_pc :
                 (Uae2026JitLastInstructionPc ? Uae2026JitLastInstructionPc : regs.instruction_pc);
             m68k_setpc(restart_pc);
@@ -1789,10 +1797,10 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
      * regflags; do not overwrite them with stale JIT-entry flags. */
     if (handled_mmu_exception) {
         jit_regflags.nzcv = bridge_cznv_legacy_to_jit(regflags.cznv);
-        jit_regflags.x    = regflags.x;
+        jit_regflags.x = bridge_x_legacy_to_jit(regflags.x);
     } else {
         regflags.cznv = bridge_cznv_jit_to_legacy(jit_regflags.nzcv);
-        regflags.x    = jit_regflags.x;
+        regflags.x = bridge_x_jit_to_legacy(jit_regflags.x);
     }
 
     /* Do not copy shadow RAM back over NEXTRam.  Device/DMA/interpreter

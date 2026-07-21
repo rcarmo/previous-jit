@@ -1036,6 +1036,7 @@ void exec_nostats(void)
 			jit_trace_pc_hit(before_pc, (2u << 16) | (opcode & 0xffff));
 		if (opcode == 0x4e72 && Uae2026OpcodeTestModeHandleStopTrailerAt(before_pc))
 			return;
+		Uae2026JitFlagsToInterpreter();
 		Uae2026JitHelperBegin(before_pc,
 			UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
 				UAE2026_JIT_HELPER_EXACT_OPCODE));
@@ -1063,6 +1064,7 @@ void exec_nostats(void)
 			jit_trace_table_log("TRACEWINJTAB", trace_count + 1, before_pc);
 		}
 		(*cpufunctbl[opcode])(opcode);
+		Uae2026InterpreterFlagsToJit();
 		Uae2026JitHelperClear();
 		if (trace_this) {
 			uae_u32 after_pc = m68k_getpc();
@@ -1117,10 +1119,12 @@ static void exec_nostats_limited(int maxrun_limit)
 			jit_trace_pc_hit(pc, (2u << 16) | (opcode & 0xffff));
 		if (opcode == 0x4e72 && Uae2026OpcodeTestModeHandleStopTrailerAt(pc))
 			return;
+		Uae2026JitFlagsToInterpreter();
 		Uae2026JitHelperBegin(pc,
 			UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
 				UAE2026_JIT_HELPER_EXACT_OPCODE));
 		(*cpufunctbl[opcode])(opcode);
+		Uae2026InterpreterFlagsToJit();
 		Uae2026JitHelperClear();
 		cpu_check_ticks();
 		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL) || ++run_count >= maxrun_limit)
@@ -1422,6 +1426,7 @@ jit_pctrace_done:
 			   pointer pair before the canonical interpreter handler advances pc_p. */
 			regs.pc_oldp = regs.pc_p;
 			Uae2026JitPublishTraceInstructionState(hist->guest_pc, (uae_u16)opcode);
+			Uae2026JitFlagsToInterpreter();
 			Uae2026JitHelperBegin(hist->guest_pc,
 				UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
 					UAE2026_JIT_HELPER_EXACT_OPCODE));
@@ -1436,6 +1441,7 @@ jit_pctrace_done:
 				return;
 			}
 			(*cpufunctbl[opcode])(opcode);
+			Uae2026InterpreterFlagsToJit();
 			Uae2026JitHelperClear();
 			/* FULLMMU handlers update the logical PC but may leave pc_p anchored at
 			   the old block. Translate the retired successor/target before tracing

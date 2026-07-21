@@ -40,6 +40,15 @@ helpers publish the instruction length with their opcode snapshot, allowing the
 same post-instruction PC tuple without scanning opcodes or naming guest
 addresses. Restartable faults continue to use the opcode-start snapshot.
 
+Every exact execution path (first-pass trace, `exec_nostats`, limited nostats,
+and compiled inline fallback) now converts CCR/X at the actual unity-JIT ↔
+Previous-cpuemu ABI boundary. This prevents a successful exact handler's CZNV
+result from remaining only in Previous's legacy flag layout and then being
+replaced by stale JIT flags at the next restartable fault. The outer bridge,
+semantic-helper authority handoff, MMIO fallback, and restart catch use the
+same conversion routines; restart snapshots stay in producer JIT layout until
+catch. Cached SR publication reads X from JIT bit 29 rather than bit 0.
+
 ### Virtual execution identity
 
 MMU blocks are keyed by:
@@ -101,7 +110,8 @@ All runs used `PREVIOUS_UAE2026_JIT_RAM=1` and
 | FPU mixed-PC outcome after translation promotion | `/workspace/tmp/previous-fpu-archpc-fix-20260720-0522`; trace `/workspace/tmp/previous-fpu-archpc-trace-20260720-0525` | 1/1, score 100; compiled FPP at `01001002` exits to legal DBF at `01001008` |
 | Promoted long-BSR call/return | pre-fix `/workspace/tmp/previous-bsr-long-promoted-prefx-20260720-0602`; fixed `/workspace/tmp/previous-bsr-long-archpc-fix-20260720-0605` | pre-fix timeout with repeated call/push; fixed 1/1, score 100, A7 restored |
 | RTE to user then non-restartable long write | pre-fix `/workspace/tmp/previous-opcode-harness-20260721-220506`; fixed `/workspace/tmp/previous-opcode-harness-20260721-221629` | pre-fix exact-handler successor `04008008` collapsed to opcode PC `04008002`; fixed 1/1, score 100 |
-| Complete restart/fault matrix after exact-fallback publication | `/workspace/tmp/previous-opcode-harness-20260721-221645` | 14/14, score 100, handoff disabled |
+| Complete restart/fault matrix after exact-fallback publication | `/workspace/tmp/previous-opcode-harness-20260721-221937` | 14/14, score 100, handoff disabled |
+| Exact-success CCR/X consumed before RTE/user write fault | pre-fix `/workspace/tmp/previous-opcode-harness-20260721-225128`; focused fixed `/workspace/tmp/previous-opcode-harness-20260721-xflag-central`; matrix `/workspace/tmp/previous-opcode-harness-20260721-exact-flags-matrix` | pre-fix intermediate `SEQ` consumed stale Z; focused fixed 1/1; final restart/fault matrix 15/15, score 100, handoff disabled; final `SR=0x0014` retains RTE-restored X |
 
 A later RAM/MMU boot at
 `/workspace/tmp/previous-final-ram-mmu-nohandoff-fpu-fix-20260720-0530`

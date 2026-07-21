@@ -111,6 +111,7 @@ struct bridge_jit_helper_state {
     bool active;
     uae_u16 kind;
     uae_u16 opcode;
+    uae_u16 instruction_bytes;
     uae_u32 op_pc;
     uae_u16 pre_sr;
     uae_u32 pre_a7;
@@ -209,8 +210,9 @@ extern "C" void Uae2026JitHelperBegin(uae_u32 op_pc, uae_u32 descriptor)
             op_pc, descriptor & 0xffffu);
 
     bridge_helper_state.active = true;
-    bridge_helper_state.kind = (uae_u16)(descriptor >> 16);
+    bridge_helper_state.kind = (uae_u16)((descriptor >> 16) & 0xffu);
     bridge_helper_state.opcode = (uae_u16)descriptor;
+    bridge_helper_state.instruction_bytes = (uae_u16)(descriptor >> 24);
     bridge_helper_state.op_pc = op_pc;
     bridge_helper_state.pre_sr = regs.sr;
     bridge_helper_state.pre_a7 = m68k_areg(regs, 7);
@@ -1498,6 +1500,33 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
             const uae_u32 restart_pc = regs.fault_pc ? regs.fault_pc :
                 (Uae2026JitLastInstructionPc ? Uae2026JitLastInstructionPc : regs.instruction_pc);
             m68k_setpc(restart_pc);
+        } else if (bridge_helper_state.active &&
+            bridge_helper_state.kind == UAE2026_JIT_HELPER_EXACT_OPCODE) {
+            /* The separately generated 68040 handler owns non-restartable
+             * ordering and has already committed its exact instruction_pc.
+             * Drop the direct-address pointer delta installed by the JIT call
+             * wrapper; otherwise m68k_getpc() can subtract a non-identity code
+             * mapping and turn the committed logical successor into the opcode
+             * start (or zero). */
+            const uae_u32 post_pc = regs.instruction_pc;
+            regs.fault_pc = 0;
+            regs.mmu_effective_addr = 0;
+            m68k_setpc(post_pc);
+        } else if (bridge_helper_state.active &&
+            bridge_helper_state.kind == UAE2026_JIT_HELPER_DATA_ACCESS &&
+            bridge_helper_state.instruction_bytes != 0) {
+            /* Generated 68040 handlers commit their linear PC immediately
+             * before non-restartable memory writes (gen_set_fault_pc). Native
+             * bank helpers run the same MMU primitive but cannot execute that
+             * generated pre-write statement. The producer supplies the exact
+             * instruction length, so publish the canonical post-PC tuple here
+             * without opcode scanning or an address-specific repair. */
+            const uae_u32 post_pc = bridge_helper_state.op_pc +
+                bridge_helper_state.instruction_bytes;
+            regs.fault_pc = 0;
+            regs.instruction_pc = post_pc;
+            regs.mmu_effective_addr = 0;
+            m68k_setpc(post_pc);
         }
         for (unsigned fixup_index = 0; fixup_index < 2; fixup_index++) {
             if (mmufixup[fixup_index].reg >= 0) {

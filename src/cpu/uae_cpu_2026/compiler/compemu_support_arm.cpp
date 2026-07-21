@@ -6199,9 +6199,19 @@ static inline void jit_sync_fault_pc_for_bank_helper(void)
     const uae_u32 pc = jit_compile_current_op_m68k_pc;
     jit_prepare_for_mmu_helper_call();
     compemu_raw_mov_l_ri(REG_PAR1, pc);
+    const uae_u32 instruction_bytes = jit_compile_current_op_host_pc &&
+        (uintptr)(comp_pc_p + m68k_pc_offset) >= jit_compile_current_op_host_pc
+        ? (uae_u32)((uintptr)(comp_pc_p + m68k_pc_offset) -
+            jit_compile_current_op_host_pc)
+        : 0;
+    if (instruction_bytes == 0 || instruction_bytes > 0xffu ||
+        (instruction_bytes & 1u))
+        jit_abort("RAM/MMU bank helper: invalid instruction length pc=%08x op=%04x bytes=%u",
+            (unsigned)pc, (unsigned)jit_compile_current_opcode,
+            (unsigned)instruction_bytes);
     compemu_raw_mov_l_ri(REG_PAR2,
-        UAE2026_JIT_HELPER_DESCRIPTOR(jit_compile_current_opcode,
-            UAE2026_JIT_HELPER_GENERIC));
+        UAE2026_JIT_HELPER_ACCESS_DESCRIPTOR(jit_compile_current_opcode,
+            instruction_bytes));
     prepare_for_call_2();
     compemu_raw_call((uintptr)Uae2026JitHelperBegin);
 #endif
@@ -8757,6 +8767,11 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                        a raw shared-word handoff makes fallback Bcc/Scc consume
                        ARM NZCV bits as legacy C/Z/N/V. */
                     compemu_raw_call((uintptr)Uae2026JitFlagsToInterpreter);
+                    compemu_raw_mov_l_ri(REG_PAR1, op_m68k_pc);
+                    compemu_raw_mov_l_ri(REG_PAR2,
+                        UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
+                            UAE2026_JIT_HELPER_EXACT_OPCODE));
+                    compemu_raw_call((uintptr)Uae2026JitHelperBegin);
 #ifdef USE_JIT_FPU
                     /* The interpreter now owns architectural MPFR state. First
                        publish only native-dirty shadows, then re-import the
@@ -8769,6 +8784,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     compemu_raw_mov_l_ri(REG_PAR1, (uae_u32)cft_map(opcode));
                     compemu_raw_mov_l_rr(REG_PAR2, R_REGSTRUCT);
                     compemu_raw_call((uintptr)cputbl[cft_map(opcode)]);
+                    compemu_raw_call((uintptr)Uae2026JitHelperClear);
                     compemu_raw_call((uintptr)Uae2026InterpreterFlagsToJit);
 #ifdef USE_JIT_FPU
                     compemu_raw_call_preserve_nzcv((uintptr)jit_fpu_sync_to_shadow);

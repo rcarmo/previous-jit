@@ -11,7 +11,9 @@ enum Uae2026JitHelperKind {
     UAE2026_JIT_HELPER_GENERIC = 0,
     UAE2026_JIT_HELPER_RTE = 1,
     UAE2026_JIT_HELPER_CALL = 2,
-    UAE2026_JIT_HELPER_RETURN = 3
+    UAE2026_JIT_HELPER_RETURN = 3,
+    UAE2026_JIT_HELPER_DATA_ACCESS = 4,
+    UAE2026_JIT_HELPER_EXACT_OPCODE = 5
 };
 
 enum Uae2026JitHelperFlagAuthority {
@@ -19,8 +21,15 @@ enum Uae2026JitHelperFlagAuthority {
     UAE2026_JIT_FLAGS_ARE_PREVIOUS = 1
 };
 
+/* Descriptor layout: opcode[15:0], kind[23:16], optional linear instruction
+ * length[31:24].  Existing semantic helpers leave the length zero; native bank
+ * helpers publish it so a non-restartable 68040 write fault can commit the
+ * canonical post-instruction PC without reconstructing it in the bridge. */
 #define UAE2026_JIT_HELPER_DESCRIPTOR(opcode, kind) \
-    ((((uint32_t)(kind) & 0xffffu) << 16) | ((uint32_t)(opcode) & 0xffffu))
+    ((((uint32_t)(kind) & 0xffu) << 16) | ((uint32_t)(opcode) & 0xffffu))
+#define UAE2026_JIT_HELPER_ACCESS_DESCRIPTOR(opcode, instruction_bytes) \
+    ((((uint32_t)(instruction_bytes) & 0xffu) << 24) | \
+     UAE2026_JIT_HELPER_DESCRIPTOR((opcode), UAE2026_JIT_HELPER_DATA_ACCESS))
 
 #ifdef __cplusplus
 extern "C" {

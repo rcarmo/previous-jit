@@ -22,8 +22,8 @@ declare -a TEST_ORDER=(
 )
 
 declare -a FAULT_TEST_ORDER=(
-  fault_bsr_target_fetch fault_jsr_target_fetch fault_rts_target_fetch fault_rtr_target_fetch fault_rte_return_fetch fault_trap_frame_write
-  fault_write_byte_d2 fault_write_byte_postinc moves_dfc_write_fault moves_dfc_byte_postinc_fault moves_dfc_long_postinc_fault
+  fault_bsr_target_fetch fault_jsr_target_fetch fault_rts_target_fetch fault_rtr_target_fetch fault_rte_return_fetch fault_rte_user_write_long
+  fault_trap_frame_write fault_write_byte_d2 fault_write_byte_postinc moves_dfc_write_fault moves_dfc_byte_postinc_fault moves_dfc_long_postinc_fault
   moves_sfc_read_fault movem_predec_write_fault
 )
 
@@ -282,6 +282,19 @@ MEM_LONGS[fault_rte_return_fetch]="04010000 00100100 04010002 TEST+0100 04010006
 EXPECT_EXCEPTION[fault_rte_return_fetch]=2
 CODE_FAULT_ADDR[fault_rte_return_fetch]="TEST+0100"
 DUMP_MEM_LONGS[fault_rte_return_fetch]="04010000 04010004 04010008"
+
+# RTE must switch both SR and the live supervisor selector before the target
+# instruction's data translation.  The 68040 commits MOVE.L (abs).L's six-byte
+# PC advance before a write fault, so this also covers the non-restartable
+# post-PC tuple after a supervisor-to-user return.
+TESTS[fault_rte_user_write_long]="4E73 23C0 0400 A000 7201"
+INIT_REGS[fault_rte_user_write_long]="55667788 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 2700"
+MEM_LONGS[fault_rte_user_write_long]="04010000 00100100 04010002 TEST+0002 04010006 00000000 0400A000 11223344"
+EXPECT_EXCEPTION[fault_rte_user_write_long]=2
+DATA_FAULT_ADDR[fault_rte_user_write_long]="0400A000"
+DATA_FAULT_SIZE[fault_rte_user_write_long]=L
+DATA_FAULT_WRITE[fault_rte_user_write_long]=1
+DUMP_MEM_LONGS[fault_rte_user_write_long]="04010000 04010004 04010008 0400A000"
 
 TESTS[fault_trap_frame_write]="4E40 7201"
 INIT_REGS[fault_trap_frame_write]="00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 04010000 0010"

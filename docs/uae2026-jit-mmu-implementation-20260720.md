@@ -32,6 +32,14 @@ helpers. Address-only constant-read exemptions are gone. Faultable accesses
 publish the complete pre-operation restart tuple. MOVES retains SFC/DFC-aware
 accessors and cross-page accesses retain canonical helper ordering.
 
+Exact 68040 fallback handlers and native bank helpers now share the same
+fault-lifetime contract. Exact fallbacks publish an `exact_opcode` phase before
+entry; on a non-restartable fault the bridge accepts the handler's committed
+`instruction_pc` and clears the direct-address pointer delta. Native bank
+helpers publish the instruction length with their opcode snapshot, allowing the
+same post-instruction PC tuple without scanning opcodes or naming guest
+addresses. Restartable faults continue to use the opcode-start snapshot.
+
 ### Virtual execution identity
 
 MMU blocks are keyed by:
@@ -92,6 +100,8 @@ All runs used `PREVIOUS_UAE2026_JIT_RAM=1` and
 | DBF keyed edge after FPU fallback | `/workspace/tmp/previous-dbf-keyed-fix-20260720-0446` | 5/5, score 100; exact six-byte FPU-immediate + DBF taken/fall-through cell included |
 | FPU mixed-PC outcome after translation promotion | `/workspace/tmp/previous-fpu-archpc-fix-20260720-0522`; trace `/workspace/tmp/previous-fpu-archpc-trace-20260720-0525` | 1/1, score 100; compiled FPP at `01001002` exits to legal DBF at `01001008` |
 | Promoted long-BSR call/return | pre-fix `/workspace/tmp/previous-bsr-long-promoted-prefx-20260720-0602`; fixed `/workspace/tmp/previous-bsr-long-archpc-fix-20260720-0605` | pre-fix timeout with repeated call/push; fixed 1/1, score 100, A7 restored |
+| RTE to user then non-restartable long write | pre-fix `/workspace/tmp/previous-opcode-harness-20260721-220506`; fixed `/workspace/tmp/previous-opcode-harness-20260721-221629` | pre-fix exact-handler successor `04008008` collapsed to opcode PC `04008002`; fixed 1/1, score 100 |
+| Complete restart/fault matrix after exact-fallback publication | `/workspace/tmp/previous-opcode-harness-20260721-221645` | 14/14, score 100, handoff disabled |
 
 A later RAM/MMU boot at
 `/workspace/tmp/previous-final-ram-mmu-nohandoff-fpu-fix-20260720-0530`

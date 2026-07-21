@@ -1036,6 +1036,9 @@ void exec_nostats(void)
 			jit_trace_pc_hit(before_pc, (2u << 16) | (opcode & 0xffff));
 		if (opcode == 0x4e72 && Uae2026OpcodeTestModeHandleStopTrailerAt(before_pc))
 			return;
+		Uae2026JitHelperBegin(before_pc,
+			UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
+				UAE2026_JIT_HELPER_EXACT_OPCODE));
 		if (trace_this) {
 			fprintf(stderr,
 				"TRACEWINJ BEFORE step=%lu pc=%08x op=%04x regs.pc=%08x pc_p=%p oldp=%p d0=%08x d1=%08x d2=%08x d3=%08x a0=%08x a1=%08x a2=%08x a3=%08x a7=%08x sr=%04x nzcv=%08x x=%08x\n",
@@ -1060,6 +1063,7 @@ void exec_nostats(void)
 			jit_trace_table_log("TRACEWINJTAB", trace_count + 1, before_pc);
 		}
 		(*cpufunctbl[opcode])(opcode);
+		Uae2026JitHelperClear();
 		if (trace_this) {
 			uae_u32 after_pc = m68k_getpc();
 			trace_count++;
@@ -1113,7 +1117,11 @@ static void exec_nostats_limited(int maxrun_limit)
 			jit_trace_pc_hit(pc, (2u << 16) | (opcode & 0xffff));
 		if (opcode == 0x4e72 && Uae2026OpcodeTestModeHandleStopTrailerAt(pc))
 			return;
+		Uae2026JitHelperBegin(pc,
+			UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
+				UAE2026_JIT_HELPER_EXACT_OPCODE));
 		(*cpufunctbl[opcode])(opcode);
+		Uae2026JitHelperClear();
 		cpu_check_ticks();
 		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL) || ++run_count >= maxrun_limit)
 			return;
@@ -1414,6 +1422,9 @@ jit_pctrace_done:
 			   pointer pair before the canonical interpreter handler advances pc_p. */
 			regs.pc_oldp = regs.pc_p;
 			Uae2026JitPublishTraceInstructionState(hist->guest_pc, (uae_u16)opcode);
+			Uae2026JitHelperBegin(hist->guest_pc,
+				UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
+					UAE2026_JIT_HELPER_EXACT_OPCODE));
 			if (jit_guest_instruction_observer_enabled())
 				jit_guest_path_record_trace(jit_current_interp_pc);
 			if (jit_trace_target_pc(jit_current_interp_pc))
@@ -1425,6 +1436,7 @@ jit_pctrace_done:
 				return;
 			}
 			(*cpufunctbl[opcode])(opcode);
+			Uae2026JitHelperClear();
 			/* FULLMMU handlers update the logical PC but may leave pc_p anchored at
 			   the old block. Translate the retired successor/target before tracing
 			   another opcode, especially across BSR/JSR/RTS/RTE. */

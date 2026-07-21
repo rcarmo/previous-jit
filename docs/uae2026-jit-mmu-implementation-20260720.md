@@ -195,6 +195,40 @@ Focused evidence:
 - `/workspace/tmp/previous-moves-postinc-fault-matrix-all` — all forced-fault
   cells 15/15, score 100, handoff disabled.
 
+### Runtime SFC/DFC selection
+
+The next boot discriminator showed that postincrement recovery was correct but
+`_copyoutmsg` still produced `/e\0c/ma\0...`: the first post-fault native
+`MOVES.B D0,(A1)+` advanced A1 without writing the user byte `t`. A helper-entry
+probe captured the exact opcode and source (`0x0e19`, `D0=0x74`, `A1=3`), while
+no `dfc_put_byte(3, 0x74)` call occurred.
+
+The unity compiler preamble deliberately undefines `FULLMMU`, so the MOVES
+runtime helper had compiled its SFC/DFC branches out and used ordinary physical
+bank accesses even when `regs.mmu_enabled` was true. The interpreter-resumed
+`e` iteration used DFC correctly; the first native `t` iteration did not.
+MOVES now selects Previous's SFC/DFC helpers from runtime MMU state and retains
+the existing physical/bank path only when the MMU is inactive. This preserves
+function-code semantics independently of the vendored compiler's compile-time
+core variant.
+
+Focused evidence after the repair:
+
+- serial unity-object rebuild and link passed; rebuilt `jit_runtime_moves`
+  disassembly contains calls/tail-calls to all six `sfc_get_*`/`dfc_put_*`
+  helpers;
+- `/workspace/tmp/previous-moves-runtime-fc-focused-0a16db6-20260721-022613`
+  — ordinary MOVES plus four forced-fault forms, 5/5, score 100;
+- `/workspace/tmp/previous-moves-runtime-fc-ram-focused-0a16db6-20260721-022726`
+  — the same five cells at `0x04008000` with RAM/MMU JIT and RTE handoff
+  disabled, 5/5, score 100;
+- `/workspace/tmp/previous-copyout-native-dfc3-runtime-fc-20260721-022828`
+  — rebuilt no-handoff boot reaches the original `_copyoutmsg` demand fault,
+  advances beyond the former `_execve`/directory-vnode denial to a later
+  `0x03ffffd4` user-stack demand fault, and continues into Ethernet polling.
+  The VNC driver timed out during its initial framebuffer capture, so this is a
+  boot-frontier discriminator, not desktop evidence.
+
 ## Final gates still required
 
 Before push, run serially on an idle host:

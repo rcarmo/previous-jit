@@ -1302,6 +1302,14 @@ extern "C" void Uae2026JitExactBsr(uae_u32 opcode);
 extern "C" void Uae2026JitExactJsr(uae_u32 opcode);
 extern "C" uae_u32 Uae2026JitMmuGetLong(uae_u32 addr);
 extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
+/* Previous's SFC/DFC helpers have C linkage. The vendored preamble
+   deliberately undefines FULLMMU, so select these from runtime MMU state. */
+extern "C" uae_u32 sfc_get_long(uae_u32 addr);
+extern "C" uae_u16 sfc_get_word(uae_u32 addr);
+extern "C" uae_u8 sfc_get_byte(uae_u32 addr);
+extern "C" void dfc_put_long(uae_u32 addr, uae_u32 value);
+extern "C" void dfc_put_word(uae_u32 addr, uae_u16 value);
+extern "C" void dfc_put_byte(uae_u32 addr, uae_u8 value);
 
 static inline void jit_emit_runtime_helper_barrier(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2);
 static inline void jit_emit_runtime_helper_barrier_arch_pc(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2);
@@ -4856,40 +4864,42 @@ static void jit_runtime_moves(uae_u32 opcode)
         if (!pc_already_advanced)
             m68k_incpc(fixed_length);
         regs.fault_pc = m68k_getpc();
-#ifdef FULLMMU
-        if (size == 1)
-            dfc_put_byte(ea, register_source);
-        else if (size == 2)
-            dfc_put_word(ea, register_source);
-        else
-            dfc_put_long(ea, register_source);
-#else
-        if (size == 1)
+        if (regs.mmu_enabled) {
+            /* MOVES uses DFC, not the current data address space. This JIT
+               translation unit is built without FULLMMU while Previous can
+               still enable its 68040 MMU at runtime. */
+            if (size == 1)
+                dfc_put_byte(ea, register_source);
+            else if (size == 2)
+                dfc_put_word(ea, register_source);
+            else
+                dfc_put_long(ea, register_source);
+        } else if (size == 1) {
             put_byte(ea, register_source);
-        else if (size == 2)
+        } else if (size == 2) {
             put_word(ea, register_source);
-        else
+        } else {
             put_long(ea, register_source);
-#endif
+        }
         return;
     }
 
     uae_u32 memory_value;
-#ifdef FULLMMU
-    if (size == 1)
-        memory_value = (uae_u8)sfc_get_byte(ea);
-    else if (size == 2)
-        memory_value = (uae_u16)sfc_get_word(ea);
-    else
-        memory_value = sfc_get_long(ea);
-#else
-    if (size == 1)
+    if (regs.mmu_enabled) {
+        /* The reverse transfer is explicitly selected by SFC. */
+        if (size == 1)
+            memory_value = (uae_u8)sfc_get_byte(ea);
+        else if (size == 2)
+            memory_value = (uae_u16)sfc_get_word(ea);
+        else
+            memory_value = sfc_get_long(ea);
+    } else if (size == 1) {
         memory_value = (uae_u8)phys_get_byte(ea);
-    else if (size == 2)
+    } else if (size == 2) {
         memory_value = (uae_u16)phys_get_word(ea);
-    else
+    } else {
         memory_value = phys_get_long(ea);
-#endif
+    }
 
     /* Canonical read ordering commits An update only after a successful read;
        an address-register destination then wins if it aliases the EA register. */

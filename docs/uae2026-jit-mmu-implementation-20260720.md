@@ -55,6 +55,14 @@ complete logical/direct PC tuple. Writing only `regs.pc` double-counted a live
 `pc_p - pc_oldp` delta in `exec_nostats*`, shifting later logical PCs while the
 fault descriptor itself remained correct.
 
+Successful exact execution now retires its imported JIT-layout flags, SR, A7,
+and logical successor into the restart baseline before clearing transaction
+metadata. Compiled fallback imports the separately compiled handler's flags
+before this retirement step. A later restartable target/data fault therefore
+cannot restore `HelperBegin`'s pre-op CCR after the exact instruction has
+already committed. Mid-instruction data-access clears do not advance this
+baseline.
+
 ### Virtual execution identity
 
 MMU blocks are keyed by:
@@ -119,6 +127,7 @@ All runs used `PREVIOUS_UAE2026_JIT_RAM=1` and
 | Complete restart/fault matrix after exact-fallback publication | `/workspace/tmp/previous-opcode-harness-20260721-221937` | 14/14, score 100, handoff disabled |
 | Exact-success CCR/X consumed before RTE/user write fault | pre-fix `/workspace/tmp/previous-opcode-harness-20260721-225128`; focused fixed `/workspace/tmp/previous-opcode-harness-20260721-xflag-central`; matrix `/workspace/tmp/previous-opcode-harness-20260721-exact-flags-matrix` | pre-fix intermediate `SEQ` consumed stale Z; focused fixed 1/1; final restart/fault matrix 15/15, score 100, handoff disabled; final `SR=0x0014` retains RTE-restored X |
 | Exact helper begin preserves caller PC tuple | focused `/workspace/tmp/previous-opcode-harness-20260722-exact-pctuple-focused`; matrix `/workspace/tmp/previous-opcode-harness-20260722-exact-pctuple-matrix` | 1/1 then 15/15, score 100, RAM/MMU JIT, handoff disabled |
+| Exact success retires restart baseline | focused `/workspace/tmp/previous-opcode-harness-20260722-exact-retire-focused`; matrix `/workspace/tmp/previous-opcode-harness-20260722-exact-retire-matrix` | 1/1 then 15/15, score 100, RAM/MMU JIT, handoff disabled |
 
 A later RAM/MMU boot at
 `/workspace/tmp/previous-final-ram-mmu-nohandoff-fpu-fix-20260720-0530`

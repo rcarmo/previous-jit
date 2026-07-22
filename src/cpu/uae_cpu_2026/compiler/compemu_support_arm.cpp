@@ -8784,8 +8784,10 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     compemu_raw_mov_l_ri(REG_PAR1, (uae_u32)cft_map(opcode));
                     compemu_raw_mov_l_rr(REG_PAR2, R_REGSTRUCT);
                     compemu_raw_call((uintptr)cputbl[cft_map(opcode)]);
-                    compemu_raw_call((uintptr)Uae2026JitHelperClear);
+                    /* Clear retires exact state into the restart baseline, so
+                       import the handler-owned flags before clearing. */
                     compemu_raw_call((uintptr)Uae2026InterpreterFlagsToJit);
+                    compemu_raw_call((uintptr)Uae2026JitHelperClear);
 #ifdef USE_JIT_FPU
                     compemu_raw_call_preserve_nzcv((uintptr)jit_fpu_sync_to_shadow);
 #endif

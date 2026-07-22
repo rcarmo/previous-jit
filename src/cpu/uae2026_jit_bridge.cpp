@@ -204,6 +204,18 @@ static inline uae_u16 bridge_sr_with_jit_flags(uae_u16 sr)
 
 extern "C" void Uae2026JitHelperClear(void)
 {
+    if (bridge_helper_state.active &&
+        bridge_helper_state.kind == UAE2026_JIT_HELPER_EXACT_OPCODE) {
+        /* Exact success retires the whole instruction. Preserve its imported
+         * result as the baseline for a later restartable fault; otherwise
+         * catch restores HelperBegin's pre-op CCR after target translation. */
+        Uae2026JitLastFlags.cznv = jit_regflags.nzcv;
+        Uae2026JitLastFlags.x = jit_regflags.x;
+        Uae2026JitLastSr = bridge_sr_with_jit_flags(regs.sr);
+        Uae2026JitLastA7 = m68k_areg(regs, 7);
+        Uae2026JitLastInstructionPc = m68k_getpc();
+        mmu_opcode = 0xffffu;
+    }
     bridge_helper_state = {};
 }
 

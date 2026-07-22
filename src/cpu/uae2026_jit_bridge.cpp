@@ -226,7 +226,9 @@ extern "C" void Uae2026JitHelperBegin(uae_u32 op_pc, uae_u32 descriptor)
     bridge_helper_state.flag_authority = UAE2026_JIT_FLAGS_ARE_JIT;
     bridge_helper_state.phase = bridge_jit_helper_phase::pre_semantic;
 
-    regs.pc = op_pc;
+    /* Callers establish the complete logical/direct PC tuple before begin.
+     * Rewriting only regs.pc here double-counts any live pc_p-pc_oldp delta
+     * in exec_nostats and turns a valid successor into a shifted logical PC. */
     regs.fault_pc = op_pc;
     regs.instruction_pc = op_pc;
     regs.mmu_effective_addr = 0;

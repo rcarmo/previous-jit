@@ -49,6 +49,12 @@ semantic-helper authority handoff, MMIO fallback, and restart catch use the
 same conversion routines; restart snapshots stay in producer JIT layout until
 catch. Cached SR publication reads X from JIT bit 29 rather than bit 0.
 
+Exact helper begin records `op_pc`, `fault_pc`, and `instruction_pc` but does
+not rewrite `regs.pc`. Every caller has already established or derived the
+complete logical/direct PC tuple. Writing only `regs.pc` double-counted a live
+`pc_p - pc_oldp` delta in `exec_nostats*`, shifting later logical PCs while the
+fault descriptor itself remained correct.
+
 ### Virtual execution identity
 
 MMU blocks are keyed by:
@@ -112,6 +118,7 @@ All runs used `PREVIOUS_UAE2026_JIT_RAM=1` and
 | RTE to user then non-restartable long write | pre-fix `/workspace/tmp/previous-opcode-harness-20260721-220506`; fixed `/workspace/tmp/previous-opcode-harness-20260721-221629` | pre-fix exact-handler successor `04008008` collapsed to opcode PC `04008002`; fixed 1/1, score 100 |
 | Complete restart/fault matrix after exact-fallback publication | `/workspace/tmp/previous-opcode-harness-20260721-221937` | 14/14, score 100, handoff disabled |
 | Exact-success CCR/X consumed before RTE/user write fault | pre-fix `/workspace/tmp/previous-opcode-harness-20260721-225128`; focused fixed `/workspace/tmp/previous-opcode-harness-20260721-xflag-central`; matrix `/workspace/tmp/previous-opcode-harness-20260721-exact-flags-matrix` | pre-fix intermediate `SEQ` consumed stale Z; focused fixed 1/1; final restart/fault matrix 15/15, score 100, handoff disabled; final `SR=0x0014` retains RTE-restored X |
+| Exact helper begin preserves caller PC tuple | focused `/workspace/tmp/previous-opcode-harness-20260722-exact-pctuple-focused`; matrix `/workspace/tmp/previous-opcode-harness-20260722-exact-pctuple-matrix` | 1/1 then 15/15, score 100, RAM/MMU JIT, handoff disabled |
 
 A later RAM/MMU boot at
 `/workspace/tmp/previous-final-ram-mmu-nohandoff-fpu-fix-20260720-0530`
@@ -319,6 +326,17 @@ Evidence:
   window with zero panic, IPC `strange rights`, or bad-exception-frame matches;
   desktop was not reached, so this is a contract-restoration proof rather than
   the final no-handoff gate pass.
+
+## Final no-handoff regression frontier
+
+The corrected 1200-second no-handoff run at
+`/workspace/tmp/previous-final-ram-mmu-nohandoff-0ee0eea-20260721-231728`
+reproduced the `3b33cc9` result: 162 ESP selects, 282 SCSI commands, then
+`ipc_object_copyout_type_compat: strange rights`; desktop was not reached.
+Commit-range audit narrowed the regression from the clean dispatch-poll run at
+`6b4bde1` to `3b33cc9`, which first wrapped every exact path in helper begin.
+Those new `exec_nostats*` callers exposed the partial-PC rewrite described
+above. A final long gate after removing that rewrite remains required.
 
 ## Final gates still required
 

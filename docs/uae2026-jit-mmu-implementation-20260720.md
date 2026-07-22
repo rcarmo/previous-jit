@@ -338,6 +338,41 @@ Commit-range audit narrowed the regression from the clean dispatch-poll run at
 Those new `exec_nostats*` callers exposed the partial-PC rewrite described
 above. A final long gate after removing that rewrite remains required.
 
+## Specialty-boundary flag authority
+
+RAM/MMU blocks return to the outer native dispatcher at every keyed edge. The
+unity compiler stores CCR/X in `jit_regflags`, while Previous's `MakeSR()`,
+interrupt entry, exception frames and RTE use the separately linked legacy
+`regflags` layout. The dispatcher previously called `MakeSR()` and
+`m68k_do_specialties()` without converting those words. An interrupt accepted
+between a native CMP block and a standalone Bcc therefore stacked stale CCR;
+RTE restored that stale value, and the otherwise-correct branch selected a Mach
+IPC panic arm.
+
+The specialty boundary now uses the same central conversions as inline exact
+fallback: JIT-to-Previous before `MakeSR()` and Previous-to-JIT after specialty
+handling, including the path that returns from the compiled loop. No opcode or
+guest address is special-cased.
+
+Focused evidence:
+
+- provenance run `/workspace/tmp/previous-copyout-native-edge-ring-29dfdcb-20260722-182108`
+  attributed the bad target to the valid optlev-2 standalone BHI block at
+  `0x04057996`; the final edge changed from the repeated correct
+  `0x04057996 -> 0x04057998` to `0x04057996 -> 0x040579a6` with operands
+  `D0=0x11`, `D1=0x10`;
+- deterministic two-sided oracle
+  `/workspace/tmp/previous-specialty-flag-sync-oracle-20260722-194702` forces
+  the harmless `SPCFLAG_JIT_END_COMPILE` specialty after native CMP: disabling
+  the conversion enters the successor with stale `SR=0x2700`, while the normal
+  path enters it with the exact CMP result `SR=0x2709` (N+C);
+- no-handoff run
+  `/workspace/tmp/previous-specialty-flag-sync-boot2-29dfdcb-20260722-194812`
+  completed the full 900-second desktop window with zero
+  `ipc_right_copyin_header` or `ipc_object_copyout_type_compat` rights panic.
+  It remains at the next frontier after `root on sd0`, repeatedly handling
+  zero-address access errors; desktop was not reached.
+
 ## Final gates still required
 
 Before push, run serially on an idle host:

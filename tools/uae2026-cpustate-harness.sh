@@ -196,6 +196,33 @@ PIN=$(timeout "$WAIT" env HOME="$WORK/home" SDL_AUDIODRIVER=dummy DISPLAY="$DISP
   PREVIOUS_UAE2026_JIT_BOOTSTRAP=0 "$BIN" 2>&1 | grep -c "PIN_ATTEMPT")
 if [[ "$PIN" -ge 1 ]]; then PASS=$((PASS+1)); printf '  PASS %-28s PIN_ATTEMPT=%s (detector LIVE, refuses locked)\n' "regalloc-detector-live" "$PIN"; else FAIL=$((FAIL+1)); FAILED+=("regalloc-detector-live"); printf '  FAIL %-28s PIN_ATTEMPT=0 (detector dead)\n' "regalloc-detector-live"; fi
 
+echo "=== SPECIALTY boundary CCR authority (native CMP -> specialty -> BHI) ==="
+# Force the harmless JIT_END_COMPILE specialty at the standalone BHI boundary.
+# The disabled control must expose stale legacy SR=2700; the production path
+# must convert the native CMP result C=1,N=1 and enter BHI with SR=2709.
+SP_HEX="B081 6204 7401 6002 7402"
+SP_INIT="1 2 0 0 0 0 0 0 0 0 0 0 0 0 0 4010000 2700"
+run_specialty_cell() {
+  timeout "$WAIT" env HOME="$WORK/home" SDL_AUDIODRIVER=dummy DISPLAY="$DISP" \
+    B2_TEST_HEX="$SP_HEX" B2_TEST_ADDR=0x01001000 B2_TEST_INIT="$SP_INIT" B2_TEST_DUMP=1 \
+    B2_TEST_TWO_PASS=1 B2_TEST_SECOND_PC=0x01001000 B2_JIT_MAXRUN=1 \
+    B2_TEST_FORCE_L2_RAM=1 B2_NATIVE_ASSERT_PC=0x01001002 \
+    B2_TEST_SPECIALTY_PC=0x01001002 ${1:-} \
+    PREVIOUS_UAE2026_JIT=1 PREVIOUS_UAE2026_JIT_RAM=1 B2_JIT_FORCE_TRANSLATE=1 \
+    PREVIOUS_UAE2026_JIT_BOOTSTRAP=0 "$BIN" 2>&1
+}
+SP_OFF=$(run_specialty_cell B2_TEST_DISABLE_SPECIALTY_FLAG_SYNC=1)
+SP_ON=$(run_specialty_cell)
+SP_OFF_SR=$(echo "$SP_OFF" | sed -n 's/^NATEXEC pc=01001002 .* sr=\([0-9a-fA-F]*\)$/\1/p' | tail -1)
+SP_ON_SR=$(echo "$SP_ON" | sed -n 's/^NATEXEC pc=01001002 .* sr=\([0-9a-fA-F]*\)$/\1/p' | tail -1)
+SP_OFF_INJECT=$(echo "$SP_OFF" | grep -c '^JIT_SPECIALTY_TEST inject pc=01001002')
+SP_ON_INJECT=$(echo "$SP_ON" | grep -c '^JIT_SPECIALTY_TEST inject pc=01001002')
+if [[ "$SP_OFF_SR" == "2700" && "$SP_ON_SR" == "2709" && "$SP_OFF_INJECT" -ge 1 && "$SP_ON_INJECT" -ge 1 ]]; then
+  PASS=$((PASS+1)); printf '  PASS %-28s off=%s on=%s (N+C imported)\n' "specialty-flag-authority" "$SP_OFF_SR" "$SP_ON_SR"
+else
+  FAIL=$((FAIL+1)); FAILED+=("specialty-flag-authority"); printf '  FAIL %-28s off=%s/%s on=%s/%s\n' "specialty-flag-authority" "${SP_OFF_SR:-missing}" "$SP_OFF_INJECT" "${SP_ON_SR:-missing}" "$SP_ON_INJECT"
+fi
+
 echo ""
 TOTAL=$((PASS+FAIL))
 echo "total=$TOTAL pass=$PASS fail=$FAIL skip=$SKIP"

@@ -167,6 +167,27 @@ void m68k_do_compile_execute(void)
 		jit_native_retired_cpu_cycles = 0;
 		((compiled_handler)(pushall_call_handler))();
 #if defined(CPU_AARCH64)
+		/* Test-only specialty-boundary oracle. JIT_END_COMPILE is consumed and
+		   cleared by m68k_do_specialties(), so this forces the real flag/SR seam
+		   once without fabricating a device interrupt or changing guest state. */
+		{
+			static bool injected = false;
+			static uae_u32 inject_pc = 0;
+			static bool inject_initialized = false;
+			if (!inject_initialized) {
+				const char *env = getenv("B2_TEST_SPECIALTY_PC");
+				inject_pc = env && *env ? (uae_u32)strtoul(env, NULL, 0) : 0;
+				inject_initialized = true;
+			}
+			if (!injected && inject_pc && (regs.pc & ~1u) == inject_pc) {
+				injected = true;
+				regs.spcflags |= SPCFLAG_JIT_END_COMPILE;
+				fprintf(stderr,
+					"JIT_SPECIALTY_TEST inject pc=%08x jit=%08x/%08x\n",
+					(unsigned)(regs.pc & ~1u), (unsigned)regflags.nzcv,
+					(unsigned)regflags.x);
+			}
+		}
 		{
 			const uae_u32 retired_cpu_cycles = jit_native_retired_cpu_cycles;
 			jit_native_retired_cpu_cycles = 0;
@@ -207,12 +228,23 @@ void m68k_do_compile_execute(void)
 #endif
 		jit_poll_interrupt_pins_for_dispatch();
 		if (SPCFLAGS_TEST(SPCFLAG_ALL)) {
-			/* Sync M68K SR from JIT flags before handling interrupts.
-			   The compiled code may have changed intmask via MOVE to SR
-			   but regs.sr in memory is stale. MakeSR reads regflags
-			   and reconstructs regs.sr. */
+			/* Generated blocks own the unity-renamed jit_regflags words;
+			   Previous's MakeSR(), exception and specialty code own legacy
+			   regflags.  A block-boundary interrupt between a native CMP and
+			   its successor Bcc must stack the just-produced CCR, not whatever
+			   legacy flags preceded the compiled block.  Convert both ways even
+			   when specialties request a return so the bridge cannot later
+			   overwrite exact legacy state from a stale JIT copy. */
+			const char *disable_sync = getenv("B2_TEST_DISABLE_SPECIALTY_FLAG_SYNC");
+			const bool sync_flags = !(disable_sync && *disable_sync &&
+				disable_sync[0] != '0');
+			if (sync_flags)
+				Uae2026JitFlagsToInterpreter();
 			MakeSR();
-			if (m68k_do_specialties())
+			const int leave_compiled_loop = m68k_do_specialties();
+			if (sync_flags)
+				Uae2026InterpreterFlagsToJit();
+			if (leave_compiled_loop)
 				return;
 		}
 	}

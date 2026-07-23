@@ -3422,6 +3422,23 @@ static inline void jit_endblock_runtime_pc(RR4 rr_pc, IM32 cycles)
     compemu_raw_endblock_pc_inreg(rr_pc, cycles);
 }
 
+/* Exact interpreter handlers using indirect-PC mode publish a logical target
+   in regs.pc only. In MMU mode regs.pc_p can still name the retired handler,
+   so translate that logical target before dispatch. */
+static inline void jit_endblock_fallback_logical_pc(IM32 cycles)
+{
+    if (jit_mmu_execution_key_active()) {
+        prepare_for_call_1();
+        prepare_for_call_2();
+        compemu_raw_mov_l_rm(REG_PAR1, (uintptr)&regs.pc);
+        compemu_raw_call((uintptr)Uae2026JitPrepareMmuDispatchTarget);
+        compemu_raw_endblock_mmu_dispatch(REG_RESULT, cycles);
+        return;
+    }
+    compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
+    compemu_raw_endblock_pc_inreg(REG_PC_TMP, cycles);
+}
+
 /* Constant/trace-known edges must publish the architectural virtual target;
    a translated host pointer is not reversible when pages are aliased. */
 static inline uae_u32* jit_endblock_const_pc(IM32 cycles, IMPTR host_pc,
@@ -6821,8 +6838,13 @@ static void recompile_block(void)
        perceived cache miss... */
     blockinfo* bi = get_blockinfo_addr(regs.pc_p);
 
-    Dif(!bi)
-        jit_abort("recompile_block");
+    /* A translation-generation/context change can retire the keyed block
+       between its countdown branch and this C slow path.  That is a normal
+       cache miss, not permission to dereference a physical-only match. */
+    if (!bi) {
+        execute_normal();
+        return;
+    }
     raise_in_cl_list(bi);
     execute_normal();
 }
@@ -7157,10 +7179,20 @@ static void prepare_block(blockinfo* bi)
 	jit_begin_write_window();
     set_target(current_compile_p);
     bi->direct_pen = (cpuop_func*)get_target();
-    compemu_raw_execute_normal((uintptr) & (bi->pc_p));
+#if defined(CPU_AARCH64)
+    compemu_raw_execute_normal_keyed((uintptr)&bi->pc_p,
+        (uintptr)&bi->guest_pc);
+#else
+    compemu_raw_execute_normal((uintptr)&bi->pc_p);
+#endif
 
     bi->direct_pcc = (cpuop_func*)get_target();
-    compemu_raw_check_checksum((uintptr) & (bi->pc_p));
+#if defined(CPU_AARCH64)
+    compemu_raw_check_checksum_keyed((uintptr)&bi->pc_p,
+        (uintptr)&bi->guest_pc);
+#else
+    compemu_raw_check_checksum((uintptr)&bi->pc_p);
+#endif
 
     flush_cpu_icache((void*)current_compile_p, (void*)target);
 	jit_end_write_window();
@@ -8099,7 +8131,13 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 #endif
 
         if (bi->count >= 0) { /* Need to generate countdown code */
-            compemu_raw_set_pc_i((uintptr)pc_hist[0].location);
+#if defined(CPU_AARCH64)
+            if (jit_mmu_execution_key_active())
+                compemu_raw_set_pc_full_i(pc_hist[0].guest_pc,
+                    (uintptr)pc_hist[0].location);
+            else
+#endif
+                compemu_raw_set_pc_i((uintptr)pc_hist[0].location);
             compemu_raw_dec_m((uintptr) & (bi->count));
             compemu_raw_maybe_recompile();
         }
@@ -8145,8 +8183,16 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
           if (jit_diag_enabled())
               jit_diag_optlev0_blocks++;
 #endif
-          /* Execute normally without keeping stats */
-            compemu_raw_exec_nostats((uintptr)pc_hist[0].location);
+          /* Execute normally without keeping stats. Under MMU the block's
+             translated host pointer is not an architectural address; publish
+             the recorded logical leader explicitly before entering C. */
+#if defined(CPU_AARCH64)
+            if (jit_mmu_execution_key_active())
+                compemu_raw_exec_nostats_keyed(block_m68k_pc,
+                    (uintptr)pc_hist[0].location);
+            else
+#endif
+                compemu_raw_exec_nostats((uintptr)pc_hist[0].location);
         } else {
 #if defined(CPU_AARCH64)
             if (jit_diag_enabled())
@@ -8814,8 +8860,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         if ((prop[cft_map(opcode)].cflow & fl_end_block) != 0) {
                             compemu_raw_mov_l_rm(0, (uintptr)specflags);
                             compemu_raw_maybe_do_nothing(retired_cycles);
-                            compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
-                            jit_endblock_runtime_pc(REG_PC_TMP, retired_cycles);
+                            jit_endblock_fallback_logical_pc(retired_cycles);
                             forced_interpreter_barrier = true;
                             break;
                         }
@@ -8848,7 +8893,12 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         data_check_end(12, 64);
 #endif
                         compemu_raw_maybe_do_nothing(retired_cycles);
-                        if (i == blocklen - 1 &&
+                        if (jit_mmu_execution_key_active()) {
+                            /* The fallback handler has already advanced logical
+                               regs.pc. Translate and dispatch that value rather
+                               than entering the host-to-logical set-PC stub. */
+                            jit_endblock_fallback_logical_pc(retired_cycles);
+                        } else if (i == blocklen - 1 &&
                             jit_block_verify_compile_active && block_m68k_pc == jit_block_verify_compile_pc) {
                             compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
                             jit_endblock_runtime_pc(REG_PC_TMP, retired_cycles);

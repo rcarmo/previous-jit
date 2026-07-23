@@ -661,6 +661,51 @@ LOWFUNC(NONE,WRITE,1,compemu_raw_execute_normal,(MEMR s))
 }
 LENDFUNC(NONE,WRITE,1,compemu_raw_execute_normal,(MEMR s))
 
+/* Invalid/checksum block stubs know both members of the execution key.  Load
+ * and publish that pair directly instead of reconstructing a guest PC from a
+ * translated host pointer; the latter is a physical/shadow address under the
+ * 68040 MMU and is not reversible. */
+STATIC_INLINE void compemu_raw_set_pc_full_from_memory(MEMR host_pc_addr,
+	MEMR guest_pc_addr)
+{
+	LOAD_U64(REG_WORK3, host_pc_addr);
+	LDR_xXi(REG_WORK1, REG_WORK3, 0);
+	LOAD_U64(REG_WORK3, guest_pc_addr);
+	LDR_wXi(REG_WORK2, REG_WORK3, 0);
+	const uintptr idx_pcp = (uintptr)&regs.pc_p - (uintptr)&regs;
+	const uintptr idx_pc = (uintptr)&regs.pc - (uintptr)&regs;
+	const uintptr idx_oldp = (uintptr)&regs.pc_oldp - (uintptr)&regs;
+	STR_xXi(REG_WORK1, R_REGSTRUCT, idx_pcp);
+	STR_xXi(REG_WORK1, R_REGSTRUCT, idx_oldp);
+	STR_wXi(REG_WORK2, R_REGSTRUCT, idx_pc);
+}
+
+STATIC_INLINE void compemu_raw_execute_normal_keyed(MEMR host_pc_addr,
+	MEMR guest_pc_addr)
+{
+	compemu_raw_set_pc_full_from_memory(host_pc_addr, guest_pc_addr);
+	uae_u32* branchadd = (uae_u32*)get_target();
+	B_i(0);
+	write_jmp_target(branchadd, (uintptr)popall_execute_normal);
+}
+
+STATIC_INLINE void compemu_raw_check_checksum_keyed(MEMR host_pc_addr,
+	MEMR guest_pc_addr)
+{
+	compemu_raw_set_pc_full_from_memory(host_pc_addr, guest_pc_addr);
+	uae_u32* branchadd = (uae_u32*)get_target();
+	B_i(0);
+	write_jmp_target(branchadd, (uintptr)popall_check_checksum);
+}
+
+STATIC_INLINE void compemu_raw_exec_nostats_keyed(IM32 guest_pc, IMPTR host_pc)
+{
+	compemu_raw_set_pc_full_i(guest_pc, host_pc);
+	uae_u32* branchadd = (uae_u32*)get_target();
+	B_i(0);
+	write_jmp_target(branchadd, (uintptr)popall_exec_nostats);
+}
+
 STATIC_INLINE void compemu_raw_execute_normal_cycles(MEMR s, IM32 cycles)
 {
 	LOAD_U64(REG_WORK3, (uintptr)&countdown);

@@ -41,6 +41,23 @@ static inline void jit_canonicalize_code_pc_if_ram_mmu(void)
 	regs.pc_oldp = regs.pc_p;
 }
 
+static inline uae_u16 jit_fetch_opcode_for_current_pc(uae_u32 pc)
+{
+	if (jit_allow_ram_dispatch_env() && regs.mmu_enabled) {
+		/* FULLMMU GET_OPCODE uses the imported data-view MMU accessor.  A code
+		   and data translation may legitimately expose different bytes at the
+		   same logical address (notably the low user page after an access-error
+		   RTE).  Translate through the instruction MMU, refresh the executable
+		   shadow, and decode the opcode from that code-host mapping. */
+		jit_publish_code_fetch_state(pc);
+		uae_u8 *host = (uae_u8 *)Uae2026JitMmuXlateCodeHost(pc);
+		regs.pc_p = host;
+		regs.pc_oldp = host;
+		return (uae_u16)(((uae_u16)host[0] << 8) | host[1]);
+	}
+	return (uae_u16)GET_OPCODE;
+}
+
 static inline bool legacy_needflags_enabled(void)
 {
 	return needflags != 0;
@@ -1023,7 +1040,7 @@ void exec_nostats(void)
 	const bool trace_enabled = jit_tracewin_enabled();
 	for (;;) {
 		uae_u32 before_pc = m68k_getpc();
-		uae_u32 opcode = GET_OPCODE;
+		uae_u32 opcode = jit_fetch_opcode_for_current_pc(before_pc);
 		jit_current_interp_pc = before_pc;
 		jit_current_interp_opcode = opcode;
 		bool trace_this = false;
@@ -1034,8 +1051,12 @@ void exec_nostats(void)
 			jit_guest_path_record_reference(before_pc);
 		if (jit_trace_target_pc(before_pc))
 			jit_trace_pc_hit(before_pc, (2u << 16) | (opcode & 0xffff));
-		if (opcode == 0x4e72 && Uae2026OpcodeTestModeHandleStopTrailerAt(before_pc))
+		if (opcode == 0x4e72 && Uae2026OpcodeTestModeHandleStopTrailerAt(before_pc)) {
+			/* The test STOP service owns SR/CCR.  Publish its MakeFromSR() result
+			   before the bridge ordinary-return path copies JIT flags back. */
+			Uae2026InterpreterFlagsToJit();
 			return;
+		}
 		Uae2026JitFlagsToInterpreter();
 		Uae2026JitHelperBegin(before_pc,
 			UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
@@ -1111,14 +1132,16 @@ static void exec_nostats_limited(int maxrun_limit)
 	if (maxrun_limit <= 0 || maxrun_limit > MAXRUN)
 		maxrun_limit = MAXRUN;
 	for (;;) {
-		uae_u32 opcode = GET_OPCODE;
 		const uae_u32 pc = m68k_getpc();
+		uae_u32 opcode = jit_fetch_opcode_for_current_pc(pc);
 		if (jit_guest_instruction_observer_enabled())
 			jit_guest_path_record_nostats(pc);
 		if (jit_trace_target_pc(pc))
 			jit_trace_pc_hit(pc, (2u << 16) | (opcode & 0xffff));
-		if (opcode == 0x4e72 && Uae2026OpcodeTestModeHandleStopTrailerAt(pc))
+		if (opcode == 0x4e72 && Uae2026OpcodeTestModeHandleStopTrailerAt(pc)) {
+			Uae2026InterpreterFlagsToJit();
 			return;
+		}
 		Uae2026JitFlagsToInterpreter();
 		Uae2026JitHelperBegin(pc,
 			UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
@@ -1383,12 +1406,12 @@ jit_pctrace_done:
 				}
 			}
 			cpu_history *hist = &pc_hist[blocklen++];
-			hist->location = (uae_u16 *)regs.pc_p;
 			/* Previous's FULLMMU handlers advance regs.pc while the translated
 			   host fetch pointer can remain fixed. Per-op re-anchoring below makes
 			   m68k_getpc() the exact logical PC for both update conventions. */
 			hist->guest_pc = m68k_getpc();
-			uae_u32 opcode = GET_OPCODE;
+			uae_u32 opcode = jit_fetch_opcode_for_current_pc(hist->guest_pc);
+			hist->location = (uae_u16 *)regs.pc_p;
 			/* GET_OPCODE is host-table ordered under direct addressing. Retain
 			   both the logical opcode and the complete maximum architectural
 			   encoding window; later instructions in this same trace may rewrite
@@ -1437,6 +1460,7 @@ jit_pctrace_done:
 			jit_strict_note_trace_op(jit_current_interp_pc, opcode);
 			if (opcode == 0x4e72 &&
 				Uae2026OpcodeTestModeHandleStopTrailerAt(hist->guest_pc)) {
+				Uae2026InterpreterFlagsToJit();
 				tick_inhibit = false;
 				return;
 			}

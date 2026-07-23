@@ -191,6 +191,7 @@ static uae_u32* jit_guest_path_ring = NULL;
 static unsigned long jit_guest_path_index = 0;
 static bool jit_guest_path_armed = false;
 static bool jit_guest_path_dumped = false;
+static unsigned long jit_guest_path_armed_index = 0;
 
 static void jit_guest_path_dump(const char* reason)
 {
@@ -250,24 +251,37 @@ extern "C" bool jit_guest_instruction_observer_enabled(void)
 static void jit_guest_path_record(uae_u32 pc)
 {
     static uae_u32 target = 0;
+    static uae_u32 arm_target = 0;
     static unsigned long target_after = 0;
     static unsigned long count_target = 0;
+    static unsigned long count_after_arm = 0;
     static bool initialized = false;
     if (!jit_guest_path_enabled())
         return;
     if (!initialized) {
         const char* env = getenv("B2_JIT_GUEST_PATH_TARGET");
         target = env && *env ? (uae_u32)strtoul(env, NULL, 0) : 0;
+        const char* arm_env = getenv("B2_JIT_GUEST_PATH_ARM_TARGET");
+        arm_target = arm_env && *arm_env ? (uae_u32)strtoul(arm_env, NULL, 0) : 0;
         const char* after_env = getenv("B2_JIT_GUEST_PATH_TARGET_AFTER");
         target_after = after_env && *after_env ? strtoul(after_env, NULL, 0) : 0;
         const char* count_env = getenv("B2_JIT_GUEST_PATH_COUNT");
         count_target = count_env && *count_env ? strtoul(count_env, NULL, 0) : 0;
+        const char* count_after_arm_env = getenv("B2_JIT_GUEST_PATH_COUNT_AFTER_ARM");
+        count_after_arm = count_after_arm_env && *count_after_arm_env ?
+            strtoul(count_after_arm_env, NULL, 0) : 0;
         initialized = true;
     }
-    if (jit_guest_path_arm_start_env() && !jit_guest_path_armed)
+    if (jit_guest_path_arm_start_env() && !jit_guest_path_armed) {
         jit_guest_path_armed = true;
-    if (!jit_guest_path_armed)
-        return;
+        jit_guest_path_armed_index = jit_guest_path_index;
+    }
+    if (!jit_guest_path_armed) {
+        if (!arm_target || pc != arm_target)
+            return;
+        jit_guest_path_armed = true;
+        jit_guest_path_armed_index = jit_guest_path_index;
+    }
     if (!jit_guest_path_ring) {
         jit_guest_path_ring = (uae_u32*)malloc(sizeof(uae_u32) * JIT_GUEST_PATH_CAPACITY);
         if (!jit_guest_path_ring) {
@@ -281,6 +295,9 @@ static void jit_guest_path_record(uae_u32 pc)
         jit_guest_path_dump("target");
     else if (count_target && jit_guest_path_index >= count_target)
         jit_guest_path_dump("count");
+    else if (count_after_arm &&
+        jit_guest_path_index - jit_guest_path_armed_index >= count_after_arm)
+        jit_guest_path_dump("count-after-arm");
 }
 
 static void jit_guest_instruction_retired(uae_u32 pc)

@@ -1426,6 +1426,11 @@ insretry:
     goto retry;
 }
 
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+extern bool jit_guest_instruction_observer_enabled(void);
+extern void jit_guest_path_record_native(uae_u32 pc);
+#endif
+
 static bool interp_lowpc_trace_enabled(void)
 {
 	static int enabled = -1;
@@ -1649,6 +1654,10 @@ static void m68k_run_mmu040 (void)
             Uint64 beforeCycles = nCyclesMainCounter;
 			mmu_opcode = -1;
 			mmu_opcode = opcode = x_prefetch (0);
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+			if (jit_guest_instruction_observer_enabled())
+				jit_guest_path_record_native(pc);
+#endif
 			interp_lowpc_trace_log("BEFORE", &interp_lowpc_trace_count, pc, opcode, 0);
 			cpu_cycles = (*cpufunctbl[opcode])(opcode);
 			ip_execprof_tick(pc, (uae_u16)opcode);

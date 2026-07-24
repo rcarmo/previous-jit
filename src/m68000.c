@@ -539,6 +539,18 @@ void Uae2026JitCpuCheckTicks(int cycles)
 				regs.intmask = intr;
 				doint();
 				set_special(SPCFLAG_INT);
+				/* Immediate delivery calls Exception() outside the toplevel
+				 * m68k_do_specialties dispatch point, so it must reproduce the
+				 * same JIT+MMU dispatch-target fixup that path performs.
+				 * Exception_mmu() publishes the architectural handler PC via
+				 * indirect m68k_setpci() but leaves pc_p/pc_oldp untouched; the
+				 * next JIT dispatcher iteration indexes its cache with the stale
+				 * pc_p, resuming the interrupted block with the freshly pushed
+				 * interrupt frame on A7 and walking the wrong page table
+				 * ("MMU invalid descriptor during table walk").  Translate the
+				 * explicit vector PC now so dispatch resumes in the handler. */
+				if (regs.mmu_enabled)
+					(void)Uae2026JitPrepareMmuDispatchTarget(regs.pc);
 			} else {
 				M68000_SetSpecial(SPCFLAG_INT);
 			}

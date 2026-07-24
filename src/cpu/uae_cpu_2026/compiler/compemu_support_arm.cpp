@@ -2964,6 +2964,8 @@ static inline bool jit_write_overlaps_checksum(const blockinfo* bi,
     return false;
 }
 
+extern "C" void Uae2026JitShadowSyncInvalidate(uae_u32 addr, uae_u32 size);
+
 static void jit_invalidate_guest_code_linear(uae_u32 address, uae_u32 size,
                                              bool trace,
                                              bool count_coherent_write)
@@ -3000,6 +3002,10 @@ static void jit_invalidate_guest_code_range(uae_u32 address, uae_u32 size,
 {
     if (size == 0)
         return;
+    /* Keep the MMU shadow-sync cache coherent with self-modifying / paged code:
+       a guest write into a code page must force that page to be re-synced to the
+       execution shadow on its next dispatch. */
+    Uae2026JitShadowSyncInvalidate(address, size);
     if (count_coherent_write)
         jit_coherent_write_count++;
     static const bool trace = [] {

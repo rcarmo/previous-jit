@@ -468,6 +468,66 @@ struct Uae2026JitBankCompat {
     int flags;
 };
 
+/* Generation-keyed shadow-sync cache.
+   Uae2026JitSyncCodeRangeToShadow copies an 8 KB code page word-by-word into the
+   execution shadow on every MMU dispatch. That dominates MMU-mode dispatch cost
+   (~8x slower than non-MMU) and makes emulated time crawl (~0.06x realtime),
+   which reads as a boot livelock.  Re-syncing is only needed when the page's
+   physical backing or contents changed.  Logical->physical remaps flush the ATC
+   and bump the MMU generation (Uae2026JitMmuTranslationChanged -> full JIT flush),
+   so a page synced at the current generation stays valid until either the
+   generation changes or the guest writes into that code page.  Cache (page_base,
+   generation); invalidate a page on guest code writes via
+   Uae2026JitShadowSyncInvalidate().  Env-gated for safe A/B testing. */
+extern "C" uae_u32 Uae2026JitMmuGeneration(void);
+
+#define UAE2026_SHADOW_SYNC_CACHE_ENTRIES 1024u
+static struct { uae_u32 page_base; uae_u32 gen; uae_u8 valid; }
+    g_shadow_sync_cache[UAE2026_SHADOW_SYNC_CACHE_ENTRIES];
+
+static inline bool uae2026_shadow_sync_cache_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        /* Default ON: the per-dispatch 8 KB shadow re-sync otherwise caps MMU
+           execution at ~0.06x realtime. Set B2_JIT_SHADOW_CACHE=0 to disable. */
+        const char *e = getenv("B2_JIT_SHADOW_CACHE");
+        cached = (e && *e && strcmp(e, "0") == 0) ? 0 : 1;
+    }
+    return cached != 0;
+}
+
+/* Returns true if this full page is already synced for the current generation.
+   Otherwise records it as synced and returns false (caller must sync). */
+static inline bool uae2026_shadow_page_already_synced(uae_u32 page_base)
+{
+    const uae_u32 gen = Uae2026JitMmuGeneration();
+    const uae_u32 idx = (page_base >> 13) & (UAE2026_SHADOW_SYNC_CACHE_ENTRIES - 1u);
+    if (g_shadow_sync_cache[idx].valid &&
+        g_shadow_sync_cache[idx].page_base == page_base &&
+        g_shadow_sync_cache[idx].gen == gen)
+        return true;
+    g_shadow_sync_cache[idx].page_base = page_base;
+    g_shadow_sync_cache[idx].gen = gen;
+    g_shadow_sync_cache[idx].valid = 1;
+    return false;
+}
+
+extern "C" void Uae2026JitShadowSyncInvalidate(uae_u32 addr, uae_u32 size)
+{
+    if (size == 0)
+        return;
+    const uae_u32 first = addr & ~0x1fffu;
+    const uae_u32 last = (addr + size - 1u) & ~0x1fffu;
+    for (uae_u32 p = first; ; p += 0x2000u) {
+        const uae_u32 idx = (p >> 13) & (UAE2026_SHADOW_SYNC_CACHE_ENTRIES - 1u);
+        if (g_shadow_sync_cache[idx].page_base == p)
+            g_shadow_sync_cache[idx].valid = 0;
+        if (p >= last)
+            break;
+    }
+}
+
 static void Uae2026JitSyncCodeRangeToShadow(uae_u32 addr, uae_u32 bytes)
 {
     if (!jit_MEMBaseDiff || bytes == 0)
@@ -479,6 +539,9 @@ static void Uae2026JitSyncCodeRangeToShadow(uae_u32 addr, uae_u32 bytes)
         return;
     uae_u8 *shadow = (uae_u8 *)(jit_MEMBaseDiff + addr);
     uae_u32 i = 0;
+    if (uae2026_shadow_sync_cache_enabled() && (addr & 0x1fffu) == 0 &&
+        bytes == 0x2000u && uae2026_shadow_page_already_synced(addr))
+        return; /* page already synced for this MMU generation */
     if (addr & 1u) {
         shadow[0] = (uae_u8)Uae2026JitPhysGetByte(addr);
         i = 1;

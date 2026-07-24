@@ -295,6 +295,7 @@ bool    basilisk_trace_after_table_ready = false;
 uint16  emulated_ticks               = 0;
 
 extern "C" void Uae2026JitCpuCheckTicks(int cycles);
+extern "C" int64_t Uae2026JitCyclesToNextDeadline(void);
 extern uintptr_t jit_MEMBaseDiff;
 
 extern "C" {
@@ -876,7 +877,16 @@ extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count)
 
 void cpu_do_check_ticks(void)
 {
-    Uae2026JitCpuCheckTicks(10000000 / 512);
+    /* Default synthetic batch (~19531 cycles = ~781us at 25MHz). Cap it to the
+     * next armed CycInt deadline so short periodic timers (500us hardclock =
+     * 12500 cycles) fire on time instead of being overshot every batch, which
+     * otherwise stretches the effective period ~3.7x and livelocks the NeXT
+     * kernel's hardclock/microtime calibration under JIT. */
+    int batch = 10000000 / 512;
+    int64_t next = Uae2026JitCyclesToNextDeadline();
+    if (next > 0 && next < (int64_t)batch)
+        batch = (int)next;
+    Uae2026JitCpuCheckTicks(batch);
 }
 
 void jit_one_tick(void)

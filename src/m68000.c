@@ -454,6 +454,18 @@ bool Uae2026OpcodeTestModeHandleExpectedException(int vector)
 	return true;
 }
 
+/* Cycles until the next armed CPU-cycle CycInt deadline, or -1 if none.
+ * Used to cap the JIT's synthetic CheckTicks batch so a short periodic timer
+ * (e.g. the 500us hardclock = 12500 cycles) is not perpetually overshot by the
+ * fixed ~19531-cycle batch, which stretches the effective timer period ~3.7x
+ * and livelocks the kernel's clock calibration. */
+int64_t Uae2026JitCyclesToNextDeadline(void)
+{
+	if (PendingInterrupt.type == CYC_INT_CPU && PendingInterrupt.time > 0)
+		return PendingInterrupt.time;
+	return -1;
+}
+
 void Uae2026JitCpuChargeCyclesNoEvents(int cycles)
 {
 	static int lastintr = 0;

@@ -123,6 +123,8 @@ static inline void jit_poll_interrupt_pins_for_dispatch(void)
 
 extern void jit_one_tick(void);
 extern "C" void Uae2026JitCpuChargeCyclesNoEvents(int cycles);
+extern "C" int Uae2026JitPendingDeadlineDue(void);
+extern "C" void Uae2026JitCpuCheckTicks(int cycles);
 
 void m68k_do_compile_execute(void)
 {
@@ -193,6 +195,16 @@ void m68k_do_compile_execute(void)
 			jit_native_retired_cpu_cycles = 0;
 			if (retired_cpu_cycles)
 				Uae2026JitCpuChargeCyclesNoEvents((int)retired_cpu_cycles);
+		}
+		/* Block-boundary CycInt drain: the retired-cycle charge above advances
+		   PendingInterrupt.time in emulated time; if an armed deadline is now due
+		   drain it here (adds no synthetic cycles) so periodic timers fire at
+		   emulated-time cadence at every block dispatch, without relying on the
+		   60Hz wall-clock tick (too coarse for the 500us hardclock) or a
+		   per-instruction retirement observer. */
+		{
+			if (Uae2026JitPendingDeadlineDue())
+				Uae2026JitCpuCheckTicks(0);
 		}
 		if (use_sync_ticks && !use_retirement_ticks) {
 			/* Drive the 60Hz tick by WALL-CLOCK at this safe block-dispatch

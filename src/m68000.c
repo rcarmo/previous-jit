@@ -466,6 +466,14 @@ int64_t Uae2026JitCyclesToNextDeadline(void)
 	return -1;
 }
 
+/* True when an armed CPU-cycle CycInt deadline has been reached (time <= 0) by
+ * the retired-cycle clock, so the JIT dispatcher can drain it at block-boundary
+ * (emulated-time) cadence without a per-instruction observer. */
+int Uae2026JitPendingDeadlineDue(void)
+{
+	return (PendingInterrupt.type == CYC_INT_CPU && PendingInterrupt.time <= 0) ? 1 : 0;
+}
+
 void Uae2026JitCpuChargeCyclesNoEvents(int cycles)
 {
 	static int lastintr = 0;

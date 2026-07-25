@@ -1038,8 +1038,13 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
         jit_block_verify_entry_reset();
         return;
     }
-    const uae_u32 native_stop_pc =
-        (uae_u32)get_virtual_address((uae_u8*)native.regs.pc_p);
+    /* native_stop_pc must be the LOGICAL (architectural) PC. regs still holds
+       the native run's final state here (snapshot_capture is a non-destructive
+       copy), so m68k_getpc() yields the logical successor PC. Using
+       get_virtual_address(native.regs.pc_p) only yields the direct/physical
+       address, which is garbage under a user-mode MMU and forces every
+       userland block to SKIP-NOREACH. */
+    const uae_u32 native_stop_pc = (uae_u32)m68k_getpc();
 
     /* Delta 2: INTERP REFERENCE with an exact retirement bound. The block
        builder terminates at control flow, while runtime-helper barriers can

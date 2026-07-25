@@ -1363,7 +1363,13 @@ jit_pctrace_done:
 		   traces one instruction; inhibiting here starves the 60Hz timer
 		   and prevents the Mac OS Device Manager from completing async I/O. */
 		/* tick_inhibit = false; — already false from compile_block */
-		uae_u32 verify_block_pc = get_virtual_address((uae_u8*)regs.pc_p);
+		/* Arm the block verifier on the LOGICAL (virtual) block PC. The run
+		   path keys on pc_hist[0].guest_pc == m68k_getpc(); get_virtual_address
+		   only yields the direct/physical address (pc_p - MEMBaseDiff), which
+		   diverges from the logical PC under a user-mode MMU. Keying arming on
+		   m68k_getpc() keeps entry_pc == block_pc so the verifier fires (and
+		   compares) in userland, not just kernel/ROM identity-mapped RAM. */
+		uae_u32 verify_block_pc = (uae_u32)m68k_getpc();
 		const bool verify_this_block = !jit_block_verify_reentrant && jit_verify_block_target_pc(verify_block_pc);
 		if (verify_this_block)
 			jit_block_verify_entry_capture(verify_block_pc);

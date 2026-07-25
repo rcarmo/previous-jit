@@ -3056,6 +3056,21 @@ void jit_notify_guest_memory_write(uae_u32 address, uae_u32 size)
     jit_invalidate_guest_code_range(address, size, true);
 }
 
+/* Device/DMA writes to guest memory (e.g. SCSI disk demand-paging) bypass the
+   CPU store path entirely, so the JIT is never told when executable code is
+   loaded via DMA. The interpreter re-reads memory every fetch and is immune;
+   the JIT caches compiled blocks and an execution shadow, so a page DMA'd in
+   from disk would run stale (op=ffff on an unmapped/old shadow). Invalidate
+   both the compiled blocks and the shadow-sync cache for the written range so
+   the next fetch recompiles/re-syncs from the freshly written memory. Called
+   from the device DMA write paths (C), hence extern "C". */
+extern "C" void Uae2026JitNotifyDeviceMemoryWrite(uae_u32 address, uae_u32 size)
+{
+    if (size == 0)
+        return;
+    jit_invalidate_guest_code_range(address, size, false);
+}
+
 static inline bool jit_mmu_execution_key_active(void)
 {
 #if defined(CPU_AARCH64)

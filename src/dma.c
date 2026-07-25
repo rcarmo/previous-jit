@@ -28,6 +28,13 @@
 
 #define LOG_DMA_LEVEL LOG_DEBUG
 
+/* JIT code-coherence for DMA-to-memory writes: DMA can load executable code
+   (SCSI/optical demand-paging) directly into guest RAM, bypassing the CPU store
+   path the JIT snoops. Notify the JIT so it discards stale compiled blocks and
+   re-syncs its execution shadow for the written range. No-op under the
+   interpreter (symbol resolves to the JIT unit; interpreter re-reads memory). */
+extern void Uae2026JitNotifyDeviceMemoryWrite(Uint32 address, Uint32 size);
+
 #define IO_SEG_MASK	0x1FFFF
 
 
@@ -411,6 +418,7 @@ void dma_esp_write_memory(void) {
         if (espdma_buf_size>0) {
             Log_Printf(LOG_WARN, "[DMA] Channel SCSI: Starting with %i residual bytes in DMA buffer.", espdma_buf_size);
         }
+        const Uint32 dma_wr_start = dma[CHANNEL_SCSI].next;
 
         while (dma[CHANNEL_SCSI].next<=dma[CHANNEL_SCSI].limit) {
             /* Fill DMA channel FIFO (only if limit < FIFO size) */
@@ -452,6 +460,8 @@ void dma_esp_write_memory(void) {
                 espdma_buf_limit = espdma_buf_size; /* Should be 0 */
             }
         }
+        if (dma[CHANNEL_SCSI].next > dma_wr_start)
+            Uae2026JitNotifyDeviceMemoryWrite(dma_wr_start, dma[CHANNEL_SCSI].next - dma_wr_start);
     } CATCH(prb) {
         Log_Printf(LOG_WARN, "[DMA] Channel SCSI: Bus error while writing to %08x",dma[CHANNEL_SCSI].next);
         dma[CHANNEL_SCSI].csr &= ~DMA_ENABLE;
@@ -480,6 +490,7 @@ void dma_esp_flush_buffer(void) {
                 espdma_buf_size-=4;
             }
             dma[CHANNEL_SCSI].next+=4;
+            Uae2026JitNotifyDeviceMemoryWrite(dma[CHANNEL_SCSI].next - 4, 4);
         } else {
             Log_Printf(LOG_WARN, "[DMA] Channel SCSI: Not flushing buffer. DMA done.");
         }

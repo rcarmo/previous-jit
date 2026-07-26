@@ -1099,6 +1099,7 @@ struct jit_block_verify_snapshot {
 static bool jit_block_verify_reentrant = false;
 static bool jit_block_verify_compile_active = false;
 static uae_u32 jit_block_verify_compile_pc = 0xffffffffu;
+static bool jit_block_verify_last_mismatch = false;
 static int jit_block_verify_compiled_ops = 0;
 static unsigned long jit_block_verify_log_count = 0;
 static unsigned long jit_block_verify_run_count = 0;
@@ -1198,6 +1199,7 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
         expected_regs.pc_oldp = actual_regs.pc_oldp;
     }
 
+    jit_block_verify_last_mismatch = false;
     bool mismatch = false;
     if (memcmp(&expected_regs, &actual_regs, sizeof(regs)) != 0)
         mismatch = true;
@@ -1213,6 +1215,7 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
     if (jit_block_verify_log_count >= 20)
         return;
 
+    jit_block_verify_last_mismatch = true;
     fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d mismatch=1\n", (unsigned)block_pc, blocklen);
     for (int i = 0; i < 16; i++) {
         if (expected_regs.regs[i] != actual_regs.regs[i]) {
@@ -1249,6 +1252,10 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
     }
     jit_block_verify_log_count++;
 }
+
+extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr);
+extern "C" void Uae2026JitFlagsToInterpreter(void);
+extern "C" void Uae2026InterpreterFlagsToJit(void);
 
 static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_cycles, uae_u32 block_pc)
 {
@@ -1320,9 +1327,33 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     InterruptFlags = 0;
     const int reference_ops = jit_block_verify_compiled_ops > 0
         ? jit_block_verify_compiled_ops : blocklen;
-    for (int step = 0; step < reference_ops; step++) {
-        uae_u32 opcode = get_opcode_cft_map((uae_u16)*(uae_u16*)regs.pc_p);
-        (*cpufunctbl[opcode])(opcode);
+    {
+        /* The replay must honour the same fetch-pointer contract the tracer
+           does. Previous's FULLMMU handlers advance the LOGICAL pc while
+           leaving the translated host fetch pointer anchored to the old block,
+           so reading the next opcode straight off regs.pc_p decodes whatever
+           happens to follow in the shadow. Under a user-mode MMU that is a
+           different page entirely, which is why every userland block replayed
+           into unrelated code and reported SKIP-NOREACH. Re-anchor pc_p from
+           the logical PC before every fetch, exactly as execute_normal() does. */
+        for (int step = 0; step < reference_ops; step++) {
+            const uae_u32 pc_now = (uae_u32)m68k_getpc() & ~1u;
+            const uintptr_t host = Uae2026JitMmuXlateCodeHost(pc_now);
+            if (!host)
+                break;
+            regs.pc_p = (uae_u8 *)host;
+            regs.pc_oldp = regs.pc_p;
+            const uae_u32 opcode = get_opcode_cft_map((uae_u16)*(uae_u16*)regs.pc_p);
+            Uae2026JitFlagsToInterpreter();
+            (*cpufunctbl[opcode])(opcode);
+            Uae2026InterpreterFlagsToJit();
+        }
+        const uae_u32 pc_end = (uae_u32)m68k_getpc() & ~1u;
+        const uintptr_t host_end = Uae2026JitMmuXlateCodeHost(pc_end);
+        if (host_end) {
+            regs.pc_p = (uae_u8 *)host_end;
+            regs.pc_oldp = regs.pc_p;
+        }
     }
     const bool interp_reached_stop = ((uae_u32)m68k_getpc() == native_stop_pc);
     if (!jit_block_verify_snapshot_capture(&interp)) {
@@ -1345,6 +1376,13 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
             (unsigned)block_pc, blocklen, reference_ops,
             (unsigned)native_stop_pc, (unsigned)m68k_getpc());
         jit_block_verify_compare(&interp, &native, block_pc, blocklen);
+        if (jit_block_verify_last_mismatch) {
+            /* Name the instructions. A mismatch is only actionable once the
+               offending block can be read as guest code. */
+            for (int i = 0; i < blocklen; i++)
+                fprintf(stderr, "  op[%d] pc=%08x opcode=%04x\n",
+                    i, (unsigned)pc_hist[i].guest_pc, (unsigned)pc_hist[i].opcode);
+        }
     } else
         fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d native_ops=%d SKIP-NOREACH interp_pc=%08x native_pc=%08x\n",
             (unsigned)block_pc, blocklen, reference_ops,

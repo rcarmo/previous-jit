@@ -1063,11 +1063,13 @@ static void ExceptionX (int nr, uaecptr address)
         }
         if (sc_file && sc_seq < sc_limit && (nr < 24 || nr > 31)) {
             MakeSR();
+            extern int64_t nCyclesMainCounter;
             fprintf(sc_file,
-                "%lu v=%d pc=%08x sr=%04x s=%d "
+                "%lu v=%d pc=%08x sr=%04x s=%d cyc=%lld "
                 "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
                 "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
                 ++sc_seq, nr, (unsigned)m68k_getpc(), (unsigned)regs.sr, (int)regs.s,
+                (long long)nCyclesMainCounter,
                 (unsigned)regs.regs[0], (unsigned)regs.regs[1],
                 (unsigned)regs.regs[2], (unsigned)regs.regs[3],
                 (unsigned)regs.regs[4], (unsigned)regs.regs[5],

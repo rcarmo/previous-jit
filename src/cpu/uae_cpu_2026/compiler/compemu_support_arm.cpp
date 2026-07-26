@@ -450,11 +450,18 @@ static void jit_guest_path_user_return(uae_u32 pc)
     if (last_s == 1 && now_s == 0) {
         if (emitted < limit) {
             ++emitted;
+            /* Emulated-cycle stamp: separates "the engines diverged" from
+             * "the engines reached the same point at a different emulated
+             * time". The guest reads the event-counter register, which is
+             * derived from this counter, so a cycle difference is guest
+             * visible. */
+            extern int64_t nCyclesMainCounter;
             fprintf(stderr,
-                "USERRET %lu v=%d pc=%08x ccr=%02x d0=%08x d1=%08x a0=%08x a7=%08x\n",
+                "USERRET %lu v=%d pc=%08x ccr=%02x cyc=%lld d0=%08x d1=%08x a0=%08x a7=%08x\n",
                 emitted, jit_last_exception_vector, (unsigned)pc,
                 (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
                            (GET_VFLG() << 1) | GET_CFLG()),
+                (long long)nCyclesMainCounter,
                 (unsigned)regs.regs[0], (unsigned)regs.regs[1],
                 (unsigned)regs.regs[8], (unsigned)m68k_areg(regs, 7));
             if ((emitted & 0x3f) == 0)

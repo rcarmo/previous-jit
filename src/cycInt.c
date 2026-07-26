@@ -215,6 +215,29 @@ void CycInt_AcknowledgeInterrupt(void) {
 void CycInt_AddRelativeInterruptCycles(Sint64 CycleTime, interrupt_id Handler) {
 	assert(CycleTime >= 0);
 	cycint_probe(0, (int)Handler);
+	{
+		/* B2_CYCINT_TRACE=<n>: name the handler and deadline of the first n
+		 * armed CPU-cycle interrupts. Two runs of the same engine must produce
+		 * an identical stream; anything else means a device deadline is being
+		 * computed from something other than emulated time, which makes the
+		 * whole run nondeterministic and defeats any engine-to-engine differ. */
+		static unsigned long n = 0;
+		static unsigned long limit = 0;
+		static int initialized = 0;
+		extern int64_t nCyclesMainCounter;
+		if (!initialized) {
+			const char *env = getenv("B2_CYCINT_TRACE");
+			limit = (env && *env) ? strtoul(env, NULL, 0) : 0;
+			initialized = 1;
+		}
+		if (n < limit) {
+			++n;
+			fprintf(stderr, "CYCARM %lu handler=%d cycles=%lld total=%lld pc=%08x\n",
+				n, (int)Handler, (long long)CycleTime,
+				(long long)nCyclesMainCounter, (unsigned)m68k_getpc());
+			fflush(stderr);
+		}
+	}
 
 	/* Update list cycle counts with current PendingInterruptCount before adding a new int, */
 	/* because CycInt_SetNewInterrupt can change the active int / PendingInterruptCount */

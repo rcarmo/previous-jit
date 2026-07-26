@@ -1261,6 +1261,16 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
 
     jit_block_verify_last_mismatch = true;
     fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d mismatch=1\n", (unsigned)block_pc, blocklen);
+    if (jit_block_verify_entry_valid) {
+        /* Both runs start from this state, so a divergence in something the
+           block only READS has to be explained by how each engine materialised
+           it, not by what the block did. */
+        fprintf(stderr, "  entry sr=%04x nzcv=%08x x=%08x d0=%08x\n",
+            (unsigned)jit_block_verify_entry_state.regs.sr,
+            (unsigned)jit_block_verify_entry_state.flags.nzcv,
+            (unsigned)jit_block_verify_entry_state.flags.x,
+            (unsigned)jit_block_verify_entry_state.regs.regs[0]);
+    }
     for (int i = 0; i < 16; i++) {
         if (expected_regs.regs[i] != actual_regs.regs[i]) {
             fprintf(stderr, "  reg[%d] interp=%08x native=%08x\n", i,
@@ -1828,6 +1838,21 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op, uae_u32 pc)
 	   confined to the kernel's spl() paths; measured throughput is unchanged
 	   (2216 trap returns in the same wall time either way). */
 	if (table68k[op].mnemo == i_MV2SR && table68k[op].size == sz_word)
+		return true;
+
+	/* MOVE SR,<ea> for the same reason, from the other direction: it READS the
+	   CCR, and the compiled path does not see the live one.  Measured on a
+	   four-instruction kernel block whose entry CCR is 0x14:
+
+	     op[0] 4284 clr.l d4      ; -> X=1 N=0 Z=1 V=0 C=0, i.e. CCR 0x14
+	     op[2] 40c0 move sr,d0
+	     interp d0=00002714   native d0=00002700
+
+	   The interpreter reports the CCR that clr.l just produced; the compiled
+	   path reports zero.  The kernel reads SR this way in its spl()/splx()
+	   pair, so a wrong CCR here is saved and later restored across the
+	   critical section. */
+	if (table68k[op].mnemo == i_MVSR2)
 		return true;
 
 	/* Environment-gated barriers for debugging (B2_JIT_RESTORE_BARRIERS).

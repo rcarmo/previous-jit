@@ -1030,6 +1030,58 @@ static void Exception_mmu (int nr, uaecptr oldpc)
 static void ExceptionX (int nr, uaecptr address)
 {
     {
+        /* B2_SYSCALL_TRACE=<path>: engine-independent checkpoint stream.
+           Every guest exception is logged in the SAME format by the interpreter
+           and by the JIT (both reach this function), so the two streams can be
+           diffed directly to find the first point where the engines disagree.
+           Vector 36 is NeXT's TRAP #4 syscall gate; vectors 2/3 are access and
+           address faults. Interrupt autovectors (24..31) are excluded because
+           their timing legitimately differs between engines. */
+        static int sc_init = 0;
+        static FILE *sc_file = NULL;
+        static unsigned long sc_seq = 0;
+        static unsigned long sc_limit = 0;
+        static unsigned long sc_dump_at = 0;
+        if (!sc_init) {
+            sc_init = 1;
+            const char *path = getenv("B2_SYSCALL_TRACE");
+            if (path && *path)
+                sc_file = fopen(path, "w");
+            const char *lim = getenv("B2_SYSCALL_TRACE_LIMIT");
+            sc_limit = (lim && *lim) ? strtoul(lim, NULL, 0) : 100000;
+            const char *dat = getenv("B2_SYSCALL_TRACE_DUMP_AT");
+            sc_dump_at = (dat && *dat) ? strtoul(dat, NULL, 0) : 0;
+        }
+        if (sc_file && sc_seq < sc_limit && (nr < 24 || nr > 31)) {
+            MakeSR();
+            fprintf(sc_file,
+                "%lu v=%d pc=%08x sr=%04x s=%d "
+                "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
+                "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
+                ++sc_seq, nr, (unsigned)m68k_getpc(), (unsigned)regs.sr, (int)regs.s,
+                (unsigned)regs.regs[0], (unsigned)regs.regs[1],
+                (unsigned)regs.regs[2], (unsigned)regs.regs[3],
+                (unsigned)regs.regs[4], (unsigned)regs.regs[5],
+                (unsigned)regs.regs[6], (unsigned)regs.regs[7],
+                (unsigned)regs.regs[8], (unsigned)regs.regs[9],
+                (unsigned)regs.regs[10], (unsigned)regs.regs[11],
+                (unsigned)regs.regs[12], (unsigned)regs.regs[13],
+                (unsigned)regs.regs[14], (unsigned)regs.regs[15]);
+            if ((sc_seq & 0x3f) == 0)
+                fflush(sc_file);
+            if (sc_dump_at && sc_seq == sc_dump_at) {
+                fflush(sc_file);
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+                /* Dump the retired-instruction path captured up to this exact
+                   exception. Both engines feed the same ring, so the two dumps
+                   are directly diffable. */
+                extern void jit_guest_path_dump_external(const char *reason);
+                jit_guest_path_dump_external("syscall-checkpoint");
+#endif
+            }
+        }
+    }
+    {
         /* B2_INT_RATE probe: exception-vector histogram. Vector 2 (access
            fault) and the trap vectors distinguish a user thread that faulted
            and was never resumed from one that simply stopped being scheduled. */

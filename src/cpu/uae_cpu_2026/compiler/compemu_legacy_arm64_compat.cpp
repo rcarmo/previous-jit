@@ -1057,6 +1057,7 @@ void exec_nostats(void)
 			/* The test STOP service owns SR/CCR.  Publish its MakeFromSR() result
 			   before the bridge ordinary-return path copies JIT flags back. */
 			Uae2026InterpreterFlagsToJit();
+			jit_canonicalize_code_pc_if_ram_mmu();
 			return;
 		}
 		Uae2026JitFlagsToInterpreter();
@@ -1115,8 +1116,21 @@ void exec_nostats(void)
 			jit_trace_table_log("TRACEWINJTAB", trace_count, after_pc);
 		}
 		cpu_check_ticks();
-		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL))
+		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL)) {
+			/* The dispatcher indexes cache_tags with regs.pc_p, not regs.pc.
+			 * Interpreter handlers update the architectural PC but can leave the
+			 * translated host fetch pointer on the instruction we just left, so
+			 * returning here without re-anchoring makes the next dispatch re-enter
+			 * THIS block instead of the branch target. The block then re-executes
+			 * its control-transfer instruction once per entry until the optlev-0
+			 * countdown expires and recompile_block()/execute_normal() re-anchor
+			 * the pointer -- i.e. a BSR pushed ten return addresses before control
+			 * finally moved, silently corrupting the guest stack.
+			 * execute_normal() already re-anchors on entry; do the same on every
+			 * exit from the interpreted block path. */
+			jit_canonicalize_code_pc_if_ram_mmu();
 			return;
+		}
 	}
 }
 
@@ -1142,6 +1156,7 @@ static void exec_nostats_limited(int maxrun_limit)
 			jit_trace_pc_hit(pc, (2u << 16) | (opcode & 0xffff));
 		if (opcode == 0x4e72 && Uae2026OpcodeTestModeHandleStopTrailerAt(pc)) {
 			Uae2026InterpreterFlagsToJit();
+			jit_canonicalize_code_pc_if_ram_mmu();
 			return;
 		}
 		Uae2026JitFlagsToInterpreter();
@@ -1152,8 +1167,13 @@ static void exec_nostats_limited(int maxrun_limit)
 		Uae2026InterpreterFlagsToJit();
 		Uae2026JitHelperClear();
 		cpu_check_ticks();
-		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL) || ++run_count >= maxrun_limit)
+		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL) || ++run_count >= maxrun_limit) {
+			/* Same re-anchoring contract as exec_nostats(): the next dispatch
+			 * indexes cache_tags with regs.pc_p, so it must describe the PC we are
+			 * actually leaving on, not the instruction we started from. */
+			jit_canonicalize_code_pc_if_ram_mmu();
 			return;
+		}
 	}
 }
 

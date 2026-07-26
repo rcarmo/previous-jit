@@ -193,6 +193,10 @@ enum { JIT_GUEST_PATH_CAPACITY = 16777216 };
 /* This diagnostic buffer is 64 MiB. Allocate it only when capture is armed so
    ordinary emulator runs pay neither resident-memory nor BSS-image cost. */
 static uae_u32* jit_guest_path_ring = NULL;
+/* Parallel ring of the stack pointer at each retired instruction. A stack
+   imbalance is the cheapest engine-to-engine divergence to spot, and recording
+   it alongside the PC turns the path capture into a direct differ. */
+static uae_u32* jit_guest_path_sp_ring = NULL;
 static unsigned long jit_guest_path_index = 0;
 static bool jit_guest_path_armed = false;
 static bool jit_guest_path_dumped = false;
@@ -210,11 +214,13 @@ static void jit_guest_path_dump(const char* reason)
         reason, jit_guest_path_index - start, jit_guest_path_index,
         path ? path : "stderr");
     if (path && *path) {
-        FILE* f = fopen(path, "wb");
+        FILE* f = fopen(path, "w");
         if (f) {
             for (unsigned long i = start; i < jit_guest_path_index; i++) {
-                const uae_u32 pc = jit_guest_path_ring[i & (JIT_GUEST_PATH_CAPACITY - 1)];
-                fwrite(&pc, sizeof(pc), 1, f);
+                const unsigned long slot = i & (JIT_GUEST_PATH_CAPACITY - 1);
+                fprintf(f, "%lu %08x %08x\n", i,
+                    (unsigned)jit_guest_path_ring[slot],
+                    (unsigned)(jit_guest_path_sp_ring ? jit_guest_path_sp_ring[slot] : 0));
             }
             fclose(f);
         }
@@ -224,6 +230,13 @@ static void jit_guest_path_dump(const char* reason)
                 i, jit_guest_path_ring[i & (JIT_GUEST_PATH_CAPACITY - 1)]);
     }
     fprintf(stderr, "JIT_GUEST_PATH_END reason=%s\n", reason);
+}
+
+/* Callable from the shared exception path in newcpu.c so a checkpoint differ can
+   dump the instruction stream at an exact engine-independent event. */
+extern "C" void jit_guest_path_dump_external(const char* reason)
+{
+    jit_guest_path_dump(reason);
 }
 
 extern void jit_one_tick(void);
@@ -289,13 +302,19 @@ static void jit_guest_path_record(uae_u32 pc)
     }
     if (!jit_guest_path_ring) {
         jit_guest_path_ring = (uae_u32*)malloc(sizeof(uae_u32) * JIT_GUEST_PATH_CAPACITY);
-        if (!jit_guest_path_ring) {
+        jit_guest_path_sp_ring = (uae_u32*)malloc(sizeof(uae_u32) * JIT_GUEST_PATH_CAPACITY);
+        if (!jit_guest_path_ring || !jit_guest_path_sp_ring) {
             fprintf(stderr, "JIT_GUEST_PATH allocation failed (%lu bytes)\n",
                 (unsigned long)(sizeof(uae_u32) * JIT_GUEST_PATH_CAPACITY));
             abort();
         }
     }
-    jit_guest_path_ring[jit_guest_path_index++ & (JIT_GUEST_PATH_CAPACITY - 1)] = pc;
+    {
+        const unsigned long slot = jit_guest_path_index & (JIT_GUEST_PATH_CAPACITY - 1);
+        jit_guest_path_ring[slot] = pc;
+        jit_guest_path_sp_ring[slot] = (uae_u32)m68k_areg(regs, 7);
+        jit_guest_path_index++;
+    }
     if (target && jit_guest_path_index >= target_after && pc == target)
         jit_guest_path_dump("target");
     else if (count_target && jit_guest_path_index >= count_target)

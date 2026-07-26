@@ -1357,10 +1357,32 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     jit_block_verify_compile_active = false;
     jit_block_verify_compile_pc = 0xffffffffu;
 
+    /* Count what the native run actually retires. countdown = -1 was assumed
+       to confine it to one block; it does not. compemu_raw_maybe_do_nothing()
+       tests regs.spcflags FIRST and skips the countdown path entirely when it
+       is zero, so with spcflags cleared -- which this verifier does
+       deliberately -- every block falls through its epilogue and chains. Each
+       block's native stop PC is the entry PC of the next block verified, which
+       is why bounding the replay by an op count reported SKIP-NOREACH for
+       anything that chained, i.e. most of the kernel.
+
+       Rather than fight the chaining, measure it: native code accumulates a
+       fixed per-instruction charge into jit_native_retired_cpu_cycles, so the
+       delta across the run divides out to an exact retired-instruction count,
+       however many blocks it spanned. Replaying that many instructions makes
+       the two spans equivalent by construction. */
+    const uae_u32 retired_before = jit_native_retired_cpu_cycles;
     countdown = -1;
     jit_block_verify_reentrant = true;
     ((jit_compiled_handler)pushall_call_handler)();
     jit_block_verify_reentrant = false;
+    const int retired_per_op = scaled_cycles(4 * CYCLE_UNIT) / CYCLE_UNIT;
+    const uae_u32 retired_delta = jit_native_retired_cpu_cycles - retired_before;
+    const int native_retired_ops = (retired_per_op > 0)
+        ? (int)(retired_delta / (uae_u32)retired_per_op) : 0;
+    /* The outer dispatcher drains this counter on return from its own
+       pushall_call_handler; this nested run must not leave it charged. */
+    jit_native_retired_cpu_cycles = retired_before;
 
     if (!jit_block_verify_snapshot_capture(&native)) {
 #if defined(CPU_AARCH64)
@@ -1390,16 +1412,21 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     InterruptFlags = 0;
     const int reference_ops = jit_block_verify_compiled_ops > 0
         ? jit_block_verify_compiled_ops : blocklen;
+    int replay_ops = 0;
     {
-        /* The replay must honour the same fetch-pointer contract the tracer
-           does. Previous's FULLMMU handlers advance the LOGICAL pc while
-           leaving the translated host fetch pointer anchored to the old block,
-           so reading the next opcode straight off regs.pc_p decodes whatever
-           happens to follow in the shadow. Under a user-mode MMU that is a
-           different page entirely, which is why every userland block replayed
-           into unrelated code and reported SKIP-NOREACH. Re-anchor pc_p from
-           the logical PC before every fetch, exactly as execute_normal() does. */
-        for (int step = 0; step < reference_ops; step++) {
+        /* Replay exactly as many instructions as the native run retired, so
+           the two spans are equivalent no matter how many blocks native
+           chained through, and loops need no special case.
+
+           The replay must also honour the tracer's fetch-pointer contract:
+           FULLMMU handlers advance the LOGICAL pc while leaving the translated
+           host fetch pointer anchored to the old block, so re-anchor pc_p from
+           the logical PC before every fetch. */
+        const int replay_target = native_retired_ops > 0
+            ? native_retired_ops : reference_ops;
+        for (;;) {
+            if (replay_ops >= replay_target)
+                break;
             const uae_u32 pc_now = (uae_u32)m68k_getpc() & ~1u;
             const uintptr_t host = Uae2026JitMmuXlateCodeHost(pc_now);
             if (!host)
@@ -1410,6 +1437,7 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
             Uae2026JitFlagsToInterpreter();
             (*cpufunctbl[opcode])(opcode);
             Uae2026InterpreterFlagsToJit();
+            replay_ops++;
         }
         const uae_u32 pc_end = (uae_u32)m68k_getpc() & ~1u;
         const uintptr_t host_end = Uae2026JitMmuXlateCodeHost(pc_end);
@@ -1418,7 +1446,8 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
             regs.pc_oldp = regs.pc_p;
         }
     }
-    const bool interp_reached_stop = ((uae_u32)m68k_getpc() == native_stop_pc);
+    const bool interp_reached_stop =
+        (((uae_u32)m68k_getpc() & ~1u) == (native_stop_pc & ~1u));
     if (!jit_block_verify_snapshot_capture(&interp)) {
 #if defined(CPU_AARCH64)
         tick_inhibit = saved_tick_inhibit;
@@ -1435,8 +1464,8 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
        (which, when native_stop_pc is a PC interp never visits in the boot, is
        the phantom-successor / control-flow divergence signal). */
     if (interp_reached_stop) {
-        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d native_ops=%d REACHED native_stop_pc=%08x interp_stop_pc=%08x\n",
-            (unsigned)block_pc, blocklen, reference_ops,
+        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d native_ops=%d replay_ops=%d REACHED native_stop_pc=%08x interp_stop_pc=%08x\n",
+            (unsigned)block_pc, blocklen, reference_ops, replay_ops,
             (unsigned)native_stop_pc, (unsigned)m68k_getpc());
         jit_block_verify_compare(&interp, &native, block_pc, blocklen);
         if (jit_block_verify_last_mismatch) {
@@ -1446,10 +1475,20 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
                 fprintf(stderr, "  op[%d] pc=%08x opcode=%04x\n",
                     i, (unsigned)pc_hist[i].guest_pc, (unsigned)pc_hist[i].opcode);
         }
-    } else
-        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d native_ops=%d SKIP-NOREACH interp_pc=%08x native_pc=%08x\n",
-            (unsigned)block_pc, blocklen, reference_ops,
+    } else {
+        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d native_ops=%d replay_ops=%d SKIP-NOREACH interp_pc=%08x native_pc=%08x\n",
+            (unsigned)block_pc, blocklen, reference_ops, replay_ops,
             (unsigned)m68k_getpc(), (unsigned)native_stop_pc);
+        /* A no-reach is as much a finding as a mismatch -- the two engines
+           disagreed about where the block ends -- so it has to name the
+           instructions too. */
+        static int noreach_log = 0;
+        if (noreach_log++ < 12) {
+            for (int i = 0; i < blocklen; i++)
+                fprintf(stderr, "  op[%d] pc=%08x opcode=%04x\n",
+                    i, (unsigned)pc_hist[i].guest_pc, (unsigned)pc_hist[i].opcode);
+        }
+    }
     jit_block_verify_snapshot_free(&native);
 
 #if defined(CPU_AARCH64)

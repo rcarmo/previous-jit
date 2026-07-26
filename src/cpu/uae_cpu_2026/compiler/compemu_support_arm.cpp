@@ -1218,6 +1218,15 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
         expected_regs.pc = actual_regs.pc;
         expected_regs.fault_pc = actual_regs.fault_pc;
         expected_regs.pc_oldp = actual_regs.pc_oldp;
+    } else if (expected_regs.pc == actual_regs.pc) {
+        /* Converse case: the ARCHITECTURAL PC agrees but the host fetch
+           pointer does not, because an interpreter-barrier instruction leaves
+           pc_p at its own start and re-anchors only at block exit, while the
+           replay advances it every step.  The logical PC is the guest-visible
+           quantity; do not report the mirror. */
+        expected_regs.pc_p = actual_regs.pc_p;
+        expected_regs.pc_oldp = actual_regs.pc_oldp;
+        expected_regs.fault_pc = actual_regs.fault_pc;
     }
     /* Fields of regstruct that are JIT bookkeeping, not architectural state.
        The struct-wide memcmp otherwise reports every kernel block containing a
@@ -1763,12 +1772,27 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op, uae_u32 pc)
 	   MOVEM uses readlong/writelong in gencomp.c.
 	   PC_P uses 64-bit eviction/reload in tomem/do_load_reg. */
 
+	/* MOVE to SR must go through the interpreter.
+	   jnf_MV2SR_w -> inline_MakeFromSR writes sr/t1/t0/s/m/intmask and does the
+	   A7 stack swap, then loads the CCR into host NZCV -- but the generated
+	   op_46fc_0_comp_ff calls the jnf_ (no-flags) midfunc and never publishes
+	   flag liveness, so the architectural CCR keeps its previous value.  The
+	   inline also omits the tail of the real MakeFromSR(): doint(),
+	   mmu_set_super() and SPCFLAG_TRACE maintenance.  Measured against the
+	   interpreter on a single-instruction block:
+
+	     block=0409ece2 len=1  op[0] 46fc move #imm,sr
+	       flags interp nzcv=00000000  native nzcv=40000000
+	       sr    interp=00 native=04
+
+	   Forcing the barrier removes the CCR divergence.  It is privileged and
+	   confined to the kernel's spl() paths; measured throughput is unchanged
+	   (2216 trap returns in the same wall time either way). */
+	if (table68k[op].mnemo == i_MV2SR && table68k[op].size == sz_word)
+		return true;
+
 	/* Environment-gated barriers for debugging (B2_JIT_RESTORE_BARRIERS).
 	   B2_JIT_RESTORE_BARRIER_PCS optionally confines them to logical PCs. */
-	if (jit_restore_barrier_at_pc("sr", pc)) {
-		if (table68k[op].mnemo == i_MV2SR && table68k[op].size == sz_word)
-			return true;
-	}
 	if (jit_restore_barrier_at_pc("jsr", pc) && (op & 0xffc0) == 0x4e80)
 		return true;
 	if (jit_restore_barrier_at_pc("jmp", pc) && (op & 0xffc0) == 0x4ec0)

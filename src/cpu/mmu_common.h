@@ -116,16 +116,50 @@ static ALWAYS_INLINE bool is_unaligned(uaecptr addr, int size)
 }
 #endif
 
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+/* The JIT keeps a separate executable shadow of guest RAM, refreshed page-wise
+ * by Uae2026JitSyncCodeRangeToShadow() and cached per MMU generation. That cache
+ * assumed every content change to a code page is announced: logical->physical
+ * remaps bump the generation, and device DMA calls the notify hook. Ordinary
+ * guest CPU stores announced nothing -- the generated write barrier is emitted
+ * only in strict mode -- so a page whose contents the kernel had just written
+ * (demand paging copies the file contents in with CPU stores, then installs the
+ * PTE; the previously-invalid PTE needs no ATC flush, so no generation bump)
+ * kept its "already synced" mark and executed the STALE shadow. Observed as the
+ * JIT fetching opcode 0x0000 at pc=0502fffe and taking an access fault the
+ * interpreter never takes.
+ *
+ * phys_put_* are the single sink for every guest store, interpreter and JIT
+ * alike, and they receive the PHYSICAL address the shadow cache is keyed on.
+ * Invalidate here so the next dispatch re-syncs the page. The cost is one index
+ * and compare per store; the expensive block-checksum invalidation stays where
+ * it was. */
+#ifdef __cplusplus
+extern "C" void Uae2026JitShadowSyncInvalidate(uae_u32 addr, uae_u32 size);
+#else
+void Uae2026JitShadowSyncInvalidate(uae_u32 addr, uae_u32 size);
+#endif
+#endif
+
 static ALWAYS_INLINE void phys_put_long(uaecptr addr, uae_u32 l)
 {
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+    Uae2026JitShadowSyncInvalidate(addr, 4);
+#endif
     longput(addr, l);
 }
 static ALWAYS_INLINE void phys_put_word(uaecptr addr, uae_u32 w)
 {
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+    Uae2026JitShadowSyncInvalidate(addr, 2);
+#endif
     wordput(addr, w);
 }
 static ALWAYS_INLINE void phys_put_byte(uaecptr addr, uae_u32 b)
 {
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+    Uae2026JitShadowSyncInvalidate(addr, 1);
+#endif
     byteput(addr, b);
 }
 static ALWAYS_INLINE uae_u32 phys_get_long(uaecptr addr)

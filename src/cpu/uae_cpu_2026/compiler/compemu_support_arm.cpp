@@ -2733,38 +2733,53 @@ static inline blockinfo* get_blockinfo(uae_u32 cl)
     return cache_tags[cl + 1].bi;
 }
 
-/* An MMU ATC flush invalidates address translations, not translated code.
- * Block dispatch already keys on the freshly translated host code pointer
- * (regs.pc_p) and every non-direct handler re-verifies it before executing, so
- * a logical page that now maps elsewhere can no longer reach its old block, and
- * a page whose mapping is unchanged is still correctly translated. Including
- * the MMU generation in block identity therefore only forces a full
- * retranslation of the working set on every PFLUSH: NeXTSTEP Mach issues these
- * at ~1.5k/s, which measured 26M compiles in 280s and left the guest running at
- * ~10% of real speed. Self-modified or reused code pages remain covered by the
- * block checksums re-armed by the lazy flush. */
+/* MMU generation keying is REQUIRED for correctness and is on by default.
+ *
+ * An earlier revision dropped it, arguing that dispatch keys on the freshly
+ * translated host code pointer and that every non-direct handler re-verifies
+ * regs.pc_p, so a remapped logical page could not reach its old block. That
+ * argument is wrong in one important case: a page that has been unmapped for
+ * demand paging must raise a fault, and reusing a block that was compiled while
+ * the page was still mapped silently skips it. Measured directly -- the
+ * interpreter takes an access fault at pc=05054b0e that the JIT did not, and
+ * the engines' exception streams separated at checkpoint 1898. With keying
+ * restored they stay identical to checkpoint 2083.
+ *
+ * The expensive half of the original policy was the whole-cache HARD flush on
+ * every PFLUSH, not the keying; that stays lazy (see
+ * Uae2026JitMmuTranslationChanged). Set PREVIOUS_UAE2026_JIT_MMU_GEN_KEY=0 only
+ * to reproduce the incorrect behaviour for comparison. */
 static inline bool jit_mmu_generation_keying_enabled(void)
 {
     static int cached = -1;
     if (cached < 0) {
         const char *env = getenv("PREVIOUS_UAE2026_JIT_MMU_GEN_KEY");
-        cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+        cached = (env && *env && strcmp(env, "0") == 0) ? 0 : 1;
     }
     return cached != 0;
 }
 
-static inline bool jit_block_identity_matches(const blockinfo *bi, void *addr,
+static inline bool jit_block_identity_matches(blockinfo *bi, void *addr,
     uae_u32 guest_pc, uae_u8 supervisor)
 {
     if (bi->pc_p != addr)
         return false;
     if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled)
         return true;
-    if (jit_mmu_generation_keying_enabled() &&
-        bi->mmu_generation != Uae2026JitMmuGeneration())
+    if (!bi->mmu_identity_valid || bi->guest_pc != guest_pc ||
+        bi->mmu_supervisor != supervisor)
         return false;
-    return bi->mmu_identity_valid && bi->guest_pc == guest_pc &&
-        bi->mmu_supervisor == supervisor;
+    if (!jit_mmu_generation_keying_enabled())
+        return true;
+    /* The generation must actually reject a stale block. Refreshing it after an
+     * identity match was tried and is WRONG: it restores throughput (565k
+     * compiles instead of 8.6M) but reintroduces the skipped demand-paging
+     * fault, and the boot regresses from 13111 exception checkpoints back to
+     * 3283. bi->pc_p == addr is not sufficient evidence that the mapping is
+     * unchanged, because a page can be unmapped and later restored to the same
+     * physical frame. Throughput has to be recovered another way (finer-grained
+     * invalidation on single-page PFLUSH rather than a global counter). */
+    return bi->mmu_generation == Uae2026JitMmuGeneration();
 }
 
 static inline blockinfo* get_blockinfo_addr_key(void* addr, uae_u32 guest_pc,

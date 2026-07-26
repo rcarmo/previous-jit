@@ -261,13 +261,14 @@ extern "C" void Uae2026JitMmuTranslationChanged(uae_u32 source)
     if (++mmu_translation_generation == 0)
         mmu_translation_generation = 1;
 
-    /* Invalidation policy. The conservative original threw away every compiled
-     * translation on each ATC flush. That is not required for correctness --
-     * dispatch is keyed on the freshly translated host code pointer and each
-     * non-direct handler re-verifies regs.pc_p -- and it is ruinously
-     * expensive: NeXTSTEP Mach PFLUSHes ~1.5k/s, which measured 26M block
-     * compiles in 280s and held the guest near 10% of real speed. Use the lazy
-     * flush (re-arm per-block checksums, keep the code cache) by default; set
+    /* Invalidation policy. The original threw away every compiled translation
+     * on each ATC flush. The keying half of that policy IS required (see
+     * jit_mmu_generation_keying_enabled(): without it a page unmapped for demand
+     * paging can be re-entered through its old block and the fault is skipped),
+     * but the whole-cache HARD flush is not, and it is ruinously expensive:
+     * NeXTSTEP Mach PFLUSHes ~1.5k/s, which measured 26M block compiles in 280s.
+     * Use the lazy flush -- it re-arms per-block checksums and keeps the code
+     * cache -- and let the generation key handle correctness. Set
      * PREVIOUS_UAE2026_JIT_MMU_HARD_FLUSH=1 to restore the old behaviour.
      * flush_icache_hard() also sets SPCFLAG_JIT_EXEC_RETURN, terminating an
      * active native block before its next fetch or memory operation. */

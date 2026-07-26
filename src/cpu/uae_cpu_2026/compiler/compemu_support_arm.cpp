@@ -1219,6 +1219,20 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
         expected_regs.fault_pc = actual_regs.fault_pc;
         expected_regs.pc_oldp = actual_regs.pc_oldp;
     }
+    /* Fields of regstruct that are JIT bookkeeping, not architectural state.
+       The struct-wide memcmp otherwise reports every kernel block containing a
+       helper call as a mismatch: the native run leaves its spill slots and
+       pending-exception request populated, the interpreted replay does not.
+       Observed as regs+0x0d8 (jit_scratch_vregs) and regs+0x118
+       (jit_exception). */
+    memcpy(expected_regs.jit_scratchfregs, actual_regs.jit_scratchfregs,
+        sizeof(expected_regs.jit_scratchfregs));
+    memcpy(expected_regs.jit_scratch_vregs, actual_regs.jit_scratch_vregs,
+        sizeof(expected_regs.jit_scratch_vregs));
+    expected_regs.jit_exception = actual_regs.jit_exception;
+    expected_regs.jit_exception_oldpc = actual_regs.jit_exception_oldpc;
+    expected_regs.mem_banks = actual_regs.mem_banks;
+    expected_regs.cache_tags = actual_regs.cache_tags;
 
     jit_block_verify_last_mismatch = false;
     bool mismatch = false;
@@ -1258,6 +1272,25 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
         fprintf(stderr, "  flags interp nzcv=%08x x=%08x native nzcv=%08x x=%08x\n",
             (unsigned)expected->flags.nzcv, (unsigned)expected->flags.x,
             (unsigned)actual->flags.nzcv, (unsigned)actual->flags.x);
+    }
+    {
+        /* The struct-wide memcmp above can trip on fields no named dump covers
+           (MMU state, cache tags, JIT scratch). Without this a mismatch can be
+           reported with nothing printed at all, which is unactionable. */
+        const uae_u8 *e = (const uae_u8*)&expected_regs;
+        const uae_u8 *a = (const uae_u8*)&actual_regs;
+        int shown = 0;
+        for (size_t i = 0; i < sizeof(regs) && shown < 12; i++) {
+            if (e[i] != a[i]) {
+                size_t run = 0;
+                while (i + run < sizeof(regs) && e[i + run] != a[i + run])
+                    run++;
+                fprintf(stderr, "  regs+0x%03zx len=%zu interp=%02x native=%02x\n",
+                    i, run, (unsigned)e[i], (unsigned)a[i]);
+                shown++;
+                i += run;
+            }
+        }
     }
     int memdiffs = 0;
     for (size_t i = 0; i < expected->mem_size && memdiffs < 16; i++) {

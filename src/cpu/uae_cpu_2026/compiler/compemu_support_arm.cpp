@@ -285,11 +285,93 @@ static inline unsigned long jit_retirement_tick_every(void)
    only for an explicitly requested path capture or deterministic retirement-
    tick run. Keep the scheduler independent of capture arming: asking for
    retirement ticks must work without also allocating or recording a path. */
+static uae_u32 jit_guest_path_watch_pc(void);
+
 extern "C" bool jit_guest_instruction_observer_enabled(void)
 {
+    if (jit_guest_path_watch_pc() != 0)
+        return true;
     if (jit_guest_path_late_arm_pending())
         return false;
     return jit_guest_path_enabled() || jit_retirement_tick_every() != 0;
+}
+
+/* B2_JIT_GUEST_PATH_WATCH_PC=<pc>: dump full guest state whenever that PC
+ * retires. Deliberately independent of the path ring buffer -- reading a
+ * syscall's return value only needs a handful of lines at one address, and
+ * arming the ring for that costs a capture the run does not need. */
+static uae_u32 jit_guest_path_watch_pc(void)
+{
+    static uae_u32 value = 0;
+    static bool initialized = false;
+    if (!initialized) {
+        const char *env = getenv("B2_JIT_GUEST_PATH_WATCH_PC");
+        value = (env && *env) ? (uae_u32)strtoul(env, NULL, 0) : 0;
+        initialized = true;
+    }
+    return value;
+}
+
+static void jit_guest_path_watch(uae_u32 pc)
+{
+    static unsigned long watch_limit = 0;
+    static unsigned long watch_count = 0;
+    static unsigned long follow_total = 0;
+    static unsigned long follow_left = 0;
+    static bool watch_init = false;
+    const uae_u32 watch_pc = jit_guest_path_watch_pc();
+    if (!watch_pc)
+        return;
+    if (!watch_init) {
+        const char *lim = getenv("B2_JIT_GUEST_PATH_WATCH_LIMIT");
+        watch_limit = (lim && *lim) ? strtoul(lim, NULL, 0) : 40;
+        /* B2_JIT_GUEST_PATH_WATCH_FOLLOW=<n>: after each hit, also log the next
+         * n retired instructions. A syscall's result is only visible on the
+         * far side of the trap, so the interesting state is never at the
+         * watched PC itself. */
+        const char *fol = getenv("B2_JIT_GUEST_PATH_WATCH_FOLLOW");
+        follow_total = (fol && *fol) ? strtoul(fol, NULL, 0) : 0;
+        watch_init = true;
+    }
+    if (pc != watch_pc) {
+        if (!follow_left)
+            return;
+        --follow_left;
+        fprintf(stderr, "PATHFOLLOW %lu.%lu pc=%08x s=%d ccr=%02x d0=%08x d1=%08x a0=%08x a7=%08x\n",
+            watch_count, follow_total - follow_left, (unsigned)pc, (int)regs.s,
+            (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
+                       (GET_VFLG() << 1) | GET_CFLG()),
+            (unsigned)regs.regs[0], (unsigned)regs.regs[1],
+            (unsigned)regs.regs[8], (unsigned)m68k_areg(regs, 7));
+        if (!follow_left)
+            fflush(stderr);
+        return;
+    }
+    if (watch_count >= watch_limit)
+        return;
+    ++watch_count;
+    follow_left = follow_total;
+    /* A NeXTSTEP/Mach m68k syscall reports failure in the carry flag and the
+     * errno in d0, so the CCR is as load-bearing as the registers here.
+     * flush(1) at the observer call site has already written host-resident
+     * flags back to regflags, so this reads the architectural value in both
+     * engines. */
+    fprintf(stderr,
+        "PATHWATCH %lu pc=%08x s=%d ccr=%02x "
+        "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
+        "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
+        watch_count, (unsigned)pc, (int)regs.s,
+        (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
+                   (GET_VFLG() << 1) | GET_CFLG()),
+        (unsigned)regs.regs[0], (unsigned)regs.regs[1],
+        (unsigned)regs.regs[2], (unsigned)regs.regs[3],
+        (unsigned)regs.regs[4], (unsigned)regs.regs[5],
+        (unsigned)regs.regs[6], (unsigned)regs.regs[7],
+        (unsigned)regs.regs[8], (unsigned)regs.regs[9],
+        (unsigned)regs.regs[10], (unsigned)regs.regs[11],
+        (unsigned)regs.regs[12], (unsigned)regs.regs[13],
+        (unsigned)regs.regs[14], (unsigned)regs.regs[15]);
+    fflush(stderr);
 }
 
 static void jit_guest_path_record(uae_u32 pc)
@@ -300,6 +382,7 @@ static void jit_guest_path_record(uae_u32 pc)
     static unsigned long count_target = 0;
     static unsigned long count_after_arm = 0;
     static bool initialized = false;
+    jit_guest_path_watch(pc);
     if (!jit_guest_path_enabled() || jit_guest_path_late_arm_pending())
         return;
     if (!initialized) {

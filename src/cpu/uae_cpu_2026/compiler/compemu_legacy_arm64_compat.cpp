@@ -1433,7 +1433,33 @@ jit_pctrace_done:
 					return;
 				}
 			}
-			cpu_history *hist = &pc_hist[blocklen++];
+			/* An instruction whose maximum architectural encoding window runs
+			   past the end of its guest page cannot be compiled from
+			   pc_hist[].location: codegen reads extension words as
+			   comp_pc_p + n, and compile_block re-reads
+			   JIT_TRACE_SOURCE_BYTES from the same host pointer. Both walk
+			   into the next PHYSICAL page, which under an enabled MMU is not
+			   the next LOGICAL page. Keep such an instruction out of every
+			   trace and let the interpreter -- which fetches through the MMU
+			   -- retire it on its own. The cost is ~20 bytes per 8K page. */
+			cpu_history straddle_hist;
+			const bool straddles_page =
+				regs.mmu_enabled != 0 &&
+				(0x2000u - (m68k_getpc() & 0x1fffu)) < JIT_TRACE_SOURCE_BYTES;
+			if (straddles_page && blocklen > 0) {
+				/* Compile what is already traced and re-enter; the straddling
+				   instruction then leads a fresh trace with blocklen == 0. */
+				tick_inhibit = false;
+				if (!jit_strict_defer_cold_ram_trace(pc_hist, blocklen)) {
+					const uae_u32 successor_pc = m68k_getpc() & ~1u;
+					compile_block(pc_hist, blocklen, total_cycles);
+					jit_publish_code_fetch_state(successor_pc);
+					regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(successor_pc);
+					regs.pc_oldp = regs.pc_p;
+				}
+				return;
+			}
+			cpu_history *hist = straddles_page ? &straddle_hist : &pc_hist[blocklen++];
 			/* Previous's FULLMMU handlers advance regs.pc while the translated
 			   host fetch pointer can remain fixed. Per-op re-anchoring below makes
 			   m68k_getpc() the exact logical PC for both update conventions. */
@@ -1508,6 +1534,16 @@ jit_pctrace_done:
 			cpu_check_ticks();
 			total_cycles += 4 * CYCLE_UNIT;
 			bool must_end = __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
+			if (straddles_page) {
+				/* Retired outside any trace. Nothing to compile (blocklen is
+				   0 here), so just re-anchor and let the dispatcher restart. */
+				tick_inhibit = false;
+				const uae_u32 successor_pc = m68k_getpc() & ~1u;
+				jit_publish_code_fetch_state(successor_pc);
+				regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(successor_pc);
+				regs.pc_oldp = regs.pc_p;
+				return;
+			}
 			/* A compiled block is a basic block: once the interpreter tracer
 			   executes an instruction classified as control flow, stop tracing
 			   and compile exactly the instructions retired so far.  Following a

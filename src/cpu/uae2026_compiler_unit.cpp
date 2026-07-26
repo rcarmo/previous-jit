@@ -123,4 +123,16 @@ extern "C" void Uae2026CompilerFlushCacheHard(void)
     flush_icache_hard(3);
 }
 
+/* Lazy counterpart. An MMU ATC flush does not by itself invalidate translated
+ * code: block dispatch is keyed on the freshly translated host code pointer and
+ * every non-direct handler re-verifies regs.pc_p before running, so a remapped
+ * logical page can no longer reach its old block. Marking blocks for checksum
+ * re-verification is therefore sufficient, and avoids discarding the entire
+ * translation cache on every PFLUSH (NeXTSTEP Mach issues ~1.5k/s). */
+extern "C" void Uae2026CompilerFlushCacheLazy(void)
+{
+    extern void Uae2026CompilerFlushCacheLazyImpl(void);
+    Uae2026CompilerFlushCacheLazyImpl();
+}
+
 #endif /* ENABLE_EXPERIMENTAL_UAE2026_JIT */

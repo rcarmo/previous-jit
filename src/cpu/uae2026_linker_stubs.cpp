@@ -250,6 +250,26 @@ int m68k_do_specialties(void)
         int intr = intlev();
         regs.spcflags &= ~PREV_SPCFLAG_INT;
         if (intr != -1 && (intr > regs.intmask || (intr == 7 && intr > lastintr))) {
+            {
+                static int rate_env = -1;
+                static unsigned long by_level[8] = {0};
+                static time_t last = 0;
+                if (rate_env < 0)
+                    rate_env = getenv("B2_INT_RATE") ? 1 : 0;
+                if (rate_env) {
+                    if (intr >= 0 && intr < 8)
+                        by_level[intr]++;
+                    const time_t now = time(NULL);
+                    if (now - last >= 2) {
+                        last = now;
+                        fprintf(stderr, "INTRATE l1=%lu l2=%lu l3=%lu l4=%lu l5=%lu l6=%lu l7=%lu pc=%08x\n",
+                            by_level[1], by_level[2], by_level[3], by_level[4],
+                            by_level[5], by_level[6], by_level[7],
+                            (unsigned)m68k_getpc());
+                        fflush(stderr);
+                    }
+                }
+            }
             MakeSR();
             regs.stopped = 0;
             regs.spcflags &= ~PREV_SPCFLAG_STOP;

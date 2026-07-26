@@ -792,6 +792,31 @@ STATIC_INLINE void compemu_raw_maybe_cachemiss(void)
 	write_jmp_target(branchadd, (uintptr)popall_cache_miss);
 }
 
+/* Emit an ACCUMULATE of retired guest CPU cycles into
+ * jit_native_retired_cpu_cycles. The outer dispatcher zeroes this global before
+ * every entry into generated code and consumes it on return, so accumulation is
+ * safe and lets several exit paths each charge the prefix they actually retired.
+ * Charging only at the block epilogue loses every instruction retired by blocks
+ * that leave through popall_do_nothing (spcflags set / countdown expiry), which
+ * under-counts emulated time and stalls the guest clock. */
+STATIC_INLINE void compemu_raw_accum_retired_cycles(IM32 cycles)
+{
+	const uae_u32 retired = cycles > 0
+		? ((uae_u32)cycles / CYCLE_UNIT ? (uae_u32)cycles / CYCLE_UNIT : 1u)
+		: 0u;
+	if (!retired)
+		return;
+	LOAD_U64(REG_WORK3, (uintptr)&jit_native_retired_cpu_cycles);
+	LDR_wXi(REG_WORK2, REG_WORK3, 0);
+	if (retired <= 0xfffu) {
+		ADD_wwi(REG_WORK2, REG_WORK2, retired);
+	} else {
+		LOAD_U32(REG_WORK1, retired);
+		ADD_www(REG_WORK2, REG_WORK2, REG_WORK1);
+	}
+	STR_wXi(REG_WORK2, REG_WORK3, 0);
+}
+
 STATIC_INLINE void compemu_raw_maybe_do_nothing(IM32 cycles)
 {
 	uintptr idx = (uintptr)&regs.spcflags - (uintptr) &regs;
@@ -809,6 +834,12 @@ STATIC_INLINE void compemu_raw_maybe_do_nothing(IM32 cycles)
 		SUB_www(REG_WORK2, REG_WORK2, REG_WORK1);
 	}
 	STR_wXi(REG_WORK2, REG_WORK3, 0);
+
+	/* This exit leaves generated code without reaching the block epilogue, so
+	 * charge the instructions retired so far. The epilogue is emitted right
+	 * after this guard with the same cumulative count, and the two paths are
+	 * mutually exclusive, so this cannot double-charge. */
+	compemu_raw_accum_retired_cycles(cycles);
 
 	uae_u32* branchadd2 = (uae_u32*)get_target();
 	B_i(0);
@@ -938,14 +969,26 @@ LOWFUNC(NONE,NONE,2,compemu_raw_endblock_mmu_dispatch,(RR4 rr_pc, IM32 cycles))
 {
     /* scaled_cycles is expressed in CYCLE_UNIT fractions. Publish whole CPU
        cycles for the safe outer C dispatcher before returning through
-       execute_normal. MMU blocks always end here, so assignment (not addition)
-       prevents stale deltas from surviving a generated dispatcher entry. */
+       execute_normal. ACCUMULATE rather than assign: the dispatcher zeroes this
+       global before every entry into generated code and consumes it on return,
+       and other exit paths (popall_do_nothing via compemu_raw_maybe_do_nothing)
+       now also charge the prefix they retired. Assignment here would discard
+       those charges and under-count emulated time, which stalls the guest
+       clock. */
     const uae_u32 retired_cpu_cycles = cycles > 0
         ? ((uae_u32)cycles / CYCLE_UNIT ? (uae_u32)cycles / CYCLE_UNIT : 1u)
         : 0u;
-    LOAD_U32(REG_WORK2, retired_cpu_cycles);
-    LOAD_U64(REG_WORK3, (uintptr)&jit_native_retired_cpu_cycles);
-    STR_wXi(REG_WORK2, REG_WORK3, 0);
+    if (retired_cpu_cycles) {
+        LOAD_U64(REG_WORK3, (uintptr)&jit_native_retired_cpu_cycles);
+        LDR_wXi(REG_WORK2, REG_WORK3, 0);
+        if (retired_cpu_cycles <= 0xfffu) {
+            ADD_wwi(REG_WORK2, REG_WORK2, retired_cpu_cycles);
+        } else {
+            LOAD_U32(REG_WORK1, retired_cpu_cycles);
+            ADD_www(REG_WORK2, REG_WORK2, REG_WORK1);
+        }
+        STR_wXi(REG_WORK2, REG_WORK3, 0);
+    }
 
     LOAD_U64(REG_WORK3, (uintptr)&countdown);
     LDR_wXi(REG_WORK1, REG_WORK3, 0);

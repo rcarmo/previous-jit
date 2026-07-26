@@ -35,6 +35,7 @@ extern void alloc_cache(void);
 extern void compemu_reset(void);
 extern void jit_abort(const char *fmt, ...);
 extern "C" void Uae2026CompilerFlushCacheHard(void);
+extern "C" void Uae2026CompilerFlushCacheLazy(void);
 
 /* JIT execute loop (defined in uae2026_linker_stubs.cpp) */
 extern void m68k_do_compile_execute(void);
@@ -260,12 +261,25 @@ extern "C" void Uae2026JitMmuTranslationChanged(uae_u32 source)
     if (++mmu_translation_generation == 0)
         mmu_translation_generation = 1;
 
-    /* The first implementation is deliberately conservative: throw away every
-     * compiled translation rather than leave stale physical aliases or direct
-     * data assumptions reachable. flush_icache_hard() also sets
-     * SPCFLAG_JIT_EXEC_RETURN, terminating an active native block before its
-     * next fetch or memory operation. */
-    Uae2026CompilerFlushCacheHard();
+    /* Invalidation policy. The conservative original threw away every compiled
+     * translation on each ATC flush. That is not required for correctness --
+     * dispatch is keyed on the freshly translated host code pointer and each
+     * non-direct handler re-verifies regs.pc_p -- and it is ruinously
+     * expensive: NeXTSTEP Mach PFLUSHes ~1.5k/s, which measured 26M block
+     * compiles in 280s and held the guest near 10% of real speed. Use the lazy
+     * flush (re-arm per-block checksums, keep the code cache) by default; set
+     * PREVIOUS_UAE2026_JIT_MMU_HARD_FLUSH=1 to restore the old behaviour.
+     * flush_icache_hard() also sets SPCFLAG_JIT_EXEC_RETURN, terminating an
+     * active native block before its next fetch or memory operation. */
+    static int hard_flush_env = -1;
+    if (hard_flush_env < 0) {
+        const char *env = getenv("PREVIOUS_UAE2026_JIT_MMU_HARD_FLUSH");
+        hard_flush_env = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    if (hard_flush_env)
+        Uae2026CompilerFlushCacheHard();
+    else
+        Uae2026CompilerFlushCacheLazy();
 
     static unsigned long change_count = 0;
     if (++change_count <= 16 || (change_count % 1024) == 0)

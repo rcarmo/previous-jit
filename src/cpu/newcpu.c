@@ -1046,6 +1046,28 @@ void REGPARAM2 ExceptionL (int nr, uaecptr address)
 
 static void do_interrupt (int nr, int Pending)
 {
+	/* Rate probe (B2_INT_RATE=1): compare interrupt-delivery cadence between
+	   the interpreter and the JIT dispatcher. */
+	{
+		static int rate_env = -1;
+		static unsigned long by_level[8] = {0};
+		static time_t last = 0;
+		if (rate_env < 0)
+			rate_env = getenv("B2_INT_RATE") ? 1 : 0;
+		if (rate_env) {
+			if (nr >= 0 && nr < 8)
+				by_level[nr]++;
+			const time_t now = time(NULL);
+			if (now - last >= 2) {
+				last = now;
+				fprintf(stderr, "INTRATE l1=%lu l2=%lu l3=%lu l4=%lu l5=%lu l6=%lu l7=%lu pc=%08x\n",
+					by_level[1], by_level[2], by_level[3], by_level[4],
+					by_level[5], by_level[6], by_level[7],
+					(unsigned)m68k_getpc());
+				fflush(stderr);
+			}
+		}
+	}
 	regs.stopped = 0;
 	unset_special (SPCFLAG_STOP);
 	assert (nr < 8 && nr >= 0);
@@ -1659,6 +1681,28 @@ static void m68k_run_mmu040 (void)
 				jit_guest_path_record_native(pc);
 #endif
 			interp_lowpc_trace_log("BEFORE", &interp_lowpc_trace_count, pc, opcode, 0);
+			/* Producer-gate probe (interp). B2_GATE_TRACE: at 0x0401b886
+			   (CMPI.L #imm,(addr).L ; BLE.S skips the ring-count increments)
+			   decode the immediate and absolute address from the extension words
+			   and read the gate variable, so the gate condition can be compared
+			   engine-to-engine. */
+			if (pc == 0x0401b886) {
+				static int gate_env = -1;
+				if (gate_env < 0)
+					gate_env = getenv("B2_GATE_TRACE") ? 1 : 0;
+				if (gate_env) {
+				static unsigned long gn = 0;
+				uae_u32 imm1 = get_long(pc + 2);
+				uae_u32 addr1 = get_long(pc + 6);
+				uae_u32 val1 = get_long(addr1);
+				if (gn < 60)
+					fprintf(stderr, "GATE n=%lu imm=%08x addr=%08x val=%08x skip=%d a0=%08x\n",
+						gn, (unsigned)imm1, (unsigned)addr1, (unsigned)val1,
+						((uae_s32)val1 <= (uae_s32)imm1) ? 1 : 0,
+						(unsigned)m68k_areg(regs,0));
+				gn++;
+				}
+			}
 			cpu_cycles = (*cpufunctbl[opcode])(opcode);
 			ip_execprof_tick(pc, (uae_u16)opcode);
 			interp_lowpc_trace_log("AFTER", &interp_lowpc_trace_count, pc, opcode, 0);

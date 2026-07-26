@@ -27,8 +27,10 @@ static inline void jit_publish_code_fetch_state(uae_u32 pc)
 
 static inline void jit_canonicalize_code_pc_if_ram_mmu(void)
 {
-	const char *ram = getenv("PREVIOUS_UAE2026_JIT_RAM");
-	if ((!ram || !*ram || !strcmp(ram, "0")) ||
+	/* Hot path: this runs on every execute_normal() dispatch. getenv() is a
+	   linear scan of the environment block and profiled at ~65% of emulation
+	   thread time here; use the cached accessor for the identical predicate. */
+	if (!jit_allow_ram_dispatch_env() ||
 	    (!regs.mmu_enabled && !Uae2026OpcodeTestModeActive()))
 		return;
 	/* During trace formation, interpreter handlers advance pc_p while regs.pc
@@ -1226,8 +1228,8 @@ void execute_normal(void)
 	   side-effect free here.  Opcode tests and RAM/MMU JIT remain translated and
 	   continue to exercise the runbook contracts. */
 	{
-		const char *ram = getenv("PREVIOUS_UAE2026_JIT_RAM");
-		const bool ram_jit = ram && *ram && strcmp(ram, "0") != 0;
+		/* Cached accessor: identical predicate, no per-dispatch getenv scan. */
+		const bool ram_jit = jit_allow_ram_dispatch_env();
 		if (!ram_jit && !Uae2026OpcodeTestModeActive()) {
 			exec_nostats();
 			return;

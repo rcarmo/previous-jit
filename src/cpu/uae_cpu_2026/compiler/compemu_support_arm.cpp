@@ -146,6 +146,11 @@ int32 jit_countdown = JIT_DISPATCH_BUDGET;
    devices advance even when a tight polling loop never executes an interpreter
    opcode. The outer dispatcher clears/consumes this once per generated entry. */
 uae_u32 jit_native_retired_cpu_cycles = 0;
+/* Throughput diagnostics (B2_JIT_STATS): separate per-dispatch overhead from
+   recompile thrash. jit_stat_dispatch counts generated-code entries;
+   jit_stat_compile counts compile_block() invocations. */
+unsigned long jit_stat_dispatch = 0;
+unsigned long jit_stat_compile = 0;
 #define countdown jit_countdown
 
 enum {
@@ -2705,6 +2710,26 @@ static inline blockinfo* get_blockinfo(uae_u32 cl)
     return cache_tags[cl + 1].bi;
 }
 
+/* An MMU ATC flush invalidates address translations, not translated code.
+ * Block dispatch already keys on the freshly translated host code pointer
+ * (regs.pc_p) and every non-direct handler re-verifies it before executing, so
+ * a logical page that now maps elsewhere can no longer reach its old block, and
+ * a page whose mapping is unchanged is still correctly translated. Including
+ * the MMU generation in block identity therefore only forces a full
+ * retranslation of the working set on every PFLUSH: NeXTSTEP Mach issues these
+ * at ~1.5k/s, which measured 26M compiles in 280s and left the guest running at
+ * ~10% of real speed. Self-modified or reused code pages remain covered by the
+ * block checksums re-armed by the lazy flush. */
+static inline bool jit_mmu_generation_keying_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("PREVIOUS_UAE2026_JIT_MMU_GEN_KEY");
+        cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
 static inline bool jit_block_identity_matches(const blockinfo *bi, void *addr,
     uae_u32 guest_pc, uae_u8 supervisor)
 {
@@ -2712,8 +2737,10 @@ static inline bool jit_block_identity_matches(const blockinfo *bi, void *addr,
         return false;
     if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled)
         return true;
+    if (jit_mmu_generation_keying_enabled() &&
+        bi->mmu_generation != Uae2026JitMmuGeneration())
+        return false;
     return bi->mmu_identity_valid && bi->guest_pc == guest_pc &&
-        bi->mmu_generation == Uae2026JitMmuGeneration() &&
         bi->mmu_supervisor == supervisor;
 }
 
@@ -6563,8 +6590,18 @@ void set_cache_state(int enabled)
         return;
     }
     strict_cache_disable_boundary_seen = false;
-    if (enabled != cache_enabled)
-        flush_icache_hard(3);
+    if (enabled != cache_enabled) {
+        /* A CACR cache-enable transition is not a code-modification event: the
+         * guest signals actual invalidation with the separate CINVA bit, which
+         * m68k_move2c() routes to flush_icache(). NeXT's Mach kernel toggles
+         * CACR very frequently (measured ~300/s once the JIT actually makes
+         * progress), and hard-flushing there frees every blockinfo and rewinds
+         * the code cache, forcing a full retranslation each time (measured 5.5M
+         * compiles / 30k hard flushes in 94s). Use the lazy flush instead: it
+         * re-arms checksum verification for every active block, so modified
+         * guest code is still caught, without discarding valid translations. */
+        flush_icache_lazy(0);
+    }
     cache_enabled = enabled;
 }
 
@@ -6889,6 +6926,23 @@ static void recompile_block(void)
         return;
     }
     raise_in_cl_list(bi);
+#if defined(CPU_AARCH64)
+    /* LIVELOCK FIX. The AArch64 fast path in check_for_cache_miss() reports a
+     * hit for any BI_ACTIVE block whose installed handler still matches the
+     * cacheline, which is right for a stale predecessor edge but wrong here:
+     * arriving through popall_recompile_block means this block's own countdown
+     * has expired and it MUST be recompiled. Without an explicit request,
+     * execute_normal() returns immediately, bi->count stays negative, and the
+     * next entry takes the countdown branch again -- an unbreakable
+     * dispatch/recompile_block/execute_normal spin in which the block body
+     * never executes and the guest stops making progress. (Observed as a hard
+     * NeXTSTEP boot stall at the userland spin 0x0000c322 with
+     * recompile_block ~= 14M/s and zero retired guest cycles.)
+     * Publish the recompile request explicitly. Only genuine countdown expiry
+     * reaches here, so the stale-edge fast path is unaffected. */
+    bi->status = BI_NEED_RECOMP;
+    bi->count = -1;
+#endif
     execute_normal();
 }
 
@@ -7831,7 +7885,11 @@ void flush_icache_hard(int n)
 #if defined(CPU_AARCH64)
     if (jit_diag_enabled()) {
         jit_diag_flush_icache_hard_calls++;
-        fprintf(stderr, "JIT_DIAG flush_icache_hard called (n=%d), total=%lu\n", n, jit_diag_flush_icache_hard_calls);
+        if ((jit_diag_flush_icache_hard_calls & 0x3ff) == 1)
+            fprintf(stderr, "JIT_DIAG flush_icache_hard n=%d total=%lu used=%ldKB cap=%ldKB\n",
+                n, jit_diag_flush_icache_hard_calls,
+                (long)((current_compile_p - compiled_code) / 1024),
+                (long)((MAX_COMPILE_PTR - compiled_code) / 1024));
         fflush(stderr);
         jit_diag_maybe_print();
     }
@@ -7908,6 +7966,13 @@ static inline void flush_icache_lazy(int v)
     active = NULL;
 }
 
+/* Exported to the bridge (same translation unit, but flush_icache_lazy is
+ * static). Used for MMU ATC-flush invalidation instead of a hard flush. */
+void Uae2026CompilerFlushCacheLazyImpl(void)
+{
+    flush_icache_lazy(0);
+}
+
 int failure;
 
 static inline unsigned int get_opcode_cft_map(unsigned int f)
@@ -7950,6 +8015,7 @@ static void b2_test_native_entry(uae_u32 pc)
 
 void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 {
+    jit_stat_compile++;
 #if defined(CPU_AARCH64)
     /* A trace is a sequence of retired instruction locations and opcodes, not
        merely a list of pointers to mutable guest RAM. A store later in the
@@ -7998,7 +8064,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 
         redo_current_block = 0;
         if (current_compile_p >= MAX_COMPILE_PTR)
-            flush_icache_hard(3); /* code cache full: lazy flush does not rewind current_compile_p */
+            flush_icache_hard(4); /* code cache full: lazy flush does not rewind current_compile_p */
 
         alloc_blockinfos();
 
@@ -8071,7 +8137,17 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                            (memclear) runs once per address and never escalates.
                            Hot loops run many times and will escalate on the next
                            count expiry after 10 dispatches. */
-                        bi->count = 9;
+                        if (bi_was_invalid) {
+                            bi->count = 9;
+                        } else {
+                            /* Proven hot: the countdown expired, so this is the
+                               escalation the count was there to trigger. Leaving
+                               optlev at 0 here would re-arm the same countdown
+                               forever and recompile the block every 10
+                               executions instead of promoting it. */
+                            optlev = max_optlev;
+                            bi->count = -2;
+                        }
                     } else if (optlev < max_optlev) {
                         optlev = max_optlev;
                         bi->count = -2;
@@ -9326,7 +9402,7 @@ endblock_done:
            free at the code-cache boundary.  A hard flush is required here
            because a lazy flush deliberately does not rewind current_compile_p. */
         if (current_compile_p >= MAX_COMPILE_PTR)
-            flush_icache_hard(3);
+            flush_icache_hard(5);
 		jit_end_write_window();
     }
 }

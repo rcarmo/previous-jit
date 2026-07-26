@@ -195,6 +195,25 @@ void m68k_do_compile_execute(void)
 			jit_native_retired_cpu_cycles = 0;
 			if (retired_cpu_cycles)
 				Uae2026JitCpuChargeCyclesNoEvents((int)retired_cpu_cycles);
+			/* Throughput diagnostics: how many entries into generated code retire
+			   NO guest cycles at all (pure dispatcher spin) vs do real work. */
+			{
+				extern unsigned long jit_stat_dispatch, jit_stat_compile;
+				static int stats_env = -1;
+				static unsigned long zero_charge = 0;
+				static unsigned long long charged_total = 0;
+				if (stats_env < 0)
+					stats_env = getenv("B2_JIT_STATS") ? 1 : 0;
+				if (stats_env) {
+					jit_stat_dispatch++;
+					if (!retired_cpu_cycles)
+						zero_charge++;
+					charged_total += retired_cpu_cycles;
+					if ((jit_stat_dispatch % 2000000UL) == 0)
+						fprintf(stderr, "JITSTATS dispatch=%lu compile=%lu zero=%lu charged=%llu\n",
+							jit_stat_dispatch, jit_stat_compile, zero_charge, charged_total);
+				}
+			}
 		}
 		/* Block-boundary CycInt drain: the retired-cycle charge above advances
 		   PendingInterrupt.time in emulated time; if an armed deadline is now due
@@ -216,7 +235,19 @@ void m68k_do_compile_execute(void)
 			if (jit_countdown < 0)
 				jit_countdown = JIT_DISPATCH_BUDGET;
 			static uint64 last_tick_us = 0;
-			const uint64 perf_freq = SDL_GetPerformanceFrequency();
+			/* Reading the host clock on every block dispatch costs ~13% of
+			   emulation-thread time at multi-MHz dispatch rates. The tick
+			   granularity we need is 16.67ms; sampling once per 256 dispatches
+			   is still ~2 orders of magnitude finer than that. */
+			static unsigned clock_sample_countdown = 0;
+			if (clock_sample_countdown--)
+				goto skip_wall_tick;
+			clock_sample_countdown = 255;
+			{
+			static uint64 perf_freq_cached = 0;
+			if (!perf_freq_cached)
+				perf_freq_cached = SDL_GetPerformanceFrequency();
+			const uint64 perf_freq = perf_freq_cached;
 			const uint64 now_us = perf_freq
 				? (SDL_GetPerformanceCounter() * 1000000ull) / perf_freq : 0;
 			if (last_tick_us == 0)
@@ -229,6 +260,8 @@ void m68k_do_compile_execute(void)
 					last_tick_us += 16667;
 				jit_one_tick();
 			}
+			}
+skip_wall_tick: ;
 		}
 		/* Unlike BasiliskII's Time Manager, Previous's CycInt queue is drained
 		   by jit_one_tick() through Uae2026JitCpuCheckTicks(). */

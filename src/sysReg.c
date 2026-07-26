@@ -8,6 +8,7 @@
 #include "configuration.h"
 #include "sysdeps.h"
 #include "m68000.h"
+#include "nextMemory.h"
 #include "dsp.h"
 #include "sysReg.h"
 #include "rtcnvram.h"
@@ -383,6 +384,34 @@ void set_interrupt(Uint32 intr, Uint8 state) {
     /* The interrupt gets polled by the cpu via intlev()
      * --> see previous-glue.c
      */
+    {
+        /* B2_INT_RATE probe: per-source assertion counts plus the live
+           status/mask, so a device that stops asserting (or stays masked)
+           under one engine can be named directly. */
+        static int rate_env = -1;
+        static unsigned long sets[32] = {0};
+        static time_t last = 0;
+        if (rate_env < 0)
+            rate_env = getenv("B2_INT_RATE") ? 1 : 0;
+        if (rate_env) {
+            if (state == SET_INT) {
+                for (int b = 0; b < 32; b++)
+                    if (intr & (1u << b))
+                        sets[b]++;
+            }
+            const time_t now = time(NULL);
+            if (now - last >= 2) {
+                last = now;
+                fprintf(stderr, "INTSRC stat=%08x mask=%08x",
+                    (unsigned)intStat, (unsigned)intMask);
+                for (int b = 0; b < 32; b++)
+                    if (sets[b])
+                        fprintf(stderr, " b%d=%lu", b, sets[b]);
+                fprintf(stderr, "\n");
+                fflush(stderr);
+            }
+        }
+    }
     if (state==SET_INT) {
         intStat |= intr;
     } else {
@@ -511,6 +540,19 @@ static bool   resetTimer;
 
 void System_Timer_Read(void) {
     Uint64 now = host_time_us();
+    {
+        static unsigned long strn = 0;
+        static int stre = -1;
+        if (stre < 0) stre = getenv("B2_TIMER_TRACE") ? 1 : 0;
+        if (stre && (strn < 20 || (strn % 2000) == 0))
+            fprintf(stderr, "SYSTIMER n=%lu now=%llu val=%llu tv_sec=%u tv_usec=%u pc=%08x\n",
+                strn, (unsigned long long)now,
+                (unsigned long long)((now - sysTimerOffset) & 0xFFFFF),
+                (unsigned)NEXTMemory_ReadLong(0x040b6cd8),
+                (unsigned)NEXTMemory_ReadLong(0x040b6cdc),
+                (unsigned)m68k_getpc());
+        strn++;
+    }
     if(resetTimer) {
         sysTimerOffset = now;
         resetTimer = false;

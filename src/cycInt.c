@@ -159,12 +159,45 @@ bool CycInt_SetNewInterruptUs(void) {
     return false;
 }
 
+static void cycint_probe(int kind, int handler)
+{
+	/* B2_INT_RATE probe: per-handler arm/fire counts for the CycInt queue, so a
+	   device timer that stops firing under one engine can be named directly. */
+	static int rate_env = -1;
+	static unsigned long armed[MAX_INTERRUPTS] = {0};
+	static unsigned long fired[MAX_INTERRUPTS] = {0};
+	static time_t last = 0;
+	if (rate_env < 0)
+		rate_env = getenv("B2_INT_RATE") ? 1 : 0;
+	if (!rate_env)
+		return;
+	if (handler >= 0 && handler < MAX_INTERRUPTS) {
+		if (kind == 0)
+			armed[handler]++;
+		else
+			fired[handler]++;
+	}
+	const time_t now = time(NULL);
+	if (now - last >= 2) {
+		last = now;
+		fprintf(stderr, "CYCINT active=%d ptype=%d ptime=%lld",
+			ActiveInterrupt, PendingInterrupt.type,
+			(long long)PendingInterrupt.time);
+		for (int i = 0; i < MAX_INTERRUPTS; i++)
+			if (armed[i] || fired[i])
+				fprintf(stderr, " h%d=%lu/%lu", i, armed[i], fired[i]);
+		fprintf(stderr, "\n");
+		fflush(stderr);
+	}
+}
+
 /*-----------------------------------------------------------------------*/
 /**
  * Adjust all interrupt timings as 'ActiveInterrupt' has occured, and
  * remove from active list.
  */
 void CycInt_AcknowledgeInterrupt(void) {
+	cycint_probe(1, ActiveInterrupt);
 	/* Update list cycle counts */
 	CycInt_UpdateInterrupt();
 
@@ -181,6 +214,7 @@ void CycInt_AcknowledgeInterrupt(void) {
  */
 void CycInt_AddRelativeInterruptCycles(Sint64 CycleTime, interrupt_id Handler) {
 	assert(CycleTime >= 0);
+	cycint_probe(0, (int)Handler);
 
 	/* Update list cycle counts with current PendingInterruptCount before adding a new int, */
 	/* because CycInt_SetNewInterrupt can change the active int / PendingInterruptCount */

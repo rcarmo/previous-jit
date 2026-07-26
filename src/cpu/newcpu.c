@@ -1034,7 +1034,16 @@ static void ExceptionX (int nr, uaecptr address)
        kernel was a trap. Interrupt returns are legitimately timed differently
        by the two engines and would otherwise swamp any comparison. */
     extern int jit_last_exception_vector;
+    extern unsigned long jit_exception_serial;
     jit_last_exception_vector = nr;
+    /* Monotonic count of delivered exceptions. The JIT tracer uses it to detect
+       that the instruction it just retired changed the flow of control through
+       an exception, which no opcode property can tell it: table68k marks a TRAP
+       fl_trap (4), and fl_end_block is 3, so "instructions that can trap don't
+       mark the end of a block". That is fine on Amiga, where a TRAP is rare and
+       usually does not fire; here TRAP #3 is the NeXT syscall gate and ALWAYS
+       fires. */
+    jit_exception_serial++;
     {
         /* B2_SYSCALL_TRACE=<path>: engine-independent checkpoint stream.
            Every guest exception is logged in the SAME format by the interpreter

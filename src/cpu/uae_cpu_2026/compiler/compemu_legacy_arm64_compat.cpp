@@ -1241,6 +1241,20 @@ static inline void jit_trace_retire_cycles(void)
 		cpu_do_check_ticks();
 }
 
+
+extern "C" unsigned long jit_exception_serial;
+
+/* B2_JIT_END_BLOCK_ON_EXCEPTION=0 disables; on by default. */
+static bool jit_end_block_on_exception(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("B2_JIT_END_BLOCK_ON_EXCEPTION");
+		cached = (env && *env && strcmp(env, "0") == 0) ? 0 : 1;
+	}
+	return cached != 0;
+}
+
 void execute_normal(void)
 {
 #if defined(CPU_AARCH64)
@@ -1555,7 +1569,10 @@ jit_pctrace_done:
 				tick_inhibit = false;
 				return;
 			}
+			const unsigned long exception_serial_before = jit_exception_serial;
 			(*cpufunctbl[opcode])(opcode);
+			const bool retired_through_exception =
+				jit_exception_serial != exception_serial_before;
 			Uae2026InterpreterFlagsToJit();
 			Uae2026JitHelperClear();
 			/* FULLMMU handlers update the logical PC but may leave pc_p anchored at
@@ -1571,6 +1588,19 @@ jit_pctrace_done:
 			jit_trace_retire_cycles();
 			total_cycles += 4 * CYCLE_UNIT;
 			bool must_end = __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
+			if (retired_through_exception && jit_end_block_on_exception()) {
+				/* The instruction just retired transferred control through an
+				   exception. Continuing the trace past it records the
+				   EXCEPTION HANDLER's instructions into the same block, so the
+				   compiled code hard-codes "this user instruction, then this
+				   kernel entry" -- a continuation that only holds for the
+				   vector, privilege level and handler address seen at trace
+				   time. table68k cannot express this: a TRAP is fl_trap (4)
+				   and fl_end_block is 3, deliberately, because on Amiga a trap
+				   usually does not fire. TRAP #3 is the NeXT syscall gate and
+				   always does. */
+				must_end = true;
+			}
 			if (straddles_page) {
 				/* Retired outside any trace. Nothing to compile (blocklen is
 				   0 here), so just re-anchor and let the dispatcher restart. */

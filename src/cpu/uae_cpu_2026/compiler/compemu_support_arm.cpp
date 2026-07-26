@@ -427,6 +427,7 @@ extern "C" void Uae2026CompilerFlushCacheHard(void);
 /* Set by ExceptionX() in the shared exception path; identifies which exception
  * last entered supervisor mode. */
 extern "C" int jit_last_exception_vector = -1;
+extern "C" unsigned long jit_exception_serial = 0;
 
 static void jit_guest_path_user_return(uae_u32 pc)
 {
@@ -1119,6 +1120,14 @@ static void jit_block_verify_snapshot_free(jit_block_verify_snapshot *snap)
     snap->mem_size = 0;
 }
 
+/* Live guest RAM. NEXTRam[0] is guest physical 0x04000000, the same origin
+   RAMBaseHost uses, so snapshot offsets are unchanged. */
+static inline uae_u8 *jit_block_verify_ram_base(void)
+{
+    extern uae_u8 NEXTRam[];
+    return NEXTRam;
+}
+
 static bool jit_block_verify_snapshot_capture(jit_block_verify_snapshot *snap)
 {
     /* Verifier snapshots should compare architectural SR, not whatever stale
@@ -1134,7 +1143,15 @@ static bool jit_block_verify_snapshot_capture(jit_block_verify_snapshot *snap)
     memcpy(&snap->flags, &regflags, sizeof(regflags));
     snap->countdown = countdown;
     snap->interrupt_flags = InterruptFlags;
-    memcpy(snap->mem, RAMBaseHost, snap->mem_size);
+    /* Snapshot the LIVE guest RAM, not RAMBaseHost. Under
+       PREVIOUS_UAE2026_JIT_RAM, RAMBaseHost points into the JIT's executable
+       shadow, which is a copy kept coherent for code fetch only -- data stores
+       from both engines land in NEXTRam. Snapshotting the shadow meant the
+       rollback between the native run and the interpreted replay never touched
+       the memory the runs actually use, so the two ran in sequence on
+       unrolled-back state and EVERY block containing a read-modify-write
+       reported a false mismatch of exactly one application. */
+    memcpy(snap->mem, jit_block_verify_ram_base(), snap->mem_size);
     return true;
 }
 
@@ -1144,7 +1161,11 @@ static void jit_block_verify_snapshot_restore(const jit_block_verify_snapshot *s
     memcpy(&regflags, &snap->flags, sizeof(regflags));
     countdown = snap->countdown;
     InterruptFlags = snap->interrupt_flags;
-    memcpy(RAMBaseHost, snap->mem, snap->mem_size);
+    memcpy(jit_block_verify_ram_base(), snap->mem, snap->mem_size);
+    /* Keep the executable shadow consistent with the restored RAM, or the
+       replay fetches code the rollback has already undone. */
+    if (RAMBaseHost && RAMBaseHost != jit_block_verify_ram_base())
+        memcpy(RAMBaseHost, snap->mem, snap->mem_size);
 }
 
 static void jit_block_verify_entry_reset(void)

@@ -958,8 +958,43 @@ extern "C" void Uae2026JitFastClearBytes(uae_u32 addr, uae_u32 count)
     Uae2026JitFillBytes(addr, count, 0);
 }
 
+extern "C" uae_u32 jit_native_retired_cpu_cycles;
+
+/* B2_JIT_RETIRED_CLOCK=1: charge emulated time for the cycles the guest
+ * actually retired instead of a fixed synthetic batch.
+ *
+ * The synthetic batch makes the emulated clock a function of HOW instructions
+ * were executed rather than of how many.  A compiled block calls this every
+ * JIT_TICK_INTERVAL (64) instructions and the trace path every 65536, yet both
+ * charge the same ~19531 cycles -- a ~1000x difference in emulated-time rate
+ * between the two execution paths.  Any change in the traced-vs-compiled mix
+ * therefore moves the clock, which is why two identical JIT runs do not agree
+ * on emulated time while two interpreter runs are bit-identical. */
+static bool jit_retired_clock(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("B2_JIT_RETIRED_CLOCK");
+        /* On by default: it is what makes two JIT runs agree. Set to 0 to get
+         * the old synthetic-batch clock back for comparison. */
+        cached = (env && *env && strcmp(env, "0") == 0) ? 0 : 1;
+    }
+    return cached != 0;
+}
+
 void cpu_do_check_ticks(void)
 {
+    if (jit_retired_clock()) {
+        /* Drain what native code and the tracer have accumulated. The outer
+         * dispatcher drains the same counter on return, so nothing is charged
+         * twice and nothing is lost. */
+        const int retired = (int)jit_native_retired_cpu_cycles;
+        jit_native_retired_cpu_cycles = 0;
+        /* No floor: a dispatcher spin that retires nothing must not advance
+         * emulated time, or the clock counts host-side work. */
+        Uae2026JitCpuCheckTicks(retired);
+        return;
+    }
     /* Default synthetic batch (~19531 cycles = ~781us at 25MHz). Cap it to the
      * next armed CycInt deadline so short periodic timers (500us hardclock =
      * 12500 cycles) fire on time instead of being overshot every batch, which

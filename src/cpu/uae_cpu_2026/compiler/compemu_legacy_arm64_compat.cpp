@@ -1204,6 +1204,43 @@ static inline bool jit_interpop_assert_target(uae_u32 *target)
 #endif
 }
 
+
+/* B2_JIT_RETIRED_CLOCK=1: the interpreted trace path must feed the same
+ * retired-cycle counter native blocks feed, otherwise emulated time depends on
+ * whether an instruction happened to be compiled.  cpufunctbl returns the
+ * instruction's cycle count; the tracer discarded it. */
+extern uae_u32 jit_native_retired_cpu_cycles;
+
+static bool jit_retired_clock_enabled(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("B2_JIT_RETIRED_CLOCK");
+		cached = (env && *env && strcmp(env, "0") == 0) ? 0 : 1;
+	}
+	return cached != 0;
+}
+
+/* Retire one traced instruction against the deterministic clock: accumulate its
+ * cycles and process events on the same cadence a compiled block uses
+ * (JIT_TICK_INTERVAL), instead of once per 65536 instructions. */
+static inline void jit_trace_retire_cycles(void)
+{
+	static unsigned long n = 0;
+	if (!jit_retired_clock_enabled()) {
+		cpu_check_ticks();
+		return;
+	}
+	/* Same charge a compiled block makes for the same instruction:
+	   scaled_cycles(4 * CYCLE_UNIT) divided back out of CYCLE_UNIT by
+	   compemu_raw_accum_retired_cycles(). Agreeing with the compiled path is
+	   the whole point -- cycle accuracy is a separate question. */
+	const int per_op = scaled_cycles(4 * CYCLE_UNIT) / CYCLE_UNIT;
+	jit_native_retired_cpu_cycles += (uae_u32)(per_op > 0 ? per_op : 1);
+	if ((++n & 63) == 0)
+		cpu_do_check_ticks();
+}
+
 void execute_normal(void)
 {
 #if defined(CPU_AARCH64)
@@ -1531,7 +1568,7 @@ jit_pctrace_done:
 				regs.pc_p = (uae_u8 *)next_host;
 				regs.pc_oldp = regs.pc_p;
 			}
-			cpu_check_ticks();
+			jit_trace_retire_cycles();
 			total_cycles += 4 * CYCLE_UNIT;
 			bool must_end = __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
 			if (straddles_page) {

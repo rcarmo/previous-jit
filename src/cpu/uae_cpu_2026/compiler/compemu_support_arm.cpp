@@ -9396,6 +9396,21 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                        self-consistent triple for the current opcode before the
                        fallback call. */
                     compemu_raw_set_pc_full_i(op_m68k_pc, (uintptr)pc_hist[i].location);
+                    if (jit_guest_instruction_observer_enabled()) {
+                        /* The observer was emitted only in the COMPILED branch,
+                           so every instruction taking the interpreter fallback
+                           was missing from the retired-instruction path -- and
+                           the fallback set includes MOVE SR,<ea> and MOVE to
+                           SR. An engine-to-engine path diff then reports the
+                           JIT "skipping" an instruction it in fact executed:
+                           measured at 0406b736 (40c0 move sr,d0), the target of
+                           BGE.B at 0406b726, which made a correct JIT look like
+                           a branch-displacement bug. State is already flushed
+                           above for the fallback call, so this samples the same
+                           architectural point the compiled path does. */
+                        compemu_raw_call_observer_i((uintptr)jit_guest_path_record_native,
+                            op_m68k_pc);
+                    }
                     if (jit_trace_target_pc(op_m68k_pc)) {
                         compemu_raw_call_observer_ii((uintptr)jit_trace_pc_hit,
                             op_m68k_pc, (2u << 16) | (opcode & 0xffff));

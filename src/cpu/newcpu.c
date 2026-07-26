@@ -1029,6 +1029,51 @@ static void Exception_mmu (int nr, uaecptr oldpc)
 /* Handle exceptions. */
 static void ExceptionX (int nr, uaecptr address)
 {
+    {
+        /* B2_INT_RATE probe: exception-vector histogram. Vector 2 (access
+           fault) and the trap vectors distinguish a user thread that faulted
+           and was never resumed from one that simply stopped being scheduled. */
+        static int rate_env = -1;
+        static unsigned long by_vec[64] = {0};
+        static unsigned long total = 0;
+        static uae_u32 last_fault_pc = 0;
+        static uae_u32 last_fault_addr = 0;
+        static time_t last = 0;
+        if (rate_env < 0)
+            rate_env = getenv("B2_INT_RATE") ? 1 : 0;
+        if (rate_env) {
+            total++;
+            if (nr >= 0 && nr < 64)
+                by_vec[nr]++;
+            if (nr == 2 || nr == 3) {
+                last_fault_pc = (uae_u32)m68k_getpc();
+                last_fault_addr = (uae_u32)regs.mmu_fault_addr;
+                static unsigned long fault_log = 0;
+                if (fault_log < 4000) {
+                    fprintf(stderr,
+                        "FAULT %lu nr=%d pc=%08x addr=%08x s=%d op=%04x restart=%d a0=%08x a2=%08x a3=%08x sr=%04x\n",
+                        ++fault_log, nr, (unsigned)last_fault_pc,
+                        (unsigned)last_fault_addr, (int)regs.s,
+                        (unsigned)mmu_opcode, mmu_restart ? 1 : 0,
+                        (unsigned)regs.regs[8], (unsigned)regs.regs[10],
+                        (unsigned)regs.regs[11], (unsigned)regs.sr);
+                    fflush(stderr);
+                }
+            }
+            const time_t now = time(NULL);
+            if (now - last >= 2) {
+                last = now;
+                fprintf(stderr, "EXCVEC total=%lu faultpc=%08x faultaddr=%08x s=%d",
+                    total, (unsigned)last_fault_pc, (unsigned)last_fault_addr,
+                    (int)regs.s);
+                for (int i = 0; i < 64; i++)
+                    if (by_vec[i])
+                        fprintf(stderr, " v%d=%lu", i, by_vec[i]);
+                fprintf(stderr, "\n");
+                fflush(stderr);
+            }
+        }
+    }
     if (currprefs.cpu_model == 68030)
         Exception_mmu030 (nr, m68k_getpc ());
     else

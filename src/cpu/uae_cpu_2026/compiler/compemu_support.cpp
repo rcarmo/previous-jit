@@ -209,9 +209,20 @@ void m68k_do_compile_execute(void)
 					if (!retired_cpu_cycles)
 						zero_charge++;
 					charged_total += retired_cpu_cycles;
+					/* Track whether the guest ever leaves supervisor mode:
+					   a kernel that idles because no user thread exists looks
+					   identical to one whose user thread is blocked unless we
+					   sample this. */
+					static unsigned long user_dispatch = 0;
+					static uae_u32 last_user_pc = 0;
+					if (!regs.s) {
+						user_dispatch++;
+						last_user_pc = (uae_u32)m68k_getpc();
+					}
 					if ((jit_stat_dispatch % 2000000UL) == 0)
-						fprintf(stderr, "JITSTATS dispatch=%lu compile=%lu zero=%lu charged=%llu\n",
-							jit_stat_dispatch, jit_stat_compile, zero_charge, charged_total);
+						fprintf(stderr, "JITSTATS dispatch=%lu compile=%lu zero=%lu charged=%llu user=%lu lastuserpc=%08x\n",
+							jit_stat_dispatch, jit_stat_compile, zero_charge, charged_total,
+							user_dispatch, (unsigned)last_user_pc);
 				}
 			}
 		}

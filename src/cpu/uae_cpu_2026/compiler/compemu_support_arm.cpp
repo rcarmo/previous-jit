@@ -984,8 +984,12 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
     int memdiffs = 0;
     for (size_t i = 0; i < expected->mem_size && memdiffs < 16; i++) {
         if (expected->mem[i] != actual->mem[i]) {
-            fprintf(stderr, "  mem[%08zx] interp=%02x native=%02x\n", i,
-                (unsigned)expected->mem[i], (unsigned)actual->mem[i]);
+            const unsigned pre = (jit_block_verify_entry_valid &&
+                jit_block_verify_entry_state.mem &&
+                i < jit_block_verify_entry_state.mem_size)
+                ? (unsigned)jit_block_verify_entry_state.mem[i] : 0xffffu;
+            fprintf(stderr, "  mem[%08zx] pre=%02x interp=%02x native=%02x\n", i,
+                pre, (unsigned)expected->mem[i], (unsigned)actual->mem[i]);
             memdiffs++;
         }
     }
@@ -8134,19 +8138,22 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         bi->count = -2;
                     } else if (optlev == 0) {
                         /* RAM: use interpreter dispatch initially. Transient code
-                           (memclear) runs once per address and never escalates.
-                           Hot loops run many times and will escalate on the next
-                           count expiry after 10 dispatches. */
-                        if (bi_was_invalid) {
-                            bi->count = 9;
-                        } else {
-                            /* Proven hot: the countdown expired, so this is the
-                               escalation the count was there to trigger. Leaving
-                               optlev at 0 here would re-arm the same countdown
-                               forever and recompile the block every 10
-                               executions instead of promoting it. */
+                           (memclear) runs once per address and never escalates. */
+                        static int escalate_env = -1;
+                        if (escalate_env < 0) {
+                            const char *e = getenv("PREVIOUS_UAE2026_JIT_RAM_ESCALATE");
+                            escalate_env = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
+                        }
+                        if (escalate_env && !bi_was_invalid) {
+                            /* Opt-in: promote a proven-hot RAM block to native
+                               codegen on countdown expiry instead of re-arming
+                               the same countdown. Off by default because native
+                               RAM codegen is not yet validated for the whole
+                               kernel/userland working set. */
                             optlev = max_optlev;
                             bi->count = -2;
+                        } else {
+                            bi->count = 9;
                         }
                     } else if (optlev < max_optlev) {
                         optlev = max_optlev;

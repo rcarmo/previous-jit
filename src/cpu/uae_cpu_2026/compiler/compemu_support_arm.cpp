@@ -2771,14 +2771,20 @@ static inline bool jit_block_identity_matches(blockinfo *bi, void *addr,
         return false;
     if (!jit_mmu_generation_keying_enabled())
         return true;
-    /* The generation must actually reject a stale block. Refreshing it after an
-     * identity match was tried and is WRONG: it restores throughput (565k
-     * compiles instead of 8.6M) but reintroduces the skipped demand-paging
-     * fault, and the boot regresses from 13111 exception checkpoints back to
-     * 3283. bi->pc_p == addr is not sufficient evidence that the mapping is
-     * unchanged, because a page can be unmapped and later restored to the same
-     * physical frame. Throughput has to be recovered another way (finer-grained
-     * invalidation on single-page PFLUSH rather than a global counter). */
+    /* The generation must actually reject a stale block. Three ways to avoid the
+     * resulting retranslation cost were tried and all regress the boot from
+     * 16768 exception checkpoints to ~3300:
+     *   - refreshing the generation whenever the rest of the identity matches
+     *     (a page can be unmapped and later restored to the same frame);
+     *   - exempting identity-mapped supervisor code, on the theory that wired
+     *     kernel text cannot be remapped;
+     *   - skipping the bump for TTR writes that do not change the register
+     *     (the kernel uses a TTR rewrite as an invalidation barrier; without it
+     *     the kernel panics with an 1111 emulator trap after root mount).
+     * The global invalidation is load-bearing. Recovering the throughput needs
+     * real per-page invalidation -- tracking which blocks live on which guest
+     * page and invalidating only the pages a PFLUSH actually names -- rather
+     * than a cheaper predicate here. */
     return bi->mmu_generation == Uae2026JitMmuGeneration();
 }
 

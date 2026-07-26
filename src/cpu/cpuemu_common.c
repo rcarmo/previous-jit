@@ -155,6 +155,13 @@ int m68k_move2c (int regno, uae_u32 *regp)
 			break;
 
 			/* no differences between 68040 and 68060 */
+			/* Do NOT skip mmu_tt_modified() when the written value equals the
+			   current one. It was tried: TTR writes are the single largest source
+			   of MMU generation bumps, and each bump retranslates the working set.
+			   But NeXTSTEP's kernel uses a TTR rewrite as an invalidation barrier
+			   after changing page tables, so filtering the unchanged case loses
+			   invalidation the guest depends on and the kernel panics with an
+			   1111 emulator trap shortly after root mount. */
 		case 4: regs.itt0 = *regp & 0xffffe364; mmu_tt_modified (); break;
 		case 5: regs.itt1 = *regp & 0xffffe364; mmu_tt_modified (); break;
 		case 6: regs.dtt0 = *regp & 0xffffe364; mmu_tt_modified (); break;

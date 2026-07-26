@@ -1042,6 +1042,7 @@ static void ExceptionX (int nr, uaecptr address)
         static unsigned long sc_seq = 0;
         static unsigned long sc_limit = 0;
         static unsigned long sc_dump_at = 0;
+        static unsigned long sc_arm_at = 0;
         if (!sc_init) {
             sc_init = 1;
             const char *path = getenv("B2_SYSCALL_TRACE");
@@ -1051,6 +1052,8 @@ static void ExceptionX (int nr, uaecptr address)
             sc_limit = (lim && *lim) ? strtoul(lim, NULL, 0) : 100000;
             const char *dat = getenv("B2_SYSCALL_TRACE_DUMP_AT");
             sc_dump_at = (dat && *dat) ? strtoul(dat, NULL, 0) : 0;
+            const char *aat = getenv("B2_JIT_GUEST_PATH_ARM_CHECKPOINT");
+            sc_arm_at = (aat && *aat) ? strtoul(aat, NULL, 0) : 0;
         }
         if (sc_file && sc_seq < sc_limit && (nr < 24 || nr > 31)) {
             MakeSR();
@@ -1069,6 +1072,20 @@ static void ExceptionX (int nr, uaecptr address)
                 (unsigned)regs.regs[14], (unsigned)regs.regs[15]);
             if ((sc_seq & 0x3f) == 0)
                 fflush(sc_file);
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+            if (sc_arm_at && sc_seq == sc_arm_at) {
+                /* Turn the per-instruction path observer on here and drop every
+                   translation so following blocks are compiled with it. Running
+                   the whole boot with the observer is both too slow to reach a
+                   deep checkpoint and perturbs device timing. */
+                extern void jit_guest_path_late_arm(void);
+                extern void Uae2026CompilerFlushCacheHard(void);
+                jit_guest_path_late_arm();
+                Uae2026CompilerFlushCacheHard();
+                fprintf(stderr, "B2_SYSCALL_TRACE: path observer armed at checkpoint %lu\n", sc_seq);
+                fflush(stderr);
+            }
+#endif
             if (sc_dump_at && sc_seq == sc_dump_at) {
                 fflush(sc_file);
 #if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)

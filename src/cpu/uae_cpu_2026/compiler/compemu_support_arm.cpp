@@ -179,6 +179,30 @@ static inline bool jit_guest_path_enabled(void)
     return enabled != 0;
 }
 
+/* Late arming. The per-instruction observer costs roughly an order of magnitude
+ * in wall-clock speed, which both makes a deep checkpoint unreachable in
+ * reasonable time and perturbs device timing enough to change guest behaviour.
+ * With B2_JIT_GUEST_PATH_ARM_CHECKPOINT=<n> the emulator runs at full speed and
+ * only turns the observer on when the shared exception checkpoint counter
+ * reaches n; the caller then flushes the translation cache so subsequent blocks
+ * are compiled WITH the observer. */
+static bool jit_guest_path_late_armed = false;
+
+extern "C" void jit_guest_path_late_arm(void)
+{
+    jit_guest_path_late_armed = true;
+}
+
+static inline bool jit_guest_path_late_arm_pending(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("B2_JIT_GUEST_PATH_ARM_CHECKPOINT");
+        cached = (env && *env) ? 1 : 0;
+    }
+    return cached != 0 && !jit_guest_path_late_armed;
+}
+
 static inline bool jit_guest_path_arm_start_env(void)
 {
     static int enabled = -1;
@@ -263,6 +287,8 @@ static inline unsigned long jit_retirement_tick_every(void)
    retirement ticks must work without also allocating or recording a path. */
 extern "C" bool jit_guest_instruction_observer_enabled(void)
 {
+    if (jit_guest_path_late_arm_pending())
+        return false;
     return jit_guest_path_enabled() || jit_retirement_tick_every() != 0;
 }
 
@@ -274,7 +300,7 @@ static void jit_guest_path_record(uae_u32 pc)
     static unsigned long count_target = 0;
     static unsigned long count_after_arm = 0;
     static bool initialized = false;
-    if (!jit_guest_path_enabled())
+    if (!jit_guest_path_enabled() || jit_guest_path_late_arm_pending())
         return;
     if (!initialized) {
         const char* env = getenv("B2_JIT_GUEST_PATH_TARGET");
@@ -312,7 +338,13 @@ static void jit_guest_path_record(uae_u32 pc)
     {
         const unsigned long slot = jit_guest_path_index & (JIT_GUEST_PATH_CAPACITY - 1);
         jit_guest_path_ring[slot] = pc;
-        jit_guest_path_sp_ring[slot] = (uae_u32)m68k_areg(regs, 7);
+        /* Stack pointers are always even, so bit 0 is free: carry the supervisor
+         * flag there. An engine-to-engine path diff is otherwise swamped by
+         * interrupt-timing noise -- interrupts are transparent to the user
+         * instruction stream, so filtering to user mode isolates real
+         * divergence. */
+        jit_guest_path_sp_ring[slot] =
+            ((uae_u32)m68k_areg(regs, 7) & ~1u) | (regs.s ? 1u : 0u);
         jit_guest_path_index++;
     }
     if (target && jit_guest_path_index >= target_after && pc == target)
@@ -8533,9 +8565,19 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                     jit_compile_current_op_m68k_pc = op_m68k_pc;
                     jit_compile_current_opcode = (uae_u16)opcode;
                     jit_emitted_guest_memory_write = false;
-                    if (jit_guest_instruction_observer_enabled())
+                    if (jit_guest_instruction_observer_enabled()) {
+                        /* The observer reads guest state (pc, a7) from the regs
+                         * struct, but the register allocator keeps guest values
+                         * live in host registers and writes them back lazily.
+                         * Without a flush the observer samples the PREVIOUS
+                         * instruction's a7, which makes an engine-to-engine path
+                         * diff report divergences that are pure artifacts (an
+                         * UNLK looks like it did not pop). This path is
+                         * diagnostic-only, so the cost is irrelevant. */
+                        flush(1);
                         compemu_raw_call_observer_i((uintptr)jit_guest_path_record_native,
                             op_m68k_pc);
+                    }
                     comptbl[cft_map(opcode)](opcode);
                     jit_compile_current_op_host_pc = 0;
                     jit_compile_current_op_m68k_pc = 0;

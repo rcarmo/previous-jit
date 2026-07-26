@@ -1029,6 +1029,12 @@ static void Exception_mmu (int nr, uaecptr oldpc)
 /* Handle exceptions. */
 static void ExceptionX (int nr, uaecptr address)
 {
+    /* Published for the shared guest-path observer: a supervisor->user
+       transition is only a syscall return if the exception that entered the
+       kernel was a trap. Interrupt returns are legitimately timed differently
+       by the two engines and would otherwise swamp any comparison. */
+    extern int jit_last_exception_vector;
+    jit_last_exception_vector = nr;
     {
         /* B2_SYSCALL_TRACE=<path>: engine-independent checkpoint stream.
            Every guest exception is logged in the SAME format by the interpreter

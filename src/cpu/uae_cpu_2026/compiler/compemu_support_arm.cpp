@@ -198,7 +198,8 @@ static inline bool jit_guest_path_late_arm_pending(void)
     static int cached = -1;
     if (cached < 0) {
         const char *env = getenv("B2_JIT_GUEST_PATH_ARM_CHECKPOINT");
-        cached = (env && *env) ? 1 : 0;
+        const char *env2 = getenv("B2_JIT_GUEST_PATH_ARM_USERRET");
+        cached = ((env && *env) || (env2 && *env2)) ? 1 : 0;
     }
     return cached != 0 && !jit_guest_path_late_armed;
 }
@@ -221,6 +222,10 @@ static uae_u32* jit_guest_path_ring = NULL;
    imbalance is the cheapest engine-to-engine divergence to spot, and recording
    it alongside the PC turns the path capture into a direct differ. */
 static uae_u32* jit_guest_path_sp_ring = NULL;
+/* Parallel ring of the condition codes at each retired instruction. A syscall
+ * signals failure in the CCR, so a CCR divergence is a result divergence even
+ * when both engines retire an identical instruction sequence. */
+static uae_u8* jit_guest_path_ccr_ring = NULL;
 static unsigned long jit_guest_path_index = 0;
 static bool jit_guest_path_armed = false;
 static bool jit_guest_path_dumped = false;
@@ -242,9 +247,10 @@ static void jit_guest_path_dump(const char* reason)
         if (f) {
             for (unsigned long i = start; i < jit_guest_path_index; i++) {
                 const unsigned long slot = i & (JIT_GUEST_PATH_CAPACITY - 1);
-                fprintf(f, "%lu %08x %08x\n", i,
+                fprintf(f, "%lu %08x %08x %02x\n", i,
                     (unsigned)jit_guest_path_ring[slot],
-                    (unsigned)(jit_guest_path_sp_ring ? jit_guest_path_sp_ring[slot] : 0));
+                    (unsigned)(jit_guest_path_sp_ring ? jit_guest_path_sp_ring[slot] : 0),
+                    (unsigned)(jit_guest_path_ccr_ring ? jit_guest_path_ccr_ring[slot] : 0));
             }
             fclose(f);
         }
@@ -269,13 +275,22 @@ extern uae_u32 jit_current_interp_pc;
 extern uae_u32 jit_current_interp_opcode;
 }
 
+static inline bool jit_flush_every_op(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("B2_JIT_FLUSH_EVERY_OP");
+        cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
 static inline unsigned long jit_retirement_tick_every(void)
 {
     static unsigned long value = 0;
     static bool initialized = false;
     if (!initialized) {
-        const char *env = getenv("B2_JIT_RETIREMENT_TICK_EVERY");
-        value = env && *env ? strtoul(env, NULL, 0) : 0;
+        const char *env = getenv("B2_JIT_RETIREMENT_TICK_EVERY");        value = env && *env ? strtoul(env, NULL, 0) : 0;
         initialized = true;
     }
     return value;
@@ -286,10 +301,11 @@ static inline unsigned long jit_retirement_tick_every(void)
    tick run. Keep the scheduler independent of capture arming: asking for
    retirement ticks must work without also allocating or recording a path. */
 static uae_u32 jit_guest_path_watch_pc(void);
+static unsigned long jit_guest_path_user_return_limit(void);
 
 extern "C" bool jit_guest_instruction_observer_enabled(void)
 {
-    if (jit_guest_path_watch_pc() != 0)
+    if (jit_guest_path_watch_pc() != 0 || jit_guest_path_user_return_limit() != 0)
         return true;
     if (jit_guest_path_late_arm_pending())
         return false;
@@ -351,6 +367,16 @@ static void jit_guest_path_watch(uae_u32 pc)
         return;
     ++watch_count;
     follow_left = follow_total;
+    if (getenv("B2_JIT_GUEST_PATH_WATCH_WORDS") && regs.pc_p) {
+        /* Instruction words at the watched PC, straight off the current fetch
+         * pointer. Only meaningful where pc_p is maintained per instruction
+         * (interpreter and the JIT's trace pass), which is where a decode
+         * question is normally asked. */
+        fprintf(stderr, "PATHWORDS pc=%08x", (unsigned)pc);
+        for (int w = 0; w < 6; w++)
+            fprintf(stderr, " %04x", (unsigned)do_get_mem_word((uae_u16 *)(regs.pc_p + w * 2)));
+        fprintf(stderr, "\n");
+    }
     /* A NeXTSTEP/Mach m68k syscall reports failure in the carry flag and the
      * errno in d0, so the CCR is as load-bearing as the registers here.
      * flush(1) at the observer call site has already written host-resident
@@ -374,6 +400,88 @@ static void jit_guest_path_watch(uae_u32 pc)
     fflush(stderr);
 }
 
+/* B2_JIT_GUEST_PATH_USER_RETURN=<n>: log the first n instructions retired in
+ * user mode immediately after a supervisor->user transition. That is exactly
+ * the instruction a syscall returns to, so the line carries the syscall's
+ * result (d0) and its error indication (carry). Both engines emit it from the
+ * same observer, so the two streams diff directly -- and unlike a PC watch it
+ * needs no knowledge of where any particular stub lives. */
+static unsigned long jit_guest_path_user_return_limit(void)
+{
+    static unsigned long value = 0;
+    static bool initialized = false;
+    if (!initialized) {
+        const char *env = getenv("B2_JIT_GUEST_PATH_USER_RETURN");
+        value = (env && *env) ? strtoul(env, NULL, 0) : 0;
+        const char *a = getenv("B2_JIT_GUEST_PATH_ARM_USERRET");
+        const char *d = getenv("B2_JIT_GUEST_PATH_DUMP_USERRET");
+        if (!value && ((a && *a) || (d && *d)))
+            value = 1; /* enough to keep the observer enabled */
+        initialized = true;
+    }
+    return value;
+}
+
+extern "C" void Uae2026CompilerFlushCacheHard(void);
+
+/* Set by ExceptionX() in the shared exception path; identifies which exception
+ * last entered supervisor mode. */
+extern "C" int jit_last_exception_vector = -1;
+
+static void jit_guest_path_user_return(uae_u32 pc)
+{
+    static unsigned long emitted = 0;
+    static unsigned long syscall_returns = 0;
+    static unsigned long arm_at = 0;
+    static unsigned long dump_at = 0;
+    static bool env_read = false;
+    static int last_s = -1;
+    const unsigned long limit = jit_guest_path_user_return_limit();
+    const int now_s = regs.s ? 1 : 0;
+    if (!env_read) {
+        const char *a = getenv("B2_JIT_GUEST_PATH_ARM_USERRET");
+        arm_at = (a && *a) ? strtoul(a, NULL, 0) : 0;
+        const char *d = getenv("B2_JIT_GUEST_PATH_DUMP_USERRET");
+        dump_at = (d && *d) ? strtoul(d, NULL, 0) : 0;
+        env_read = true;
+    }
+    if (!limit && !arm_at && !dump_at)
+        return;
+    if (last_s == 1 && now_s == 0) {
+        if (emitted < limit) {
+            ++emitted;
+            fprintf(stderr,
+                "USERRET %lu v=%d pc=%08x ccr=%02x d0=%08x d1=%08x a0=%08x a7=%08x\n",
+                emitted, jit_last_exception_vector, (unsigned)pc,
+                (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
+                           (GET_VFLG() << 1) | GET_CFLG()),
+                (unsigned)regs.regs[0], (unsigned)regs.regs[1],
+                (unsigned)regs.regs[8], (unsigned)m68k_areg(regs, 7));
+            if ((emitted & 0x3f) == 0)
+                fflush(stderr);
+        }
+        /* Only trap returns are engine-independent: an interrupt return is
+         * timed differently by the two engines by construction. Counting just
+         * the traps gives a shared coordinate both captures can be anchored to. */
+        if (jit_last_exception_vector >= 32 && jit_last_exception_vector <= 47) {
+            ++syscall_returns;
+            if (arm_at && syscall_returns == arm_at) {
+                jit_guest_path_late_arm();
+                Uae2026CompilerFlushCacheHard();
+                fprintf(stderr, "USERRET: path observer armed at syscall return %lu\n",
+                    syscall_returns);
+                fflush(stderr);
+            }
+            if (dump_at && syscall_returns == dump_at) {
+                fprintf(stderr, "USERRET: path dump at syscall return %lu\n",
+                    syscall_returns);
+                jit_guest_path_dump("userret");
+            }
+        }
+    }
+    last_s = now_s;
+}
+
 static void jit_guest_path_record(uae_u32 pc)
 {
     static uae_u32 target = 0;
@@ -383,6 +491,7 @@ static void jit_guest_path_record(uae_u32 pc)
     static unsigned long count_after_arm = 0;
     static bool initialized = false;
     jit_guest_path_watch(pc);
+    jit_guest_path_user_return(pc);
     if (!jit_guest_path_enabled() || jit_guest_path_late_arm_pending())
         return;
     if (!initialized) {
@@ -412,7 +521,8 @@ static void jit_guest_path_record(uae_u32 pc)
     if (!jit_guest_path_ring) {
         jit_guest_path_ring = (uae_u32*)malloc(sizeof(uae_u32) * JIT_GUEST_PATH_CAPACITY);
         jit_guest_path_sp_ring = (uae_u32*)malloc(sizeof(uae_u32) * JIT_GUEST_PATH_CAPACITY);
-        if (!jit_guest_path_ring || !jit_guest_path_sp_ring) {
+        jit_guest_path_ccr_ring = (uae_u8*)malloc(JIT_GUEST_PATH_CAPACITY);
+        if (!jit_guest_path_ring || !jit_guest_path_sp_ring || !jit_guest_path_ccr_ring) {
             fprintf(stderr, "JIT_GUEST_PATH allocation failed (%lu bytes)\n",
                 (unsigned long)(sizeof(uae_u32) * JIT_GUEST_PATH_CAPACITY));
             abort();
@@ -428,6 +538,9 @@ static void jit_guest_path_record(uae_u32 pc)
          * divergence. */
         jit_guest_path_sp_ring[slot] =
             ((uae_u32)m68k_areg(regs, 7) & ~1u) | (regs.s ? 1u : 0u);
+        jit_guest_path_ccr_ring[slot] = (uae_u8)
+            ((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
+             (GET_VFLG() << 1) | GET_CFLG());
         jit_guest_path_index++;
     }
     if (target && jit_guest_path_index >= target_after && pc == target)
@@ -8660,6 +8773,15 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         flush(1);
                         compemu_raw_call_observer_i((uintptr)jit_guest_path_record_native,
                             op_m68k_pc);
+                    } else if (jit_flush_every_op()) {
+                        /* B2_JIT_FLUSH_EVERY_OP=1: the same per-instruction
+                         * writeback of registers and flags the observer forces,
+                         * without the observer call. It answers exactly one
+                         * question: is a divergence caused by lazily-held host
+                         * register/flag state, or by the guest-visible
+                         * algorithm? The observer answers it too but is ~100x
+                         * slower, which is too slow to reach a deep symptom. */
+                        flush(1);
                     }
                     comptbl[cft_map(opcode)](opcode);
                     jit_compile_current_op_host_pc = 0;

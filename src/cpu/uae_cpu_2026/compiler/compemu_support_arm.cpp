@@ -1445,6 +1445,21 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
             (unsigned)jit_block_verify_entry_state.flags.nzcv,
             (unsigned)jit_block_verify_entry_state.flags.x,
             (unsigned)jit_block_verify_entry_state.regs.regs[0]);
+        /* The verifier executes the block TWICE from the same entry state.  That
+           is only valid for memory whose reads are idempotent: a device register
+           may legitimately return a different value to the native run and to the
+           interpreter replay, and the snapshot covers RAM and ROM only.  Print
+           the entry address registers so an operand outside RAM/ROM can be
+           recognised as a limitation of the instrument rather than a defect. */
+        fprintf(stderr, "  entry a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
+            (unsigned)jit_block_verify_entry_state.regs.regs[8],
+            (unsigned)jit_block_verify_entry_state.regs.regs[9],
+            (unsigned)jit_block_verify_entry_state.regs.regs[10],
+            (unsigned)jit_block_verify_entry_state.regs.regs[11],
+            (unsigned)jit_block_verify_entry_state.regs.regs[12],
+            (unsigned)jit_block_verify_entry_state.regs.regs[13],
+            (unsigned)jit_block_verify_entry_state.regs.regs[14],
+            (unsigned)jit_block_verify_entry_state.regs.regs[15]);
     }
     for (int i = 0; i < 16; i++) {
         if (expected_regs.regs[i] != actual_regs.regs[i]) {
@@ -3654,7 +3669,15 @@ static inline void block_need_recompile(blockinfo* bi)
 
 /* Called from the dispatch loop after each generated-code entry returns.
  * regs.pc_p already names the next block, which is the one worth re-checking:
- * it is about to run, so its translation is live. */
+ * it is about to run, so its translation is live.
+ *
+ * Selecting purely by dispatch count re-checks whatever is hottest: 1369
+ * verifications covered only 35 distinct blocks.  Keep a recency table and skip
+ * a candidate that has already been swept in this generation, retrying on the
+ * next dispatch instead of consuming the interval, so the sweep walks forward
+ * to something it has not seen.  When a whole generation is exhausted -- no
+ * fresh block within JIT_VERIFY_SWEEP_RETRIES consecutive dispatches -- clear
+ * the table and start again. */
 static inline void jit_verify_sweep_tick(void)
 {
     const unsigned long every = jit_verify_sweep_every();
@@ -3663,10 +3686,27 @@ static inline void jit_verify_sweep_tick(void)
     static unsigned long n = 0;
     if (++n % every)
         return;
+    enum { JIT_VERIFY_SWEEP_SLOTS = 8192, JIT_VERIFY_SWEEP_RETRIES = 8192 };
+    static uae_u32 swept_pc[JIT_VERIFY_SWEEP_SLOTS];
+    static unsigned long retries = 0;
+    const uae_u32 pc = (uae_u32)m68k_getpc() & ~1u;
+    const unsigned slot = (unsigned)((pc >> 1) & (JIT_VERIFY_SWEEP_SLOTS - 1));
     blockinfo *bi = get_blockinfo_addr(regs.pc_p);
-    if (!bi || bi->status == BI_INVALID)
+    /* Not every dispatch return lands on a compiled block, and a candidate may
+       already have been swept this generation.  Neither is a reason to spend
+       the interval doing nothing: retry on the next dispatch instead. */
+    if (swept_pc[slot] == pc || !bi || bi->status == BI_INVALID) {
+        if (++retries < JIT_VERIFY_SWEEP_RETRIES) {
+            n--;
+            return;
+        }
+        memset(swept_pc, 0, sizeof(swept_pc));
+        retries = 0;
         return;
-    jit_verify_sweep_pc = (uae_u32)m68k_getpc() & ~1u;
+    }
+    retries = 0;
+    swept_pc[slot] = pc;
+    jit_verify_sweep_pc = pc;
     block_need_recompile(bi);
 }
 

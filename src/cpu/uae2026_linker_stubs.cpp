@@ -547,6 +547,14 @@ extern "C" void Uae2026JitShadowSyncInvalidate(uae_u32 addr, uae_u32 size)
 {
     if (size == 0)
         return;
+    /* Every guest store lands here (phys_put_* is the single sink).  Besides
+       re-syncing the execution shadow, tell the translator: a store into a page
+       that holds translated code must discard that translation, or the guest
+       keeps executing code it has just overwritten. */
+    {
+        extern void Uae2026JitNotifyGuestStore(uae_u32 phys, uae_u32 size);
+        Uae2026JitNotifyGuestStore(addr, size);
+    }
     const uae_u32 first = addr & ~0x1fffu;
     const uae_u32 last = (addr + size - 1u) & ~0x1fffu;
     for (uae_u32 p = first; ; p += 0x2000u) {

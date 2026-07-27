@@ -3556,6 +3556,46 @@ static inline bool jit_write_overlaps_checksum(const blockinfo* bi,
 extern "C" void Uae2026JitShadowSyncInvalidate(uae_u32 addr, uae_u32 size);
 extern "C" uae_u32 Uae2026JitMmuXlateData(uae_u32 addr);
 
+/* Physical pages that currently hold translated code.
+ *
+ * phys_put_*() is the single sink for every guest store, and it invalidated the
+ * execution shadow but NOT the translated blocks: block invalidation was
+ * reachable only from the DMA notify and from the strict-mode compiled-store
+ * barrier, which is off by default.  So a page rewritten by ordinary kernel
+ * stores -- zero-fill, copy-on-write, a page-in staged through the buffer
+ * cache -- kept executing the blocks compiled from whatever occupied that
+ * physical page before.  Kernel and ROM text is never rewritten, so this only
+ * bites in user space, which is exactly where the optlev-2 boot fails.
+ *
+ * A full block scan per store is far too expensive.  One bit per 8 KB physical
+ * page makes the common case a load and a test: only a store into a page that
+ * actually holds translated code pays for the scan. */
+#define UAE2026_CODEPAGE_SHIFT 13
+#define UAE2026_CODEPAGE_COUNT (1u << 13) /* 8192 pages = 64 MiB of guest RAM */
+static uae_u32 g_jit_code_page_bits[UAE2026_CODEPAGE_COUNT / 32];
+
+static inline void jit_code_page_mark(uae_u32 rel, uae_u32 size)
+{
+    if (size == 0)
+        return;
+    const uae_u32 first = rel >> UAE2026_CODEPAGE_SHIFT;
+    const uae_u32 last = (rel + size - 1u) >> UAE2026_CODEPAGE_SHIFT;
+    for (uae_u32 p = first; p <= last && p < UAE2026_CODEPAGE_COUNT; p++)
+        g_jit_code_page_bits[p >> 5] |= 1u << (p & 31);
+}
+
+static inline bool jit_code_page_test(uae_u32 rel, uae_u32 size)
+{
+    if (size == 0)
+        return false;
+    const uae_u32 first = rel >> UAE2026_CODEPAGE_SHIFT;
+    const uae_u32 last = (rel + size - 1u) >> UAE2026_CODEPAGE_SHIFT;
+    for (uae_u32 p = first; p <= last && p < UAE2026_CODEPAGE_COUNT; p++)
+        if (g_jit_code_page_bits[p >> 5] & (1u << (p & 31)))
+            return true;
+    return false;
+}
+
 static void jit_invalidate_guest_code_linear(uae_u32 address, uae_u32 size,
                                              bool trace,
                                              bool count_coherent_write)
@@ -3677,6 +3717,35 @@ extern "C" void Uae2026JitNotifyDeviceMemoryWrite(uae_u32 address, uae_u32 size)
     if (size == 0)
         return;
     jit_invalidate_guest_code_range(address, size, false);
+}
+
+/* Guest CPU store barrier, called from phys_put_*() via the shadow-sync hook.
+ * Physical address in, page-bitmap gated: the scan runs only for a page that
+ * actually holds translated code.  B2_JIT_STORE_INVALIDATE=0 restores the old
+ * (unsound) behaviour for A/B testing. */
+static inline bool jit_store_invalidate_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("B2_JIT_STORE_INVALIDATE");
+        cached = (e && *e && strcmp(e, "0") == 0) ? 0 : 1;
+    }
+    return cached != 0;
+}
+
+extern "C" void Uae2026JitNotifyGuestStore(uae_u32 phys, uae_u32 size)
+{
+    if (size == 0 || !jit_store_invalidate_enabled())
+        return;
+    const uae_u32 ram_base = 0x04000000u;
+    if (phys < ram_base)
+        return;
+    const uae_u32 rel = phys - ram_base;
+    if (rel >= (uae_u32)RAMSize)
+        return;
+    if (!jit_code_page_test(rel, size))
+        return;
+    jit_invalidate_guest_code_linear(rel, size, false, false);
 }
 
 static inline bool jit_mmu_execution_key_active(void)
@@ -9959,6 +10028,18 @@ endblock_done:
         current_compile_p = get_target();
         raise_in_cl_list(bi);
         bi->nexthandler = current_compile_p;
+
+        /* Record which physical pages this translation was compiled from, so a
+           later guest store into one of them can find it.  The checksum spans
+           are host pointers into the execution shadow, whose origin is guest
+           physical 0x04000000 (RAMBaseHost). */
+        for (const checksum_info* csi_pg = bi->csi; csi_pg; csi_pg = csi_pg->next) {
+            const uintptr start_pg = (uintptr)csi_pg->start_p;
+            if (RAMBaseHost && start_pg >= (uintptr)RAMBaseHost &&
+                start_pg < (uintptr)RAMBaseHost + (uintptr)RAMSize)
+                jit_code_page_mark((uae_u32)(start_pg - (uintptr)RAMBaseHost),
+                    (uae_u32)csi_pg->length);
+        }
 
         bi->status = BI_ACTIVE;
 #if defined(CPU_AARCH64)

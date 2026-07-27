@@ -2552,6 +2552,25 @@ extern "C" void jit_op_bfins(void)
     const int width = ((((ext & 0x20) ? regs.regs[ext & 7] : ext) - 1) & 0x1f) + 1;
     const uae_u32 field_mask = width == 32 ? 0xffffffffu : ((1u << width) - 1);
     const uae_u32 field = regs.regs[(ext >> 12) & 7] & field_mask;
+    {
+        /* The verifier caught native BFINS writing D0's value where the
+           encoding names D3.  ext == 0 would produce exactly that: Dn = 0,
+           offset = 0, and width = ((0 - 1) & 0x1f) + 1 = 32, i.e. D0 written
+           over the whole 32-bit field.  Log the decode so the hypothesis is
+           settled by observation rather than arithmetic. */
+        static unsigned long n = 0;
+        const uae_u32 bf_pc = (uae_u32)m68k_getpc();
+        static unsigned long user_n = 0;
+        const bool user_space = (bf_pc >> 24) == 0x05u;
+        if (user_space)
+            user_n++;
+        if (++n <= 12 || ext == 0 || (user_space && user_n <= 30))
+            fprintf(stderr, "JITBFINS n=%lu pc=%08x ext=%04x dn=%u off=%d w=%d field=%08x ea=%08x dreg=%u\n",
+                n, (unsigned)bf_pc, (unsigned)ext,
+                (unsigned)((ext >> 12) & 7), (int)offset, width,
+                (unsigned)field, (unsigned)ea_info,
+                (unsigned)regs.scratchregs[1]);
+    }
 
     if (regs.scratchregs[1]) {
         const int dreg = ea_info & 7;

@@ -1203,6 +1203,20 @@ struct jit_block_verify_snapshot {
 };
 
 static bool jit_block_verify_reentrant = false;
+
+/* The verifier's nested native run is bracketed by jit_block_verify_reentrant,
+ * which stops it recursing into itself.  That bracket is not exception-safe:
+ * the nested run can leave through the bridge's longjmp, and then the closing
+ * assignment never executes and the flag latches ON for the rest of the
+ * process -- silently disabling ALL further verification.  Measured: with
+ * B2_JIT_VERIFY_BLOCKS=0x05000000-0x05ffffff, 14,199 execute_normal entries in
+ * that range produced 2 armings and then nothing, every later candidate
+ * reporting reentrant=1.  The bridge clears it where control resumes after an
+ * abnormal exit. */
+extern "C" void Uae2026JitVerifyNestedRunAborted(void)
+{
+    jit_block_verify_reentrant = false;
+}
 static bool jit_block_verify_compile_active = false;
 static uae_u32 jit_block_verify_compile_pc = 0xffffffffu;
 static bool jit_block_verify_last_mismatch = false;
@@ -1528,8 +1542,18 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
         jit_strict_verify_references++;
     jit_block_verify_snapshot resume = {}, interp = {}, native = {};
     jit_block_verify_run_count++;
-    if (!jit_block_verify_entry_valid || jit_block_verify_entry_pc != block_pc)
+    if (!jit_block_verify_entry_valid || jit_block_verify_entry_pc != block_pc) {
+        /* Arming keys on m68k_getpc() in execute_normal(); this run keys on
+           pc_hist[0].guest_pc.  When they disagree the verification is dropped
+           without a single line of output, which reads as "nothing to check"
+           rather than "the check was skipped".  Say so. */
+        static unsigned long skipped = 0;
+        if (++skipped <= 16 || (skipped % 1000) == 0)
+            fprintf(stderr, "JITVERIFYSKIP n=%lu entry_valid=%d entry_pc=%08x block_pc=%08x\n",
+                skipped, (int)jit_block_verify_entry_valid,
+                (unsigned)jit_block_verify_entry_pc, (unsigned)block_pc);
         return;
+    }
     if (!jit_block_verify_snapshot_capture(&resume)) {
         jit_block_verify_entry_reset();
         return;
@@ -2535,6 +2559,16 @@ static inline bool jit_verify_pc_in_ranges(uae_u32 pc, bool *have_ranges)
                 while (*p && *p != ',')
                     p++;
             }
+        }
+    }
+    {
+        static int reported = 0;
+        if (!reported && getenv("B2_JIT_VERIFY_SWEEP_CENSUS")) {
+            reported = 1;
+            fprintf(stderr, "JITVERIFYRANGES count=%d", range_count);
+            for (int i = 0; i < range_count; i++)
+                fprintf(stderr, " [%08x-%08x]", ranges[i].start, ranges[i].end);
+            fprintf(stderr, "\n");
         }
     }
     if (have_ranges)

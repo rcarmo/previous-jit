@@ -1454,7 +1454,54 @@ jit_pctrace_done:
 		   m68k_getpc() keeps entry_pc == block_pc so the verifier fires (and
 		   compares) in userland, not just kernel/ROM identity-mapped RAM. */
 		uae_u32 verify_block_pc = (uae_u32)m68k_getpc();
+		/* Arming keys on m68k_getpc() here; the block census keys on
+		   pc_hist[0].guest_pc.  If the two disagree for user-mode MMU blocks then
+		   every verification in that address space has been silently skipped.
+		   Census the arm-time PC in the same form so the two can be compared. */
+		{
+			static unsigned long armed_seen[256];
+			static unsigned long armed_total = 0;
+			static int armed_census = -1;
+			if (armed_census < 0)
+				armed_census = getenv("B2_JIT_VERIFY_SWEEP_CENSUS") ? 1 : 0;
+			if (armed_census) {
+				armed_seen[(verify_block_pc >> 24) & 0xff]++;
+				if ((++armed_total % 20000) == 0) {
+					fprintf(stderr, "JITARMCENSUS total=%lu", armed_total);
+					for (int b = 0; b < 256; b++)
+						if (armed_seen[b])
+							fprintf(stderr, " %02x=%lu", b, armed_seen[b]);
+					fprintf(stderr, "\n");
+				}
+			}
+		}
 		const bool verify_this_block = !jit_block_verify_reentrant && jit_verify_block_target_pc(verify_block_pc);
+		{
+			/* Separate from the entry census above: how many of those entries
+			   actually ARM.  "execute_normal saw this address space" and "the
+			   verifier was armed for it" are different claims. */
+			static unsigned long armed_ok[256];
+			static unsigned long armed_ok_total = 0;
+			static int c = -1;
+			if (c < 0)
+				c = getenv("B2_JIT_VERIFY_SWEEP_CENSUS") ? 1 : 0;
+			if (c && !verify_this_block) {
+				static unsigned long nope = 0;
+				if (jit_verify_block_target_pc(verify_block_pc) && ++nope <= 5)
+					fprintf(stderr, "JITARMBLOCKED n=%lu pc=%08x reentrant=%d\n",
+						nope, (unsigned)verify_block_pc, (int)jit_block_verify_reentrant);
+			}
+			if (c && verify_this_block) {
+				armed_ok[(verify_block_pc >> 24) & 0xff]++;
+				if (++armed_ok_total <= 5 || (armed_ok_total % 200) == 0) {
+					fprintf(stderr, "JITARMOK total=%lu", armed_ok_total);
+					for (int b = 0; b < 256; b++)
+						if (armed_ok[b])
+							fprintf(stderr, " %02x=%lu", b, armed_ok[b]);
+					fprintf(stderr, "\n");
+				}
+			}
+		}
 		/* One-shot: a swept block must not stay armed for every later dispatch. */
 		if (verify_block_pc == jit_verify_sweep_pc)
 			jit_verify_sweep_pc = 0xffffffffu;

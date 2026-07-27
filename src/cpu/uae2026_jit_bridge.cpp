@@ -1515,6 +1515,12 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
 
     bool handled_mmu_exception = false;
     int prb = setjmp(__exbuf);
+    if (prb != 0) {
+        /* Abnormal resume: anything bracketed across the jump has been
+         * skipped, including the block verifier's re-entrancy guard. */
+        extern void Uae2026JitVerifyNestedRunAborted(void);
+        Uae2026JitVerifyNestedRunAborted();
+    }
     if (prb == 0) {
         __exvalue = 0;
         __pushtry(&__exbuf);
@@ -1712,6 +1718,10 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
             return;
         bridge_trace_lowpc_resume("PRE", prb);
         int prb2 = setjmp(__exbuf);
+        if (prb2 != 0) {
+            extern void Uae2026JitVerifyNestedRunAborted(void);
+            Uae2026JitVerifyNestedRunAborted();
+        }
         if (prb2 == 0) {
             __exvalue = 0;
             __pushtry(&__exbuf);

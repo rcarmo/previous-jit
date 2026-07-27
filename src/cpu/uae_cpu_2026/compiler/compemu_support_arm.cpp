@@ -1132,6 +1132,37 @@ static bool jit_block_verify_last_mismatch = false;
 static int jit_block_verify_compiled_ops = 0;
 static unsigned long jit_block_verify_log_count = 0;
 static unsigned long jit_block_verify_run_count = 0;
+/* Verifications that actually compared state, and how many disagreed.  The log
+   is capped so a systematic mismatch cannot drown the boot, but a capped log
+   silently turns "no mismatches after the first twenty" into "no mismatches",
+   which is exactly the mistake that hid the observer defect.  Count everything;
+   log a bounded sample. */
+static unsigned long jit_block_verify_compare_count = 0;
+static unsigned long jit_block_verify_mismatch_count = 0;
+
+static unsigned long jit_block_verify_log_limit(void)
+{
+    static unsigned long limit = 0;
+    static bool initialized = false;
+    if (!initialized) {
+        const char *env = getenv("B2_JIT_VERIFY_LOG_LIMIT");
+        limit = (env && *env) ? strtoul(env, NULL, 0) : 20;
+        initialized = true;
+    }
+    return limit;
+}
+
+static unsigned long jit_block_verify_stats_every(void)
+{
+    static unsigned long every = 0;
+    static bool initialized = false;
+    if (!initialized) {
+        const char *env = getenv("B2_JIT_VERIFY_STATS_EVERY");
+        every = (env && *env) ? strtoul(env, NULL, 0) : 10000;
+        initialized = true;
+    }
+    return every;
+}
 static jit_block_verify_snapshot jit_block_verify_entry_state = {};
 static bool jit_block_verify_entry_valid = false;
 static uae_u32 jit_block_verify_entry_pc = 0xffffffffu;
@@ -1296,16 +1327,29 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
         mismatch = true;
     if (!mismatch && memcmp(expected->mem, actual->mem, expected->mem_size) != 0)
         mismatch = true;
+    jit_block_verify_compare_count++;
+    if (mismatch)
+        jit_block_verify_mismatch_count++;
+    {
+        const unsigned long every = jit_block_verify_stats_every();
+        if (every && (jit_block_verify_compare_count % every) == 0) {
+            fprintf(stderr, "JITBLOCKVERIFY stats compared=%lu mismatched=%lu\n",
+                jit_block_verify_compare_count, jit_block_verify_mismatch_count);
+            fflush(stderr);
+        }
+    }
     if (!mismatch) {
-        if (jit_block_verify_run_count <= 20)
+        if (jit_block_verify_run_count <= jit_block_verify_log_limit())
             fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d mismatch=0\n", (unsigned)block_pc, blocklen);
         return;
     }
-    if (jit_block_verify_log_count >= 20)
+    if (jit_block_verify_log_count >= jit_block_verify_log_limit())
         return;
 
     jit_block_verify_last_mismatch = true;
-    fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d mismatch=1\n", (unsigned)block_pc, blocklen);
+    fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d mismatch=1 n=%lu/%lu\n",
+        (unsigned)block_pc, blocklen,
+        jit_block_verify_mismatch_count, jit_block_verify_compare_count);
     if (jit_block_verify_entry_valid) {
         /* Both runs start from this state, so a divergence in something the
            block only READS has to be explained by how each engine materialised

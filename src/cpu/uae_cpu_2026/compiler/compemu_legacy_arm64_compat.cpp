@@ -1027,6 +1027,56 @@ static void jit_install_fast_interpreter_overrides(void)
 }
 #endif
 
+/* B2_JIT_RETIRED_CLOCK=1: the interpreted trace path must feed the same
+ * retired-cycle counter native blocks feed, otherwise emulated time depends on
+ * whether an instruction happened to be compiled.  cpufunctbl returns the
+ * instruction's cycle count; the tracer discarded it. */
+extern uae_u32 jit_native_retired_cpu_cycles;
+
+static bool jit_retired_clock_enabled(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("B2_JIT_RETIRED_CLOCK");
+		cached = (env && *env && strcmp(env, "0") == 0) ? 0 : 1;
+	}
+	return cached != 0;
+}
+
+/* Retire one traced instruction against the deterministic clock: accumulate its
+ * cycles and process events on the same cadence a compiled block uses
+ * (JIT_TICK_INTERVAL), instead of once per 65536 instructions. */
+static inline void jit_trace_retire_cycles(void)
+{
+	static unsigned long n = 0;
+	if (!jit_retired_clock_enabled()) {
+		cpu_check_ticks();
+		return;
+	}
+	/* Same charge a compiled block makes for the same instruction:
+	   scaled_cycles(4 * CYCLE_UNIT) divided back out of CYCLE_UNIT by
+	   compemu_raw_accum_retired_cycles(). Agreeing with the compiled path is
+	   the whole point -- cycle accuracy is a separate question. */
+	const int per_op = scaled_cycles(4 * CYCLE_UNIT) / CYCLE_UNIT;
+	jit_native_retired_cpu_cycles += (uae_u32)(per_op > 0 ? per_op : 1);
+	if ((++n & 63) == 0)
+		cpu_do_check_ticks();
+}
+
+
+extern "C" unsigned long jit_exception_serial;
+
+/* B2_JIT_END_BLOCK_ON_EXCEPTION=0 disables; on by default. */
+static bool jit_end_block_on_exception(void)
+{
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("B2_JIT_END_BLOCK_ON_EXCEPTION");
+		cached = (env && *env && strcmp(env, "0") == 0) ? 0 : 1;
+	}
+	return cached != 0;
+}
+
 void exec_nostats(void)
 {
 #if defined(CPU_AARCH64)
@@ -1115,7 +1165,10 @@ void exec_nostats(void)
 				(unsigned)regflags.x);
 			jit_trace_table_log("TRACEWINJTAB", trace_count, after_pc);
 		}
-		cpu_check_ticks();
+		/* Retire against the same clock the tracer and compiled code use;
+		   otherwise instructions executed here advance guest time by nothing
+		   and the emulated clock depends on how often this path is taken. */
+		jit_trace_retire_cycles();
 		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL)) {
 			/* The dispatcher indexes cache_tags with regs.pc_p, not regs.pc.
 			 * Interpreter handlers update the architectural PC but can leave the
@@ -1166,7 +1219,7 @@ static void exec_nostats_limited(int maxrun_limit)
 		(*cpufunctbl[opcode])(opcode);
 		Uae2026InterpreterFlagsToJit();
 		Uae2026JitHelperClear();
-		cpu_check_ticks();
+		jit_trace_retire_cycles();
 		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL) || ++run_count >= maxrun_limit) {
 			/* Same re-anchoring contract as exec_nostats(): the next dispatch
 			 * indexes cache_tags with regs.pc_p, so it must describe the PC we are
@@ -1204,56 +1257,6 @@ static inline bool jit_interpop_assert_target(uae_u32 *target)
 #endif
 }
 
-
-/* B2_JIT_RETIRED_CLOCK=1: the interpreted trace path must feed the same
- * retired-cycle counter native blocks feed, otherwise emulated time depends on
- * whether an instruction happened to be compiled.  cpufunctbl returns the
- * instruction's cycle count; the tracer discarded it. */
-extern uae_u32 jit_native_retired_cpu_cycles;
-
-static bool jit_retired_clock_enabled(void)
-{
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("B2_JIT_RETIRED_CLOCK");
-		cached = (env && *env && strcmp(env, "0") == 0) ? 0 : 1;
-	}
-	return cached != 0;
-}
-
-/* Retire one traced instruction against the deterministic clock: accumulate its
- * cycles and process events on the same cadence a compiled block uses
- * (JIT_TICK_INTERVAL), instead of once per 65536 instructions. */
-static inline void jit_trace_retire_cycles(void)
-{
-	static unsigned long n = 0;
-	if (!jit_retired_clock_enabled()) {
-		cpu_check_ticks();
-		return;
-	}
-	/* Same charge a compiled block makes for the same instruction:
-	   scaled_cycles(4 * CYCLE_UNIT) divided back out of CYCLE_UNIT by
-	   compemu_raw_accum_retired_cycles(). Agreeing with the compiled path is
-	   the whole point -- cycle accuracy is a separate question. */
-	const int per_op = scaled_cycles(4 * CYCLE_UNIT) / CYCLE_UNIT;
-	jit_native_retired_cpu_cycles += (uae_u32)(per_op > 0 ? per_op : 1);
-	if ((++n & 63) == 0)
-		cpu_do_check_ticks();
-}
-
-
-extern "C" unsigned long jit_exception_serial;
-
-/* B2_JIT_END_BLOCK_ON_EXCEPTION=0 disables; on by default. */
-static bool jit_end_block_on_exception(void)
-{
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("B2_JIT_END_BLOCK_ON_EXCEPTION");
-		cached = (env && *env && strcmp(env, "0") == 0) ? 0 : 1;
-	}
-	return cached != 0;
-}
 
 void execute_normal(void)
 {

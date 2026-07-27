@@ -1043,22 +1043,37 @@ static bool jit_retired_clock_enabled(void)
 	return cached != 0;
 }
 
+/* cpu/uae_cpu_2026/newcpu.h declares cpuop_func as returning void; the real
+ * generated handlers (cpu/newcpu.h) return the instruction's cycle count in
+ * uae_u32, which is what the interpreter charges.  The two declarations are
+ * ABI-compatible on AArch64 -- the JIT unit simply discards x0 -- so recover
+ * the count by calling through a correctly-typed pointer. */
+typedef uae_u32 (*jit_cpuop_cycles_func)(uae_u32);
+
+/* jit_real_cycles_enabled() is defined earlier in compemu_support_arm.cpp,
+ * which is part of the same translation unit. */
+
 /* Retire one traced instruction against the deterministic clock: accumulate its
  * cycles and process events on the same cadence a compiled block uses
  * (JIT_TICK_INTERVAL), instead of once per 65536 instructions. */
-static inline void jit_trace_retire_cycles(void)
+static inline void jit_trace_retire_cycles(int real_cycles)
 {
 	static unsigned long n = 0;
 	if (!jit_retired_clock_enabled()) {
 		cpu_check_ticks();
 		return;
 	}
-	/* Same charge a compiled block makes for the same instruction:
-	   scaled_cycles(4 * CYCLE_UNIT) divided back out of CYCLE_UNIT by
-	   compemu_raw_accum_retired_cycles(). Agreeing with the compiled path is
-	   the whole point -- cycle accuracy is a separate question. */
-	const int per_op = scaled_cycles(4 * CYCLE_UNIT) / CYCLE_UNIT;
-	jit_native_retired_cpu_cycles += (uae_u32)(per_op > 0 ? per_op : 1);
+	if (jit_real_cycles_enabled()) {
+		jit_native_retired_cpu_cycles +=
+			(uae_u32)(real_cycles > 0 ? real_cycles : 1);
+	} else {
+		/* Same charge a compiled block makes for the same instruction:
+		   scaled_cycles(4 * CYCLE_UNIT) divided back out of CYCLE_UNIT by
+		   compemu_raw_accum_retired_cycles(). Agreeing with the compiled path
+		   is the whole point -- cycle accuracy is a separate question. */
+		const int per_op = scaled_cycles(4 * CYCLE_UNIT) / CYCLE_UNIT;
+		jit_native_retired_cpu_cycles += (uae_u32)(per_op > 0 ? per_op : 1);
+	}
 	if ((++n & 63) == 0)
 		cpu_do_check_ticks();
 }
@@ -1137,7 +1152,7 @@ void exec_nostats(void)
 				(unsigned)regflags.x);
 			jit_trace_table_log("TRACEWINJTAB", trace_count + 1, before_pc);
 		}
-		(*cpufunctbl[opcode])(opcode);
+		const int jit_trace_op_cycles = (int)((jit_cpuop_cycles_func)cpufunctbl[opcode])(opcode);
 		Uae2026InterpreterFlagsToJit();
 		Uae2026JitHelperClear();
 		if (trace_this) {
@@ -1168,7 +1183,7 @@ void exec_nostats(void)
 		/* Retire against the same clock the tracer and compiled code use;
 		   otherwise instructions executed here advance guest time by nothing
 		   and the emulated clock depends on how often this path is taken. */
-		jit_trace_retire_cycles();
+		jit_trace_retire_cycles(jit_trace_op_cycles);
 		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL)) {
 			/* The dispatcher indexes cache_tags with regs.pc_p, not regs.pc.
 			 * Interpreter handlers update the architectural PC but can leave the
@@ -1216,10 +1231,10 @@ static void exec_nostats_limited(int maxrun_limit)
 		Uae2026JitHelperBegin(pc,
 			UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
 				UAE2026_JIT_HELPER_EXACT_OPCODE));
-		(*cpufunctbl[opcode])(opcode);
+		const int jit_trace_op_cycles = (int)((jit_cpuop_cycles_func)cpufunctbl[opcode])(opcode);
 		Uae2026InterpreterFlagsToJit();
 		Uae2026JitHelperClear();
-		jit_trace_retire_cycles();
+		jit_trace_retire_cycles(jit_trace_op_cycles);
 		if (end_block(opcode) || SPCFLAGS_TEST(SPCFLAG_ALL) || ++run_count >= maxrun_limit) {
 			/* Same re-anchoring contract as exec_nostats(): the next dispatch
 			 * indexes cache_tags with regs.pc_p, so it must describe the PC we are
@@ -1573,7 +1588,7 @@ jit_pctrace_done:
 				return;
 			}
 			const unsigned long exception_serial_before = jit_exception_serial;
-			(*cpufunctbl[opcode])(opcode);
+			const int jit_trace_op_cycles = (int)((jit_cpuop_cycles_func)cpufunctbl[opcode])(opcode);
 			const bool retired_through_exception =
 				jit_exception_serial != exception_serial_before;
 			Uae2026InterpreterFlagsToJit();
@@ -1588,8 +1603,18 @@ jit_pctrace_done:
 				regs.pc_p = (uae_u8 *)next_host;
 				regs.pc_oldp = regs.pc_p;
 			}
-			jit_trace_retire_cycles();
-			total_cycles += 4 * CYCLE_UNIT;
+			jit_trace_retire_cycles(jit_trace_op_cycles);
+			/* Record what this instruction actually cost so compile_block() can
+			   charge emulated time at the interpreter's rate rather than a flat
+			   constant.  totcycles is consumed as scaled_cycles(x)/CYCLE_UNIT,
+			   so a charge of R raw cycles is R * SCALE * CYCLE_UNIT here. */
+			{
+				const int rc = jit_trace_op_cycles > 0 ? jit_trace_op_cycles : 1;
+				hist->real_cycles = (uae_u16)(rc > 0xffff ? 0xffff : rc);
+				total_cycles += jit_real_cycles_enabled()
+					? (int)hist->real_cycles * SCALE * CYCLE_UNIT
+					: 4 * CYCLE_UNIT;
+			}
 			bool must_end = __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
 			if (retired_through_exception && jit_end_block_on_exception()) {
 				/* The instruction just retired transferred control through an

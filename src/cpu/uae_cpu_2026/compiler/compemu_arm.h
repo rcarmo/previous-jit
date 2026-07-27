@@ -116,6 +116,11 @@ typedef struct {
   uae_u16 opcode;
   uae_u8  source[JIT_TRACE_SOURCE_BYTES];
   uae_u8  specmem;
+  /* Cycle count cpufunctbl returned for this instruction during the trace
+     pass.  Compiled code charges emulated time from this instead of a flat
+     per-instruction constant, so guest-visible time advances at the rate the
+     interpreter would produce. */
+  uae_u16 real_cycles;
 } cpu_history;
 
 typedef union {

@@ -1095,12 +1095,29 @@ static void ExceptionX (int nr, uaecptr address)
         if (sc_file && sc_seq < sc_limit && (nr < 24 || nr > 31)) {
             MakeSR();
             extern int64_t nCyclesMainCounter;
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+            /* Retired-instruction census alongside the emulated clock.  The
+               supervisor-exit counter only starts ticking ~222M instructions
+               into the boot, so it cannot anchor anything in the ROM phase;
+               the exception serial can, because both engines take the same
+               exceptions in the same order from the first one. Carrying obs
+               here turns this stream into a shared coordinate system for
+               "how many instructions did each engine spend to get here". */
+            extern unsigned long jit_retire_obs[4];
+            extern unsigned long jit_stat_dispatch;
+            const unsigned long obs_total =
+                jit_retire_obs[0] + jit_retire_obs[1] + jit_retire_obs[2];
+            const unsigned long disp_total = jit_stat_dispatch;
+#else
+            const unsigned long obs_total = 0;
+            const unsigned long disp_total = 0;
+#endif
             fprintf(sc_file,
-                "%lu v=%d pc=%08x sr=%04x s=%d cyc=%lld "
+                "%lu v=%d pc=%08x sr=%04x s=%d cyc=%lld obs=%lu disp=%lu "
                 "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
                 "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
                 ++sc_seq, nr, (unsigned)m68k_getpc(), (unsigned)regs.sr, (int)regs.s,
-                (long long)nCyclesMainCounter,
+                (long long)nCyclesMainCounter, obs_total, disp_total,
                 (unsigned)regs.regs[0], (unsigned)regs.regs[1],
                 (unsigned)regs.regs[2], (unsigned)regs.regs[3],
                 (unsigned)regs.regs[4], (unsigned)regs.regs[5],

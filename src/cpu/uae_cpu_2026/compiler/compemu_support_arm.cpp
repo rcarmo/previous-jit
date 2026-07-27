@@ -301,6 +301,52 @@ static inline unsigned long jit_retirement_tick_every(void)
     return value;
 }
 
+/* B2_JIT_REAL_CYCLES=0 restores the old flat per-instruction charge.
+ *
+ * Charge emulated time from the cycle count the interpreter would have charged
+ * for each guest instruction, instead of a flat per-instruction constant.
+ *
+ * The flat charge makes the JIT's clock run at exactly 2.000 cycles per
+ * retired instruction while the interpreter, charging the real per-opcode
+ * counts, runs at 2.285 (ROM) to 2.757 (kernel).  NeXTSTEP's event counter is
+ * read straight out of nCyclesMainCounter, so guest code that measures time
+ * sees a machine whose instruction rate per emulated second is 14-38% too
+ * high under the JIT.  Measured at the ROM-to-kernel handover (exception 4,
+ * identical guest registers in every engine):
+ *
+ *   interpreter          obs 213,731,683   cyc 589,197,759   2.757 cyc/insn
+ *   optlev 0, flat       obs 229,239,854   cyc 458,479,686   2.000
+ *   optlev 0, real       obs 213,721,437   cyc 589,177,798   2.757
+ *   optlev 2, flat       obs 221,281,367   cyc 442,562,694   2.000
+ *   optlev 2, real       obs 205,788,601   cyc 559,039,558   2.717
+ *
+ * At optlev 0 -- every instruction retired through cpufunctbl -- this closes a
+ * 7.3% instruction-count divergence to 0.005%.  At optlev 2 the per-instruction
+ * charge is a constant captured from the single trace execution that compiled
+ * the block, so runtime-variable costs (taken branches, bus wait states) are
+ * still missed; the rate error drops from 27.5% to 1.5% but does not vanish. */
+static bool jit_real_cycles_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("B2_JIT_REAL_CYCLES");
+        cached = (env && *env && strcmp(env, "0") == 0) ? 0 : 1;
+    }
+    return cached != 0;
+}
+
+/* Cumulative charge for the first n traced instructions of a block, in the
+ * scaled units compemu_raw_accum_retired_cycles() divides by CYCLE_UNIT. */
+static int jit_block_retired_cycles(const cpu_history *pc_hist, int n)
+{
+    if (!jit_real_cycles_enabled() || !pc_hist)
+        return scaled_cycles(n * 4 * CYCLE_UNIT);
+    int sum = 0;
+    for (int i = 0; i < n; i++)
+        sum += pc_hist[i].real_cycles ? pc_hist[i].real_cycles : 4;
+    return sum * CYCLE_UNIT;
+}
+
 /* Product execution has no per-instruction callback. This observer is emitted
    only for an explicitly requested path capture or deterministic retirement-
    tick run. Keep the scheduler independent of capture arming: asking for
@@ -358,13 +404,15 @@ static void jit_guest_path_watch(uae_u32 pc)
         if (!follow_left)
             return;
         --follow_left;
-        fprintf(stderr, "PATHFOLLOW %lu.%lu pc=%08x s=%d ccr=%02x icc=%02x d0=%08x d1=%08x a0=%08x a7=%08x\n",
+        fprintf(stderr, "PATHFOLLOW %lu.%lu pc=%08x s=%d ccr=%02x icc=%02x d0=%08x d1=%08x d3=%08x d4=%08x a0=%08x a4=%08x a7=%08x\n",
             watch_count, follow_total - follow_left, (unsigned)pc, (int)regs.s,
             (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
                        (GET_VFLG() << 1) | GET_CFLG()),
             (unsigned)Uae2026InterpreterCcr(),
             (unsigned)regs.regs[0], (unsigned)regs.regs[1],
-            (unsigned)regs.regs[8], (unsigned)m68k_areg(regs, 7));
+            (unsigned)regs.regs[3], (unsigned)regs.regs[4],
+            (unsigned)regs.regs[8], (unsigned)regs.regs[12],
+            (unsigned)m68k_areg(regs, 7));
         if (!follow_left)
             fflush(stderr);
         return;
@@ -9021,7 +9069,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         trace_flagflow_log("COMPILE_OP", liveflags[i + 1], prop[cft_map(opcode)].use_flags, prop[cft_map(opcode)].set_flags, ((uae_u32)needed_flags << 16) | next_op);
                     }
                 }
-                const int retired_cycles = scaled_cycles((i + 1) * 4 * CYCLE_UNIT);
+                const int retired_cycles = jit_block_retired_cycles(pc_hist, i + 1);
 #if defined(CPU_AARCH64)
                 if (jit_block_verify_compile_active &&
                     block_m68k_pc == jit_block_verify_compile_pc)
@@ -9067,7 +9115,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                        native block here so MOVEM starts from a dispatcher entry.
                        This remains native strict JIT (no interpreter fallback). */
                     flush(1);
-                    (void)jit_endblock_const_pc(scaled_cycles(i * 4 * CYCLE_UNIT),
+                    (void)jit_endblock_const_pc(jit_block_retired_cycles(pc_hist, i),
                         (uintptr)pc_hist[i].location, pc_hist[i].guest_pc);
                     if (jit_block_verify_compile_active &&
                         block_m68k_pc == jit_block_verify_compile_pc)
@@ -9413,7 +9461,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                             const uae_u32 side_exit_m68k_pc =
                                 side_exit_pc == next_pc_p ? next_m68k_pc : taken_m68k_pc;
                             (void)jit_endblock_const_pc(
-                                scaled_cycles((i + 1) * 4 * CYCLE_UNIT),
+                                jit_block_retired_cycles(pc_hist, i + 1),
                                 side_exit_pc, side_exit_m68k_pc);
                             /* Patch skip branch to the traced-path continuation */
                             write_jmp_target(patch_skip, (uintptr)get_target());

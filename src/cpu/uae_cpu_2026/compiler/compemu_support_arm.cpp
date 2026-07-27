@@ -8838,6 +8838,21 @@ void build_comp(void)
     jit_log("<JIT compiler> : shift/rotate handlers ENABLED for ARM64");
 #endif
 
+    {
+        /* Which bitfield opcodes actually have a native compiler.  The
+           gapfill table has no BFINS family and compstbl_arm.cpp lists it with
+           a NULL handler, yet the compile loop never reports a fallback for
+           0xefxx -- so print the table rather than keep inferring it. */
+        static const unsigned probe[] = { 0xe8d0, 0xe9d0, 0xe9d2, 0xead0,
+                                          0xebd0, 0xecd0, 0xedd0, 0xeed0,
+                                          0xefd0, 0xefd2 };
+        for (unsigned k = 0; k < sizeof(probe) / sizeof(probe[0]); k++)
+            fprintf(stderr, "JITBFTBL op=%04x handler=%04x mnemo=%d comp=%p\n",
+                probe[k], (unsigned)table68k[probe[k]].handler,
+                (int)table68k[probe[k]].mnemo,
+                (void*)compfunctbl[cft_map(probe[k])]);
+        fflush(stderr);
+    }
     jit_log("<JIT compiler> : supposedly %d compileable opcodes!", count);
 
 	/* Initialise state */

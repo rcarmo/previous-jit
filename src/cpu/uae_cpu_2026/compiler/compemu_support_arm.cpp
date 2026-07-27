@@ -1266,6 +1266,23 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
         sizeof(expected_regs.jit_scratchfregs));
     memcpy(expected_regs.jit_scratch_vregs, actual_regs.jit_scratch_vregs,
         sizeof(expected_regs.jit_scratch_vregs));
+    /* Integer spill slots, the FP result mirror and the host FPCR shadow are the
+       same class as the vector spill slots above: the native run populates them,
+       the interpreted replay does not.  Observed as regs+0x0c4
+       (scratchregs[0]) on every kernel block containing a helper call. */
+    memcpy(expected_regs.scratchregs, actual_regs.scratchregs,
+        sizeof(expected_regs.scratchregs));
+    memcpy(expected_regs.scratchfregs, actual_regs.scratchfregs,
+        sizeof(expected_regs.scratchfregs));
+    expected_regs.fp_result = actual_regs.fp_result;
+    expected_regs.jit_fp_result = actual_regs.jit_fp_result;
+    expected_regs.jit_fp_dirty_mask = actual_regs.jit_fp_dirty_mask;
+    expected_regs.jit_host_fpcr = actual_regs.jit_host_fpcr;
+    /* spcflags cannot be compared: the verifier deliberately zeroes it to bound
+       the native run, so the two runs are not asked the same question about it.
+       Reporting it turns every block that would have taken a pending-interrupt
+       exit into a false mismatch. */
+    expected_regs.spcflags = actual_regs.spcflags;
     expected_regs.jit_exception = actual_regs.jit_exception;
     expected_regs.jit_exception_oldpc = actual_regs.jit_exception_oldpc;
     expected_regs.mem_banks = actual_regs.mem_banks;

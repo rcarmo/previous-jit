@@ -75,6 +75,18 @@ cpuop_func *cpufunctbl[65536];
    the single shared point where regs.s falls, whichever engine is running. */
 unsigned long Uae2026SupervisorExits = 0;
 
+/* The condition codes as THIS translation unit sees them.  The JIT compiler
+   unit links against its own `regflags` object, so an instruction observer
+   living there reports 0x00 for every instruction of a pure interpreter run --
+   a dead column that looks like "X is clear" instead of "no data".  Exporting
+   the interpreter's view lets the observer print both and lets a differ tell
+   the two apart. */
+uae_u32 Uae2026InterpreterCcr(void)
+{
+	return (uae_u32)((GET_XFLG () << 4) | (GET_NFLG () << 3)
+		| (GET_ZFLG () << 2) | (GET_VFLG () << 1) | GET_CFLG ());
+}
+
 int OpcodeFamily;
 struct mmufixup mmufixup[2];
 

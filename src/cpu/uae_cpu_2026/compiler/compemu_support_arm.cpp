@@ -146,6 +146,11 @@ int32 jit_countdown = JIT_DISPATCH_BUDGET;
    devices advance even when a tight polling loop never executes an interpreter
    opcode. The outer dispatcher clears/consumes this once per generated entry. */
 uae_u32 jit_native_retired_cpu_cycles = 0;
+/* Condition codes as the INTERPRETER unit sees them.  The JIT compiler unit
+   links against its own regflags, so an observer here reports 0x00 for every
+   instruction of a pure interpreter run -- a dead column that reads as "X is
+   clear" rather than "no data". */
+extern "C" uae_u32 Uae2026InterpreterCcr(void);
 /* Throughput diagnostics (B2_JIT_STATS): separate per-dispatch overhead from
    recompile thrash. jit_stat_dispatch counts generated-code entries;
    jit_stat_compile counts compile_block() invocations. */
@@ -353,10 +358,11 @@ static void jit_guest_path_watch(uae_u32 pc)
         if (!follow_left)
             return;
         --follow_left;
-        fprintf(stderr, "PATHFOLLOW %lu.%lu pc=%08x s=%d ccr=%02x d0=%08x d1=%08x a0=%08x a7=%08x\n",
+        fprintf(stderr, "PATHFOLLOW %lu.%lu pc=%08x s=%d ccr=%02x icc=%02x d0=%08x d1=%08x a0=%08x a7=%08x\n",
             watch_count, follow_total - follow_left, (unsigned)pc, (int)regs.s,
             (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
                        (GET_VFLG() << 1) | GET_CFLG()),
+            (unsigned)Uae2026InterpreterCcr(),
             (unsigned)regs.regs[0], (unsigned)regs.regs[1],
             (unsigned)regs.regs[8], (unsigned)m68k_areg(regs, 7));
         if (!follow_left)
@@ -383,12 +389,13 @@ static void jit_guest_path_watch(uae_u32 pc)
      * flags back to regflags, so this reads the architectural value in both
      * engines. */
     fprintf(stderr,
-        "PATHWATCH %lu pc=%08x s=%d ccr=%02x "
+        "PATHWATCH %lu pc=%08x s=%d ccr=%02x icc=%02x "
         "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
         "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
         watch_count, (unsigned)pc, (int)regs.s,
         (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
                    (GET_VFLG() << 1) | GET_CFLG()),
+        (unsigned)Uae2026InterpreterCcr(),
         (unsigned)regs.regs[0], (unsigned)regs.regs[1],
         (unsigned)regs.regs[2], (unsigned)regs.regs[3],
         (unsigned)regs.regs[4], (unsigned)regs.regs[5],
@@ -423,6 +430,7 @@ static unsigned long jit_guest_path_user_return_limit(void)
 }
 
 extern "C" void Uae2026CompilerFlushCacheHard(void);
+extern "C" uae_u32 Uae2026InterpreterCcr(void);
 extern unsigned long jit_retire_obs[4];
 
 /* Set by ExceptionX() in the shared exception path; identifies which exception
@@ -460,11 +468,12 @@ static void jit_guest_path_user_return(uae_u32 pc)
             extern int64_t nCyclesMainCounter;
             extern unsigned long Uae2026SupervisorExits;
             fprintf(stderr,
-                "USERRET %lu v=%d pc=%08x ccr=%02x cyc=%lld d0=%08x d1=%08x a0=%08x a7=%08x "
+                "USERRET %lu v=%d pc=%08x ccr=%02x icc=%02x cyc=%lld d0=%08x d1=%08x a0=%08x a7=%08x "
                 "sx=%lu obs=%lu/%lu/%lu\n",
                 emitted, jit_last_exception_vector, (unsigned)pc,
                 (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
                            (GET_VFLG() << 1) | GET_CFLG()),
+                (unsigned)Uae2026InterpreterCcr(),
                 (long long)nCyclesMainCounter,
                 (unsigned)regs.regs[0], (unsigned)regs.regs[1],
                 (unsigned)regs.regs[8], (unsigned)m68k_areg(regs, 7),

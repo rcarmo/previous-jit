@@ -3694,16 +3694,19 @@ static inline void block_need_recompile(blockinfo* bi)
 }
 
 /* Called from the dispatch loop after each generated-code entry returns.
- * regs.pc_p already names the next block, which is the one worth re-checking:
- * it is about to run, so its translation is live.
  *
- * Selecting purely by dispatch count re-checks whatever is hottest: 1369
- * verifications covered only 35 distinct blocks.  Keep a recency table and skip
- * a candidate that has already been swept in this generation, retrying on the
- * next dispatch instead of consuming the interval, so the sweep walks forward
- * to something it has not seen.  When a whole generation is exhausted -- no
- * fresh block within JIT_VERIFY_SWEEP_RETRIES consecutive dispatches -- clear
- * the table and start again. */
+ * Selecting the candidate from the dispatch return PC can only ever reach
+ * blocks that are dispatcher entry points.  A block entered exclusively through
+ * a chained direct edge is invisible to that selector: pointed at
+ * 0x05000000-0x05ffffff, where the failure has been localised, it produced ZERO
+ * verifications over a twelve-minute boot, while the same interval produced 138
+ * in the kernel range and 212 in 0x00xxxxxx.  Walk the active block list
+ * instead, so any compiled block can be selected regardless of how it is
+ * entered.
+ *
+ * The cursor is an index rather than a pointer: the active list is rebuilt by
+ * cache flushes between sweeps, and a retained blockinfo* would dangle.  A
+ * recency table keeps a generation from re-checking the same block. */
 static inline void jit_verify_sweep_tick(void)
 {
     const unsigned long every = jit_verify_sweep_every();
@@ -3712,34 +3715,81 @@ static inline void jit_verify_sweep_tick(void)
     static unsigned long n = 0;
     if (++n % every)
         return;
-    enum { JIT_VERIFY_SWEEP_SLOTS = 8192, JIT_VERIFY_SWEEP_RETRIES = 8192 };
+    enum { JIT_VERIFY_SWEEP_SLOTS = 8192, JIT_VERIFY_SWEEP_SCAN = 4096 };
     static uae_u32 swept_pc[JIT_VERIFY_SWEEP_SLOTS];
-    static unsigned long retries = 0;
-    const uae_u32 pc = (uae_u32)m68k_getpc() & ~1u;
-    const unsigned slot = (unsigned)((pc >> 1) & (JIT_VERIFY_SWEEP_SLOTS - 1));
-    blockinfo *bi = get_blockinfo_addr(regs.pc_p);
-    /* When B2_JIT_VERIFY_BLOCKS names ranges, sweep only inside them: once a
-       failure has been localised to an address range, spending the sweep on
-       the rest of the boot is wasted coverage. */
-    bool have_ranges = false;
-    const bool in_ranges = jit_verify_pc_in_ranges(pc, &have_ranges);
-    /* Not every dispatch return lands on a compiled block, and a candidate may
-       already have been swept this generation.  Neither is a reason to spend
-       the interval doing nothing: retry on the next dispatch instead. */
-    if (swept_pc[slot] == pc || !bi || bi->status == BI_INVALID ||
-        (have_ranges && !in_ranges)) {
-        if (++retries < JIT_VERIFY_SWEEP_RETRIES) {
-            n--;
-            return;
+    static unsigned long cursor = 0;
+    /* The active list is rebuilt by cache flushes, so reaching its end is
+       routine and must NOT clear the recency table -- doing that re-swept the
+       head of the list over and over and cost 5x distinct coverage. Only clear
+       after two consecutive passes that found nothing at all. */
+    static unsigned long fruitless = 0;
+
+    blockinfo *bi = active;
+    for (unsigned long i = 0; bi && i < cursor; i++)
+        bi = bi->next;
+    if (!bi) {
+        cursor = 0;
+        if (++fruitless >= 2) {
+            memset(swept_pc, 0, sizeof(swept_pc));
+            fruitless = 0;
         }
-        memset(swept_pc, 0, sizeof(swept_pc));
-        retries = 0;
         return;
     }
-    retries = 0;
-    swept_pc[slot] = pc;
-    jit_verify_sweep_pc = pc;
-    block_need_recompile(bi);
+
+    for (unsigned long scanned = 0; bi && scanned < JIT_VERIFY_SWEEP_SCAN;
+         bi = bi->next, scanned++, cursor++) {
+        if (bi->status == BI_INVALID || bi->status == BI_NEED_RECOMP)
+            continue;
+        const uae_u32 pc = bi->guest_pc & ~1u;
+        /* Which address spaces actually hold compiled blocks.  Pointed at
+           0x05000000-0x05ffffff the sweep found nothing over nine minutes,
+           while jit_force_optlev0_block_env() -- which tests the same
+           pc_hist[0].guest_pc -- demonstrably changes the boot outcome for that
+           range.  One of those two observations is wrong; a census of the
+           candidates the sweep actually sees decides which. */
+        {
+            static unsigned long seen[256];
+            static unsigned long total = 0;
+            static int census = -1;
+            if (census < 0)
+                census = getenv("B2_JIT_VERIFY_SWEEP_CENSUS") ? 1 : 0;
+            if (census) {
+                seen[(pc >> 24) & 0xff]++;
+                if ((++total % 20000) == 0) {
+                    fprintf(stderr, "JITSWEEPCENSUS total=%lu", total);
+                    for (int b = 0; b < 256; b++)
+                        if (seen[b])
+                            fprintf(stderr, " %02x=%lu", b, seen[b]);
+                    fprintf(stderr, "\n");
+                }
+            }
+        }
+        if (!pc)
+            continue;
+        bool have_ranges = false;
+        /* When B2_JIT_VERIFY_BLOCKS names ranges, sweep only inside them: once
+           a failure is localised to an address range, spending the sweep on the
+           rest of the boot is wasted coverage. */
+        if (!jit_verify_pc_in_ranges(pc, &have_ranges) && have_ranges)
+            continue;
+        const unsigned slot =
+            (unsigned)((pc >> 1) & (JIT_VERIFY_SWEEP_SLOTS - 1));
+        if (swept_pc[slot] == pc)
+            continue;
+        swept_pc[slot] = pc;
+        jit_verify_sweep_pc = pc;
+        block_need_recompile(bi);
+        cursor++;
+        fruitless = 0;
+        return;
+    }
+    if (!bi) {
+        cursor = 0;
+        if (++fruitless >= 2) {
+            memset(swept_pc, 0, sizeof(swept_pc));
+            fruitless = 0;
+        }
+    }
 }
 
 static inline bool jit_strict_cache_disabled_coherence(void)

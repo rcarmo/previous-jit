@@ -1108,16 +1108,22 @@ static void ExceptionX (int nr, uaecptr address)
             const unsigned long obs_total =
                 jit_retire_obs[0] + jit_retire_obs[1] + jit_retire_obs[2];
             const unsigned long disp_total = jit_stat_dispatch;
+            /* The JIT's live condition codes, beside the ones MakeSR() just
+               put in regs.sr.  A difference here means the frame about to be
+               pushed carries a stale CCR. */
+            extern uae_u32 Uae2026JitCcr(void);
+            const unsigned jcc = (unsigned)Uae2026JitCcr();
 #else
             const unsigned long obs_total = 0;
             const unsigned long disp_total = 0;
+            const unsigned jcc = 0;
 #endif
             fprintf(sc_file,
-                "%lu v=%d pc=%08x sr=%04x s=%d cyc=%lld obs=%lu disp=%lu "
+                "%lu v=%d pc=%08x sr=%04x s=%d cyc=%lld obs=%lu disp=%lu jcc=%02x "
                 "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
                 "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
                 ++sc_seq, nr, (unsigned)m68k_getpc(), (unsigned)regs.sr, (int)regs.s,
-                (long long)nCyclesMainCounter, obs_total, disp_total,
+                (long long)nCyclesMainCounter, obs_total, disp_total, jcc,
                 (unsigned)regs.regs[0], (unsigned)regs.regs[1],
                 (unsigned)regs.regs[2], (unsigned)regs.regs[3],
                 (unsigned)regs.regs[4], (unsigned)regs.regs[5],

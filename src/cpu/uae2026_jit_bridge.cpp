@@ -203,6 +203,19 @@ static inline uae_u16 bridge_sr_with_jit_flags(uae_u16 sr)
     return (uae_u16)((sr & 0xffe0u) | ccr);
 }
 
+/* The condition codes as the JIT's live shadow holds them.
+ *
+ * Exception frames are built from regs.sr, which MakeSR() materialises from
+ * Previous's regflags.  Compiled code keeps the live flags in jit_regflags and
+ * only publishes them into regflags at certain seams, so a frame pushed at an
+ * exception entry that missed one of those seams would carry stale condition
+ * codes.  Exporting the shadow's view lets the exception stream carry both and
+ * settle whether that ever happens. */
+extern "C" uae_u32 Uae2026JitCcr(void)
+{
+    return (uae_u32)(bridge_sr_with_jit_flags(0) & 0x1fu);
+}
+
 extern "C" void Uae2026JitHelperClear(void)
 {
     bridge_helper_state = {};

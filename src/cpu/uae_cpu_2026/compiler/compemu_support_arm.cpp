@@ -9873,6 +9873,22 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                             op_m68k_pc, opcode, block_m68k_pc, i, blocklen);
 #endif
                     {
+                        /* BFINS (0xefxx) is the one bitfield operation with no
+                           gapfill handler and the one the verifier catches
+                           inserting the wrong source register.  The shared
+                           fallback log is capped at 200 lines and is exhausted
+                           long before user space runs, so log this family
+                           separately. */
+                        if ((opcode & 0xff00u) == 0xef00u) {
+                            static int bf_log = 0;
+                            if (bf_log < 40) {
+                                bf_log++;
+                                fprintf(stderr, "JIT_BFINS_FALLBACK op=%04x pc=%08x comptbl=%p optlev=%d\n",
+                                    (unsigned)opcode, (unsigned)op_m68k_pc,
+                                    (void*)(comptbl ? comptbl[cft_map(opcode)] : NULL),
+                                    optlev);
+                            }
+                        }
                         static int fail_log = 0;
                         if (fail_log < 200) {
                             fail_log++;

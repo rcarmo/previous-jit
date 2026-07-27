@@ -676,6 +676,19 @@ extern "C" void jit_guest_path_record_trace(uae_u32 pc)
     jit_guest_instruction_retired(pc);
 }
 
+/* Guest PC is inside the emulated ROM window.
+ *
+ * `pc >= ROMBaseMac` was used as the ROM test in several places.  On this
+ * machine ROM is guest 0x01000000..0x0101ffff and RAM is 0x04000000 +64MB, so
+ * that predicate is true for *every* RAM address as well: the only addresses it
+ * excluded were the user-space MMU aliases below 0x01000000.  Anything guarded
+ * by it was silently disabled for all kernel and 0x05xxxxxx user RAM. */
+static inline bool jit_guest_pc_in_rom(uae_u32 pc)
+{
+    return ROMSize != 0 && pc >= (uae_u32)ROMBaseMac &&
+           pc < (uae_u32)ROMBaseMac + (uae_u32)ROMSize;
+}
+
 static inline bool jit_strict_full_jit_env(void)
 {
 	static int cached = -1;
@@ -733,7 +746,7 @@ static bool jit_strict_defer_cold_ram_trace(cpu_history *pc_hist, int blocklen)
 	if (force_translate && *force_translate && strcmp(force_translate, "0") != 0)
 		return false;
 	const uae_u32 pc = get_virtual_address((uae_u8 *)pc_hist[0].location);
-	if (pc >= (uae_u32)ROMBaseMac)
+	if (jit_guest_pc_in_rom(pc))
 		return false;
 	enum { STRICT_RAM_HOT_SLOTS = 16384, STRICT_RAM_HOT_THRESHOLD = 10 };
 	struct hot_slot { uae_u32 pc; uae_u16 visits; };
@@ -2276,7 +2289,7 @@ static inline bool jit_source_edge_prefers_direct(const blockinfo *source_bi, in
         return false;
     if (jit_stable_direct_rom_only_env()) {
         const uae_u32 src_pc = jit_hostpc_to_macpc((uintptr)source_bi->pc_p);
-        if (src_pc < ROMBaseMac || target_pc < ROMBaseMac) {
+        if (!jit_guest_pc_in_rom(src_pc) || !jit_guest_pc_in_rom(target_pc)) {
             jit_trace_stable_direct_event("SKIP_ROMONLY", source_bi, edge_slot, hostpc, NULL, NULL);
             return false;
         }
@@ -8807,7 +8820,17 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                    Classify retention from the tracer's architectural PC, not
                    the translated host fetch pointer. */
                 const uae_u32 blk_pc = pc_hist[0].guest_pc;
-                if (blk_pc >= ROMBaseMac) {
+                /* NOTE: this is a *codegen policy* test, not a ROM test.  It
+                   reads "compile immediately at max optlev", and on this machine
+                   it is true for ROM and for all RAM alike (RAM starts above
+                   ROMBaseMac), so the RAM branch below is effectively dead.
+                   That is the policy actually in use -- taking the RAM branch
+                   for real RAM would leave the whole kernel and userland on
+                   interpreter dispatch unless escalation is enabled -- so the
+                   behaviour is deliberate here even though the old
+                   `>= ROMBaseMac` spelling claimed something false.  Guards
+                   that genuinely meant "is ROM" use jit_guest_pc_in_rom(). */
+                if (jit_guest_pc_in_rom(blk_pc) || blk_pc >= (uae_u32)ROMBaseMac) {
                     /* ROM: immediate L2 native codegen (immutable code).
                        When stable direct-edge profiling is explicitly enabled,
                        let the first native generation execute a bounded number
@@ -10096,9 +10119,17 @@ endblock_done:
            to BI_ACTIVE if content didn't change, or invalidate if it did.
            This prevents infinite execution of stale zeros-compiled native code
            when a branch accidentally targets uninitialized RAM. */
-        if (block_m68k_pc < ROMBaseMac && blocklen > 0) {
+        if (!jit_guest_pc_in_rom(block_m68k_pc) && blocklen > 0) {
             const uae_u16 *_w0 = (const uae_u16 *)pc_hist[0].location;
             if (*_w0 == 0) {
+                /* Report coverage: this guard was unreachable for every real RAM
+                   address while the ROM test was `pc >= ROMBaseMac`, so an
+                   unarmed guard must not be mistaken for a guard that never
+                   has anything to catch. */
+                static unsigned long zerosrc_blocks = 0;
+                if (++zerosrc_blocks <= 8)
+                    fprintf(stderr, "JITZEROSRC n=%lu pc=%08x len=%d\n",
+                        zerosrc_blocks, (unsigned)block_m68k_pc, blocklen);
                 if (jit_strict_full_jit_env()) {
                     /* Strict mode must execute translated code, but zero-filled
                        RAM is mutable and may later receive real guest code.

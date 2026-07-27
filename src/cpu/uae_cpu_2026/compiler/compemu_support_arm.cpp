@@ -1770,9 +1770,16 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
         if (jit_block_verify_last_mismatch) {
             /* Name the instructions. A mismatch is only actionable once the
                offending block can be read as guest code. */
-            for (int i = 0; i < blocklen; i++)
-                fprintf(stderr, "  op[%d] pc=%08x opcode=%04x\n",
-                    i, (unsigned)pc_hist[i].guest_pc, (unsigned)pc_hist[i].opcode);
+            for (int i = 0; i < blocklen; i++) {
+                /* Extension words too: a bitfield opcode alone does not say
+                   which field it addresses, and offset/width is exactly what a
+                   miscompiled BFINS/BFEXTU would get wrong. */
+                uae_u16 *w = (uae_u16 *)pc_hist[i].location;
+                fprintf(stderr, "  op[%d] pc=%08x opcode=%04x ext=%04x %04x\n",
+                    i, (unsigned)pc_hist[i].guest_pc, (unsigned)pc_hist[i].opcode,
+                    w ? (unsigned)do_get_mem_word(&w[1]) : 0u,
+                    w ? (unsigned)do_get_mem_word(&w[2]) : 0u);
+            }
         }
     } else {
         fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d native_ops=%d replay_ops=%d SKIP-NOREACH interp_pc=%08x native_pc=%08x\n",

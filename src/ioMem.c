@@ -24,6 +24,10 @@ static void (*pInterceptReadTable[IO_SIZE])(void);     /* Table with read access
 static void (*pInterceptWriteTable[IO_SIZE])(void);    /* Table with write access handlers */
 
 int nIoMemAccessSize;                                 /* Set to 1, 2 or 4 according to byte, word or long word access */
+unsigned long Uae2026IoAccessCount = 0;   /* Every device-register access, for
+                                            the JIT block verifier: a block that
+                                            touches IO cannot be executed twice
+                                            from one entry state and compared. */
 Uint32 IoAccessBaseAddress;                           /* Stores the base address of the IO mem access */
 Uint32 IoAccessCurrentAddress;                        /* Current byte address while handling WORD and LONG accesses */
 static int nBusErrorAccesses;                         /* Needed to count bus error accesses */
@@ -122,6 +126,7 @@ uae_u32 IoMem_bget(uaecptr addr)
 		return -1;
 	}
 
+	Uae2026IoAccessCount++;
 	IoAccessBaseAddress = addr;                   /* Store access location */
 	nIoMemAccessSize = SIZE_BYTE;
 	nBusErrorAccesses = 0;
@@ -161,6 +166,7 @@ uae_u32 IoMem_wget(uaecptr addr)
 		return -1;
 	}
 
+	Uae2026IoAccessCount++;
 	IoAccessBaseAddress = addr;                   /* Store for exception frame */
 	nIoMemAccessSize = SIZE_WORD;
 	nBusErrorAccesses = 0;
@@ -207,6 +213,7 @@ uae_u32 IoMem_lget(uaecptr addr)
 		return -1;
 	}
 
+	Uae2026IoAccessCount++;
 	IoAccessBaseAddress = addr;                   /* Store for exception frame */
 	nIoMemAccessSize = SIZE_LONG;
 	nBusErrorAccesses = 0;
@@ -264,6 +271,7 @@ void IoMem_bput(uaecptr addr, uae_u32 val)
 		return;
 	}
 
+	Uae2026IoAccessCount++;
 	IoAccessBaseAddress = addr;                   /* Store for exception frame, just in case */
 	nIoMemAccessSize = SIZE_BYTE;
 	nBusErrorAccesses = 0;
@@ -299,6 +307,7 @@ void IoMem_wput(uaecptr addr, uae_u32 val)
 		return;
 	}
 
+	Uae2026IoAccessCount++;
 	IoAccessBaseAddress = addr;                   /* Store for exception frame, just in case */
 	nIoMemAccessSize = SIZE_WORD;
 	nBusErrorAccesses = 0;
@@ -340,6 +349,7 @@ void IoMem_lput(uaecptr addr, uae_u32 val)
 		return;
 	}
 
+	Uae2026IoAccessCount++;
 	IoAccessBaseAddress = addr;                   /* Store for exception frame, just in case */
 	nIoMemAccessSize = SIZE_LONG;
 	nBusErrorAccesses = 0;

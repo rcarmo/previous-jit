@@ -1572,6 +1572,12 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
        however many blocks it spanned. Replaying that many instructions makes
        the two spans equivalent by construction. */
     const uae_u32 retired_before = jit_native_retired_cpu_cycles;
+    /* A block that touches a device register cannot be executed twice from one
+       entry state and compared: the register is under no obligation to answer
+       both runs the same way, and the snapshot covers RAM and ROM only.  Count
+       IO accesses across each run and report a difference as SKIP-IO. */
+    extern unsigned long Uae2026IoAccessCount;
+    const unsigned long io_before_native = Uae2026IoAccessCount;
     countdown = -1;
     jit_block_verify_reentrant = true;
     ((jit_compiled_handler)pushall_call_handler)();
@@ -1607,6 +1613,7 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
        address, which is garbage under a user-mode MMU and forces every
        userland block to SKIP-NOREACH. */
     const uae_u32 native_stop_pc = (uae_u32)m68k_getpc();
+    const unsigned long io_native = Uae2026IoAccessCount - io_before_native;
 
     /* Delta 2: INTERP REFERENCE with an exact retirement bound. The block
        builder terminates at control flow, while runtime-helper barriers can
@@ -1617,6 +1624,7 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     jit_block_verify_snapshot_restore(&jit_block_verify_entry_state);
     regs.spcflags = 0;
     InterruptFlags = 0;
+    const unsigned long io_before_interp = Uae2026IoAccessCount;
     const int reference_ops = jit_block_verify_compiled_ops > 0
         ? jit_block_verify_compiled_ops : blocklen;
     int replay_ops = 0;
@@ -1662,6 +1670,8 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     }
     const bool interp_reached_stop =
         (((uae_u32)m68k_getpc() & ~1u) == (native_stop_pc & ~1u));
+    const unsigned long io_interp = Uae2026IoAccessCount - io_before_interp;
+    const bool io_tainted = (io_native != 0) || (io_interp != 0);
     if (!jit_block_verify_snapshot_capture(&interp)) {
 #if defined(CPU_AARCH64)
         tick_inhibit = saved_tick_inhibit;
@@ -1677,7 +1687,13 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
        reference actually stopped at native's stop PC; else emit SKIP-NOREACH
        (which, when native_stop_pc is a PC interp never visits in the boot, is
        the phantom-successor / control-flow divergence signal). */
-    if (interp_reached_stop) {
+    if (interp_reached_stop && io_tainted) {
+        /* The block read or wrote a device register.  Executing it twice from
+           one entry state is not a valid comparison, so this is neither a pass
+           nor a mismatch -- it is a question the instrument cannot ask. */
+        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d SKIP-IO io_native=%lu io_interp=%lu\n",
+            (unsigned)block_pc, blocklen, io_native, io_interp);
+    } else if (interp_reached_stop) {
         fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d native_ops=%d replay_ops=%d REACHED native_stop_pc=%08x interp_stop_pc=%08x\n",
             (unsigned)block_pc, blocklen, reference_ops, replay_ops,
             (unsigned)native_stop_pc, (unsigned)m68k_getpc());

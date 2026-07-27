@@ -423,6 +423,7 @@ static unsigned long jit_guest_path_user_return_limit(void)
 }
 
 extern "C" void Uae2026CompilerFlushCacheHard(void);
+extern unsigned long jit_retire_obs[4];
 
 /* Set by ExceptionX() in the shared exception path; identifies which exception
  * last entered supervisor mode. */
@@ -457,14 +458,18 @@ static void jit_guest_path_user_return(uae_u32 pc)
              * derived from this counter, so a cycle difference is guest
              * visible. */
             extern int64_t nCyclesMainCounter;
+            extern unsigned long Uae2026SupervisorExits;
             fprintf(stderr,
-                "USERRET %lu v=%d pc=%08x ccr=%02x cyc=%lld d0=%08x d1=%08x a0=%08x a7=%08x\n",
+                "USERRET %lu v=%d pc=%08x ccr=%02x cyc=%lld d0=%08x d1=%08x a0=%08x a7=%08x "
+                "sx=%lu obs=%lu/%lu/%lu\n",
                 emitted, jit_last_exception_vector, (unsigned)pc,
                 (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
                            (GET_VFLG() << 1) | GET_CFLG()),
                 (long long)nCyclesMainCounter,
                 (unsigned)regs.regs[0], (unsigned)regs.regs[1],
-                (unsigned)regs.regs[8], (unsigned)m68k_areg(regs, 7));
+                (unsigned)regs.regs[8], (unsigned)m68k_areg(regs, 7),
+                Uae2026SupervisorExits,
+                jit_retire_obs[0], jit_retire_obs[1], jit_retire_obs[2]);
             if ((emitted & 0x3f) == 0)
                 fflush(stderr);
         }
@@ -475,9 +480,21 @@ static void jit_guest_path_user_return(uae_u32 pc)
             ++syscall_returns;
             if (arm_at && syscall_returns == arm_at) {
                 jit_guest_path_late_arm();
-                Uae2026CompilerFlushCacheHard();
-                fprintf(stderr, "USERRET: path observer armed at syscall return %lu\n",
-                    syscall_returns);
+                /* Arming has historically discarded the translation cache so
+                 * the capture window starts from a clean slate.  That is also
+                 * a behaviour change: if a capture agrees with the interpreter
+                 * only because the arm flushed stale block/tag state, the flush
+                 * is hiding the defect being hunted.  B2_JIT_ARM_NO_FLUSH=1
+                 * arms the observer without the flush so the two effects can
+                 * be told apart. */
+                static const bool arm_no_flush = [] {
+                    const char *e = getenv("B2_JIT_ARM_NO_FLUSH");
+                    return e && *e && strcmp(e, "0") != 0;
+                }();
+                if (!arm_no_flush)
+                    Uae2026CompilerFlushCacheHard();
+                fprintf(stderr, "USERRET: path observer armed at syscall return %lu (flush=%d)\n",
+                    syscall_returns, arm_no_flush ? 0 : 1);
                 fflush(stderr);
             }
             if (dump_at && syscall_returns == dump_at) {
@@ -560,6 +577,14 @@ static void jit_guest_path_record(uae_u32 pc)
         jit_guest_path_dump("count-after-arm");
 }
 
+/* Per-site retirement census.  A retired-instruction observer is only as good
+ * as its coverage: an execution path that retires guest instructions without
+ * calling it makes the JIT look like it SKIPPED work it actually did, and a
+ * user-return stream then reports a supervisor->user transition several
+ * instructions late (or not at all).  Counting per call site turns "the engines
+ * diverged" into "this many instructions retired through this path". */
+unsigned long jit_retire_obs[4] = { 0, 0, 0, 0 };
+
 static void jit_guest_instruction_retired(uae_u32 pc)
 {
     static unsigned long retirement_count = 0;
@@ -571,6 +596,7 @@ static void jit_guest_instruction_retired(uae_u32 pc)
 
 extern "C" void jit_guest_path_record_native(uae_u32 pc)
 {
+    jit_retire_obs[0]++;
     jit_guest_instruction_retired(pc);
 }
 
@@ -583,11 +609,13 @@ extern "C" void jit_guest_path_record_reference(uae_u32 pc)
 
 extern "C" void jit_guest_path_record_nostats(uae_u32 pc)
 {
+    jit_retire_obs[1]++;
     jit_guest_instruction_retired(pc);
 }
 
 extern "C" void jit_guest_path_record_trace(uae_u32 pc)
 {
+    jit_retire_obs[2]++;
     jit_guest_instruction_retired(pc);
 }
 
@@ -3456,6 +3484,7 @@ static inline bool jit_write_overlaps_checksum(const blockinfo* bi,
 }
 
 extern "C" void Uae2026JitShadowSyncInvalidate(uae_u32 addr, uae_u32 size);
+extern "C" uae_u32 Uae2026JitMmuXlateData(uae_u32 addr);
 
 static void jit_invalidate_guest_code_linear(uae_u32 address, uae_u32 size,
                                              bool trace,
@@ -3504,6 +3533,17 @@ static void jit_invalidate_guest_code_range(uae_u32 address, uae_u32 size,
         return env && *env && strcmp(env, "0") != 0;
     }();
 
+    /* Address-space contract: callers pass a guest PHYSICAL address, which is
+       what the shadow-sync cache is keyed on.  The block-checksum scan indexes
+       RAMBaseHost, which under the JIT RAM shadow is the shadow's 0x04000000
+       origin, so it needs a RAM-relative offset.  Converting here rather than
+       at each call site: a caller that passed the physical address straight
+       through failed the `address >= RAMSize` bounds test and silently skipped
+       every block invalidation. */
+    const uae_u32 ram_base = 0x04000000u;
+    if (address >= ram_base && (uae_u32)(address - ram_base) < (uae_u32)RAMSize)
+        address -= ram_base;
+
     if (!currprefs.address_space_24) {
         jit_invalidate_guest_code_linear(address, size, trace,
             count_coherent_write);
@@ -3544,6 +3584,13 @@ void jit_notify_guest_memory_write(uae_u32 address, uae_u32 size)
 {
     if (!jit_strict_cache_disabled_coherence())
         return;
+    /* The compiled store barrier hands over the guest address still held in the
+       address register, which with the MMU on is LOGICAL.  Both the shadow-sync
+       cache and the block scan are keyed on physical addresses, so translate
+       first.  The store itself has just completed, so the ATC entry exists and
+       this translation cannot fault. */
+    if (regs.mmu_enabled)
+        address = Uae2026JitMmuXlateData(address);
     jit_invalidate_guest_code_range(address, size, true);
 }
 

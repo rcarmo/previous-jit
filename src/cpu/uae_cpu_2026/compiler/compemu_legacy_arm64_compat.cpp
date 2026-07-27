@@ -1099,8 +1099,8 @@ void exec_nostats(void)
 		if (trace_enabled && trace_count < jit_tracewin_limit()) {
 			trace_this = jit_tracewin_match(before_pc);
 		}
-		if (jit_guest_path_enabled())
-			jit_guest_path_record_reference(before_pc);
+		if (jit_guest_instruction_observer_enabled())
+			jit_guest_path_record_nostats(before_pc);
 		if (jit_trace_target_pc(before_pc))
 			jit_trace_pc_hit(before_pc, (2u << 16) | (opcode & 0xffff));
 		if (opcode == 0x4e72 && Uae2026OpcodeTestModeHandleStopTrailerAt(before_pc)) {

@@ -517,6 +517,16 @@ static inline bool uae2026_shadow_sync_cache_enabled(void)
     return cached != 0;
 }
 
+static inline bool uae2026_shadow_verify_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("B2_JIT_SHADOW_VERIFY");
+        cached = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
 /* Returns true if this full page is already synced for the current generation.
    Otherwise records it as synced and returns false (caller must sync). */
 static inline bool uae2026_shadow_page_already_synced(uae_u32 page_base)
@@ -549,8 +559,7 @@ extern "C" void Uae2026JitShadowSyncInvalidate(uae_u32 addr, uae_u32 size)
 }
 
 static void Uae2026JitSyncCodeRangeToShadow(uae_u32 addr, uae_u32 bytes)
-{
-    if (!jit_MEMBaseDiff || bytes == 0)
+{    if (!jit_MEMBaseDiff || bytes == 0)
         return;
     const uae_u32 ram_base = 0x04000000u;
     const uae_u32 ram_size = 64u * 1024u * 1024u;
@@ -595,6 +604,30 @@ extern "C" uintptr_t Uae2026JitMmuXlateCodeHost(uae_u32 addr)
          * the active addrbank path before the raw shadow mirror is coherent. */
         const uae_u32 page_base = addr & ~0x1fffu;
         Uae2026JitSyncCodeRangeToShadow(page_base, 0x2000u);
+        /* B2_JIT_SHADOW_VERIFY=1: the sync cache is keyed on (page, MMU
+         * generation).  Any writer that reaches guest RAM without going
+         * through phys_put_*() or announcing itself leaves the executable
+         * shadow holding bytes the interpreter would never fetch, and the JIT
+         * then runs code that does not exist.  Comparing the single word about
+         * to be fetched against live memory costs one bank read per code-host
+         * materialization and names the physical page when it happens. */
+        if (uae2026_shadow_verify_enabled()) {
+            const uae_u8 *p = (const uae_u8 *)(jit_MEMBaseDiff + addr);
+            const uae_u16 shadow_w = (uae_u16)(((uae_u16)p[0] << 8) | p[1]);
+            const uae_u16 live_w = (uae_u16)Uae2026JitPhysGetWord(addr);
+            if (shadow_w != live_w) {
+                static unsigned long stale = 0;
+                if (++stale <= 200) {
+                    fprintf(stderr,
+                        "SHADOW_STALE n=%lu phys=%08x shadow=%04x live=%04x\n",
+                        stale, (unsigned)addr, (unsigned)shadow_w,
+                        (unsigned)live_w);
+                    fflush(stderr);
+                }
+                Uae2026JitShadowSyncInvalidate(addr, 2);
+                Uae2026JitSyncCodeRangeToShadow(page_base, 0x2000u);
+            }
+        }
     }
     return (uintptr_t)(jit_MEMBaseDiff + addr);
 }

@@ -1185,6 +1185,7 @@ void tdma_flush_buffer(int channel) {
 		Log_Printf(LOG_DMA_LEVEL, "[DMA] Channel SCSI: Flush buffer to memory at $%08x, %i bytes",
 				   dma[CHANNEL_SCSI].next,espdma_buf_size);
 		
+		const Uint32 tdma_wr_start = dma[CHANNEL_SCSI].next;
 		for (i = 0; i < DMA_BURST_SIZE; i+=4) {
 			if (dma[CHANNEL_SCSI].next<dma[CHANNEL_SCSI].limit) {
 				if (espdma_buf_size) {
@@ -1194,6 +1195,8 @@ void tdma_flush_buffer(int channel) {
 				dma[CHANNEL_SCSI].next+=4;
 			}
 		}
+		if (dma[CHANNEL_SCSI].next > tdma_wr_start)
+			Uae2026JitNotifyDeviceMemoryWrite(tdma_wr_start, dma[CHANNEL_SCSI].next - tdma_wr_start);
 	} CATCH(prb) {
 		Log_Printf(LOG_WARN, "[DMA] Channel SCSI: Bus error while flushing to %08x",dma[CHANNEL_SCSI].next);
 		dma[CHANNEL_SCSI].csr &= ~DMA_ENABLE;

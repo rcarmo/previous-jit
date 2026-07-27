@@ -71,6 +71,10 @@ int movem_next[256];
 
 cpuop_func *cpufunctbl[65536];
 
+/* Counts supervisor->user transitions.  Defined here because MakeFromSR() is
+   the single shared point where regs.s falls, whichever engine is running. */
+unsigned long Uae2026SupervisorExits = 0;
+
 int OpcodeFamily;
 struct mmufixup mmufixup[2];
 
@@ -607,8 +611,7 @@ void REGPARAM2 MakeSR (void)
 }
 
 void REGPARAM2 MakeFromSR (void)
-{
-	int oldm = regs.m;
+{	int oldm = regs.m;
 	int olds = regs.s;
 
 	SET_XFLG ((regs.sr >> 4) & 1);
@@ -627,6 +630,13 @@ void REGPARAM2 MakeFromSR (void)
 	regs.s  = (regs.sr >> 13) & 1;
 	regs.m  = (regs.sr >> 12) & 1;
 	regs.intmask = (regs.sr >> 8) & 7;
+	/* Authoritative supervisor->user census, engine independent: both engines
+	   reach user mode through this function.  The retired-instruction observer
+	   can only see a transition if it sees the first user instruction after it,
+	   so comparing this count against the observer's tells a missed OBSERVATION
+	   apart from a missed EXECUTION. */
+	if (olds && !regs.s)
+		Uae2026SupervisorExits++;
 	if (currprefs.cpu_model >= 68020) {
 		if (olds != regs.s) {
 			if (olds) {

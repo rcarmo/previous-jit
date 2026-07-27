@@ -1572,7 +1572,18 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
        target, so the native run is bounded to ONE block (no chain) without an
        explicit get_handler_for_edge override. */
     jit_block_verify_snapshot_restore(&jit_block_verify_entry_state);
-    regs.spcflags = 0;
+    /* Bound the native run to ONE block.
+     *
+     * countdown = -1 was supposed to do this and does not: the block epilogue
+     * tests regs.spcflags FIRST and skips the countdown path entirely when it
+     * is zero, so with spcflags cleared every block falls through and chains.
+     * The replay then covers a different span from the native run, which is
+     * how a single-instruction RTS block came to be reported as a memory
+     * mismatch.  SPCFLAG_JIT_EXEC_RETURN exists precisely to leave compiled
+     * code, carries no architectural meaning, and is already masked out of the
+     * state comparison, so it bounds the run without changing what is being
+     * verified. */
+    regs.spcflags = SPCFLAG_JIT_EXEC_RETURN;
     InterruptFlags = 0;
     jit_block_verify_compile_active = true;
     jit_block_verify_compile_pc = block_pc;
@@ -1614,9 +1625,36 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
        cycles native charged instead: the replay executes the same instructions
        through the same handlers, so the two spans are equivalent by
        construction either way. */
-    const bool bound_by_cycles = jit_real_cycles_enabled();
-    const int native_retired_ops = (!bound_by_cycles && retired_per_op > 0)
-        ? (int)(retired_delta / (uae_u32)retired_per_op) : 0;
+    const bool flat_charge = !jit_real_cycles_enabled();
+    /* Recover an exact instruction count from the cycle delta.
+     *
+     * Dividing by a constant per-instruction charge stopped working when the
+     * charge became per-instruction, and bounding the replay by CYCLES instead
+     * is not an equivalent span: one expensive instruction and five cheap ones
+     * can cost the same.  That is not hypothetical -- it produced a reported
+     * memory mismatch on a single-instruction RTS block where native retired 1
+     * instruction and the replay ran 5.
+     *
+     * The block's own per-instruction charges are in pc_hist[].real_cycles, so
+     * walk their prefix sums: if one matches the delta exactly, that prefix is
+     * the span native retired.  If none does, the native run chained past this
+     * block and no exact span is available -- say so rather than compare two
+     * different spans. */
+    int native_retired_ops = 0;
+    for (int i = 1; i <= blocklen; i++) {
+        const uae_u32 charged =
+            (uae_u32)(jit_block_retired_cycles(pc_hist, i) / CYCLE_UNIT);
+        if (charged == retired_delta) {
+            native_retired_ops = i;
+            break;
+        }
+        if (charged > retired_delta)
+            break;
+    }
+    const bool span_exact = native_retired_ops > 0;
+    const bool bound_by_cycles = !span_exact && !flat_charge;
+    if (!span_exact && flat_charge && retired_per_op > 0)
+        native_retired_ops = (int)(retired_delta / (uae_u32)retired_per_op);
     /* The outer dispatcher drains this counter on return from its own
        pushall_call_handler; this nested run must not leave it charged. */
     jit_native_retired_cpu_cycles = retired_before;
@@ -1711,7 +1749,14 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
        reference actually stopped at native's stop PC; else emit SKIP-NOREACH
        (which, when native_stop_pc is a PC interp never visits in the boot, is
        the phantom-successor / control-flow divergence signal). */
-    if (interp_reached_stop && io_tainted) {
+    if (interp_reached_stop && !span_exact) {
+        /* No prefix of this block's charges matches what native retired, so the
+           native run chained past the block and the replay was bounded by
+           cycles rather than by an equivalent span.  Comparing two different
+           spans manufactures mismatches; report the limitation instead. */
+        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d SKIP-SPAN native_cycles=%u replay_ops=%d\n",
+            (unsigned)block_pc, blocklen, (unsigned)retired_delta, replay_ops);
+    } else if (interp_reached_stop && io_tainted) {
         /* The block read or wrote a device register.  Executing it twice from
            one entry state is not a valid comparison, so this is neither a pass
            nor a mismatch -- it is a question the instrument cannot ask. */

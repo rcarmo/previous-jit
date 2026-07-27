@@ -2498,10 +2498,11 @@ static inline bool jit_prefer_validated_successor_handler(void)
 
 static uae_u32 jit_verify_sweep_pc = 0xffffffffu;
 
-static inline bool jit_verify_block_target_pc(uae_u32 pc)
+/* B2_JIT_VERIFY_BLOCKS=<ranges>: restrict verification to guest PC ranges.
+   Returns false when no range is configured, so callers can tell "no filter"
+   from "outside the filter". */
+static inline bool jit_verify_pc_in_ranges(uae_u32 pc, bool *have_ranges)
 {
-    if (pc == jit_verify_sweep_pc)
-        return true;
     static int initialized = 0;
     static int range_count = 0;
     static struct { uae_u32 start; uae_u32 end; } ranges[64];
@@ -2536,11 +2537,20 @@ static inline bool jit_verify_block_target_pc(uae_u32 pc)
             }
         }
     }
+    if (have_ranges)
+        *have_ranges = (range_count > 0);
     for (int i = 0; i < range_count; i++) {
         if (pc >= ranges[i].start && pc <= ranges[i].end)
             return true;
     }
     return false;
+}
+
+static inline bool jit_verify_block_target_pc(uae_u32 pc)
+{
+    if (pc == jit_verify_sweep_pc)
+        return true;
+    return jit_verify_pc_in_ranges(pc, NULL);
 }
 
 static inline int distrust_check(int value)
@@ -3708,10 +3718,16 @@ static inline void jit_verify_sweep_tick(void)
     const uae_u32 pc = (uae_u32)m68k_getpc() & ~1u;
     const unsigned slot = (unsigned)((pc >> 1) & (JIT_VERIFY_SWEEP_SLOTS - 1));
     blockinfo *bi = get_blockinfo_addr(regs.pc_p);
+    /* When B2_JIT_VERIFY_BLOCKS names ranges, sweep only inside them: once a
+       failure has been localised to an address range, spending the sweep on
+       the rest of the boot is wasted coverage. */
+    bool have_ranges = false;
+    const bool in_ranges = jit_verify_pc_in_ranges(pc, &have_ranges);
     /* Not every dispatch return lands on a compiled block, and a candidate may
        already have been swept this generation.  Neither is a reason to spend
        the interval doing nothing: retry on the next dispatch instead. */
-    if (swept_pc[slot] == pc || !bi || bi->status == BI_INVALID) {
+    if (swept_pc[slot] == pc || !bi || bi->status == BI_INVALID ||
+        (have_ranges && !in_ranges)) {
         if (++retries < JIT_VERIFY_SWEEP_RETRIES) {
             n--;
             return;

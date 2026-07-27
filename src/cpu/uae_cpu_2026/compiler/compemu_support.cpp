@@ -169,6 +169,9 @@ void m68k_do_compile_execute(void)
 		jit_native_retired_cpu_cycles = 0;
 		((compiled_handler)(pushall_call_handler))();
 #if defined(CPU_AARCH64)
+		jit_verify_sweep_tick();
+#endif
+#if defined(CPU_AARCH64)
 		/* Test-only specialty-boundary oracle. JIT_END_COMPILE is consumed and
 		   cleared by m68k_do_specialties(), so this forces the real flag/SR seam
 		   once without fabricating a device interrupt or changing guest state. */

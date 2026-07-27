@@ -1043,13 +1043,6 @@ static bool jit_retired_clock_enabled(void)
 	return cached != 0;
 }
 
-/* cpu/uae_cpu_2026/newcpu.h declares cpuop_func as returning void; the real
- * generated handlers (cpu/newcpu.h) return the instruction's cycle count in
- * uae_u32, which is what the interpreter charges.  The two declarations are
- * ABI-compatible on AArch64 -- the JIT unit simply discards x0 -- so recover
- * the count by calling through a correctly-typed pointer. */
-typedef uae_u32 (*jit_cpuop_cycles_func)(uae_u32);
-
 /* jit_real_cycles_enabled() is defined earlier in compemu_support_arm.cpp,
  * which is part of the same translation unit. */
 
@@ -1462,6 +1455,9 @@ jit_pctrace_done:
 		   compares) in userland, not just kernel/ROM identity-mapped RAM. */
 		uae_u32 verify_block_pc = (uae_u32)m68k_getpc();
 		const bool verify_this_block = !jit_block_verify_reentrant && jit_verify_block_target_pc(verify_block_pc);
+		/* One-shot: a swept block must not stay armed for every later dispatch. */
+		if (verify_block_pc == jit_verify_sweep_pc)
+			jit_verify_sweep_pc = 0xffffffffu;
 		if (verify_this_block)
 			jit_block_verify_entry_capture(verify_block_pc);
 #endif

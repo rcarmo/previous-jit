@@ -676,6 +676,13 @@ extern "C" void jit_guest_path_record_trace(uae_u32 pc)
     jit_guest_instruction_retired(pc);
 }
 
+/* cpu/uae_cpu_2026/newcpu.h declares cpuop_func as returning void; the real
+ * generated handlers (cpu/newcpu.h) return the instruction's cycle count in
+ * uae_u32.  The two declarations are ABI-compatible on AArch64 -- the JIT unit
+ * simply discards x0 -- so recover the count by calling through a
+ * correctly-typed pointer. */
+typedef uae_u32 (*jit_cpuop_cycles_func)(uae_u32);
+
 /* Guest PC is inside the emulated ROM window.
  *
  * `pc >= ROMBaseMac` was used as the ROM test in several places.  On this
@@ -1384,6 +1391,15 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
        Reporting it turns every block that would have taken a pending-interrupt
        exit into a false mismatch. */
     expected_regs.spcflags = actual_regs.spcflags;
+    /* regs.sr is a MIRROR of the condition codes, not live state: the live CCR
+       lives in regflags and regs.sr is only materialised by MakeSR(), which
+       neither the native run (spcflags zeroed, so no specialties) nor the
+       interpreter replay calls at the same points.  The sweep flagged four
+       blocks on this field, all of them LINK An,#imm -- an instruction that
+       cannot affect condition codes -- and in each case regflags, which IS
+       compared below, agreed.  Both runs had simply left a differently stale
+       mirror behind.  Compare the flags, not the cache of them. */
+    expected_regs.sr = actual_regs.sr;
     expected_regs.jit_exception = actual_regs.jit_exception;
     expected_regs.jit_exception_oldpc = actual_regs.jit_exception_oldpc;
     expected_regs.mem_banks = actual_regs.mem_banks;
@@ -1547,7 +1563,14 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     jit_block_verify_reentrant = false;
     const int retired_per_op = scaled_cycles(4 * CYCLE_UNIT) / CYCLE_UNIT;
     const uae_u32 retired_delta = jit_native_retired_cpu_cycles - retired_before;
-    const int native_retired_ops = (retired_per_op > 0)
+    /* With the real per-instruction charge the native run no longer costs a
+       fixed number of cycles per instruction, so dividing the cycle delta by a
+       constant no longer yields an instruction count.  Bound the replay by the
+       cycles native charged instead: the replay executes the same instructions
+       through the same handlers, so the two spans are equivalent by
+       construction either way. */
+    const bool bound_by_cycles = jit_real_cycles_enabled();
+    const int native_retired_ops = (!bound_by_cycles && retired_per_op > 0)
         ? (int)(retired_delta / (uae_u32)retired_per_op) : 0;
     /* The outer dispatcher drains this counter on return from its own
        pushall_call_handler; this nested run must not leave it charged. */
@@ -1593,9 +1616,14 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
            the logical PC before every fetch. */
         const int replay_target = native_retired_ops > 0
             ? native_retired_ops : reference_ops;
+        uae_u32 replay_cycles = 0;
         for (;;) {
-            if (replay_ops >= replay_target)
+            if (bound_by_cycles) {
+                if (replay_cycles >= retired_delta)
+                    break;
+            } else if (replay_ops >= replay_target) {
                 break;
+            }
             const uae_u32 pc_now = (uae_u32)m68k_getpc() & ~1u;
             const uintptr_t host = Uae2026JitMmuXlateCodeHost(pc_now);
             if (!host)
@@ -1604,8 +1632,10 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
             regs.pc_oldp = regs.pc_p;
             const uae_u32 opcode = get_opcode_cft_map((uae_u16)*(uae_u16*)regs.pc_p);
             Uae2026JitFlagsToInterpreter();
-            (*cpufunctbl[opcode])(opcode);
+            const int op_cycles =
+                (int)((jit_cpuop_cycles_func)cpufunctbl[opcode])(opcode);
             Uae2026InterpreterFlagsToJit();
+            replay_cycles += (uae_u32)(op_cycles > 0 ? op_cycles : 1);
             replay_ops++;
         }
         const uae_u32 pc_end = (uae_u32)m68k_getpc() & ~1u;
@@ -2435,8 +2465,12 @@ static inline bool jit_prefer_validated_successor_handler(void)
     return prefer_validated != 0;
 }
 
+static uae_u32 jit_verify_sweep_pc = 0xffffffffu;
+
 static inline bool jit_verify_block_target_pc(uae_u32 pc)
 {
+    if (pc == jit_verify_sweep_pc)
+        return true;
     static int initialized = 0;
     static int range_count = 0;
     static struct { uae_u32 start; uae_u32 end; } ranges[64];
@@ -3575,6 +3609,30 @@ static inline void create_jmpdep(blockinfo* bi, int i, uae_u32* jmpaddr,
     jit_trace_edge_snapshot(i == 0 ? "EDGE0" : "EDGE1", bi);
 }
 
+/* --- Verifier sweep ---------------------------------------------------
+ *
+ * Verification is armed at block *compile* time, so each block is checked once,
+ * when it is first translated.  That answers "is this translation faithful",
+ * not "is this execution faithful", and cannot catch a block that is right on
+ * its first execution and wrong later -- which is the shape of the optlev-2
+ * suspicion.  Measured on a seven-minute boot: 1 block verified in
+ * 0x05000000-0x0500ffff and 69 in 0x00000000-0x00ffffff.
+ *
+ * B2_JIT_VERIFY_SWEEP_EVERY=<n>: every n block dispatches, discard the
+ * translation about to be entered and arm the verifier for it, so the block is
+ * re-traced, re-compiled and re-compared against an interpreter replay at a
+ * point in the boot chosen by the sweep rather than by first sight. */
+
+static unsigned long jit_verify_sweep_every(void)
+{
+    static unsigned long cached = ~0ul;
+    if (cached == ~0ul) {
+        const char *env = getenv("B2_JIT_VERIFY_SWEEP_EVERY");
+        cached = (env && *env) ? strtoul(env, NULL, 0) : 0;
+    }
+    return cached;
+}
+
 static inline void block_need_recompile(blockinfo* bi)
 {
     uae_u32 cl = cacheline(bi->pc_p);
@@ -3592,6 +3650,24 @@ static inline void block_need_recompile(blockinfo* bi)
     if (bi == cache_tags[cl + 1].bi)
         cache_tags[cl].handler = (cpuop_func*)popall_execute_normal;
     bi->status = BI_NEED_RECOMP;
+}
+
+/* Called from the dispatch loop after each generated-code entry returns.
+ * regs.pc_p already names the next block, which is the one worth re-checking:
+ * it is about to run, so its translation is live. */
+static inline void jit_verify_sweep_tick(void)
+{
+    const unsigned long every = jit_verify_sweep_every();
+    if (!every)
+        return;
+    static unsigned long n = 0;
+    if (++n % every)
+        return;
+    blockinfo *bi = get_blockinfo_addr(regs.pc_p);
+    if (!bi || bi->status == BI_INVALID)
+        return;
+    jit_verify_sweep_pc = (uae_u32)m68k_getpc() & ~1u;
+    block_need_recompile(bi);
 }
 
 static inline bool jit_strict_cache_disabled_coherence(void)

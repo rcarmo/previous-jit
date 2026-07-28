@@ -2646,7 +2646,7 @@ gen_opcode (unsigned int opcode)
 	       a fresh equality predicate against the taken target; keyed MMU dispatch
 	       cannot infer the logical target from that translated host pointer. */
 	    comprintf("\tsave_and_discard_flags_in_nzcv();\n"
-		      "\tdbcc_test_target_eq(PC_P, offs);\n"
+		      "\tdbcc_test_target_eq_i(PC_P, dbcc_taken);\n"
 		      "\tregister_branch(dbcc_fallthrough,dbcc_taken,%d);\n", NATIVE_CC_EQ);
 #endif
 	    break;

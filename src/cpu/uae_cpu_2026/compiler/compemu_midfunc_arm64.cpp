@@ -1434,6 +1434,24 @@ MIDFUNC(2,dbcc_test_target_eq,(RR4 current, RR4 target))
 }
 MENDFUNC(2,dbcc_test_target_eq,(RR4 current, RR4 target))
 
+/* Same predicate, but against the *static* taken target captured before the
+   DBcc plumbing runs.  The register form is unusable for DBcc cases 2-15:
+   cmov_l_rr(offs,PC_P,cc) overwrites offs with the fall-through address when
+   the architectural condition is TRUE, so PC_P == offs holds in the one case
+   that must NOT branch, and the block epilogue jumps back into the loop for
+   ever.  Comparing against the immediate is immune to that clobber. */
+MIDFUNC(2,dbcc_test_target_eq_i,(RR4 current, IMPTR target))
+{
+	current = readreg(current);
+	LOAD_U64(REG_WORK1, (uintptr)target);
+	CMP_xx(current, REG_WORK1);
+	unlock2(current);
+	live.flags_in_flags = TRASH;
+	live.flags_on_stack = VALID;
+	flags_carry_inverted = false;
+}
+MENDFUNC(2,dbcc_test_target_eq_i,(RR4 current, IMPTR target))
+
 /* Call a C helper function from JIT-compiled code.
  * This emits a BL instruction to the given address.
  * Used by the JIT to call interpreter-helper functions for

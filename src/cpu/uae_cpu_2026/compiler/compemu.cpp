@@ -29534,7 +29534,7 @@ void REGPARAM2 op_52c8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,7);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -29759,7 +29759,7 @@ void REGPARAM2 op_53c8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,6);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -29984,7 +29984,7 @@ void REGPARAM2 op_54c8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,3);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -30209,7 +30209,7 @@ void REGPARAM2 op_55c8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,2);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -30434,7 +30434,7 @@ void REGPARAM2 op_56c8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,5);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -30659,7 +30659,7 @@ void REGPARAM2 op_57c8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,4);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -30884,7 +30884,7 @@ void REGPARAM2 op_58c8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,1);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -31109,7 +31109,7 @@ void REGPARAM2 op_59c8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,0);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -31334,7 +31334,7 @@ void REGPARAM2 op_5ac8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,9);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -31559,7 +31559,7 @@ void REGPARAM2 op_5bc8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,8);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -31784,7 +31784,7 @@ void REGPARAM2 op_5cc8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,13);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -32009,7 +32009,7 @@ void REGPARAM2 op_5dc8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,12);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -32234,7 +32234,7 @@ void REGPARAM2 op_5ec8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,15);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -32459,7 +32459,7 @@ void REGPARAM2 op_5fc8_0_comp_ff(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,14);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -77282,7 +77282,7 @@ void REGPARAM2 op_52c8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,7);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -77507,7 +77507,7 @@ void REGPARAM2 op_53c8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,6);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -77732,7 +77732,7 @@ void REGPARAM2 op_54c8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,3);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -77957,7 +77957,7 @@ void REGPARAM2 op_55c8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,2);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -78182,7 +78182,7 @@ void REGPARAM2 op_56c8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,5);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -78407,7 +78407,7 @@ void REGPARAM2 op_57c8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,4);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -78632,7 +78632,7 @@ void REGPARAM2 op_58c8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,1);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -78857,7 +78857,7 @@ void REGPARAM2 op_59c8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,0);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -79082,7 +79082,7 @@ void REGPARAM2 op_5ac8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,9);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -79307,7 +79307,7 @@ void REGPARAM2 op_5bc8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,8);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -79532,7 +79532,7 @@ void REGPARAM2 op_5cc8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,13);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -79757,7 +79757,7 @@ void REGPARAM2 op_5dc8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,12);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -79982,7 +79982,7 @@ void REGPARAM2 op_5ec8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,15);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);
@@ -80207,7 +80207,7 @@ void REGPARAM2 op_5fc8_0_comp_nf(uae_u32 opcode) /* DBcc */
 	cmov_l_rr(src,nsrc,14);
 	dbcc_cond_move_ne_w(PC_P, offs, nsrc);
 	save_and_discard_flags_in_nzcv();
-	dbcc_test_target_eq(PC_P, offs);
+	dbcc_test_target_eq_i(PC_P, dbcc_taken);
 	register_branch(dbcc_fallthrough,dbcc_taken,4);
 	if(srcreg != src)
 		mov_w_rr(srcreg, src);

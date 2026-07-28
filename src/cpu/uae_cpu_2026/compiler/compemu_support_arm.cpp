@@ -1696,6 +1696,7 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     const int reference_ops = jit_block_verify_compiled_ops > 0
         ? jit_block_verify_compiled_ops : blocklen;
     int replay_ops = 0;
+    uae_u32 replay_cycles_total = 0;
     {
         /* Replay exactly as many instructions as the native run retired, so
            the two spans are equivalent no matter how many blocks native
@@ -1714,8 +1715,7 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
                     break;
             } else if (replay_ops >= replay_target) {
                 break;
-            }
-            const uae_u32 pc_now = (uae_u32)m68k_getpc() & ~1u;
+            }            const uae_u32 pc_now = (uae_u32)m68k_getpc() & ~1u;
             const uintptr_t host = Uae2026JitMmuXlateCodeHost(pc_now);
             if (!host)
                 break;
@@ -1729,6 +1729,7 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
             replay_cycles += (uae_u32)(op_cycles > 0 ? op_cycles : 1);
             replay_ops++;
         }
+        replay_cycles_total = replay_cycles;
         const uae_u32 pc_end = (uae_u32)m68k_getpc() & ~1u;
         const uintptr_t host_end = Uae2026JitMmuXlateCodeHost(pc_end);
         if (host_end) {
@@ -1755,13 +1756,20 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
        reference actually stopped at native's stop PC; else emit SKIP-NOREACH
        (which, when native_stop_pc is a PC interp never visits in the boot, is
        the phantom-successor / control-flow divergence signal). */
-    if (interp_reached_stop && !span_exact) {
+    /* A cycle-bounded replay that lands on native's stop PC having charged
+       EXACTLY what native charged is an equivalent span even without a
+       pc_hist[] prefix match: same entry state, same emulated cycles, same
+       architectural end PC.  Only an inexact cycle bound is a real limitation. */
+    const bool span_cycle_equal =
+        bound_by_cycles && replay_cycles_total == retired_delta && replay_ops > 0;
+    if (interp_reached_stop && !span_exact && !span_cycle_equal) {
         /* No prefix of this block's charges matches what native retired, so the
            native run chained past the block and the replay was bounded by
            cycles rather than by an equivalent span.  Comparing two different
            spans manufactures mismatches; report the limitation instead. */
-        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d SKIP-SPAN native_cycles=%u replay_ops=%d\n",
-            (unsigned)block_pc, blocklen, (unsigned)retired_delta, replay_ops);
+        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d SKIP-SPAN native_cycles=%u replay_ops=%d replay_cycles=%u\n",
+            (unsigned)block_pc, blocklen, (unsigned)retired_delta, replay_ops,
+            (unsigned)replay_cycles_total);
     } else if (interp_reached_stop && io_tainted) {
         /* The block read or wrote a device register.  Executing it twice from
            one entry state is not a valid comparison, so this is neither a pass
@@ -1769,8 +1777,9 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
         fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d SKIP-IO io_native=%lu io_interp=%lu\n",
             (unsigned)block_pc, blocklen, io_native, io_interp);
     } else if (interp_reached_stop) {
-        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d native_ops=%d replay_ops=%d REACHED native_stop_pc=%08x interp_stop_pc=%08x\n",
+        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d native_ops=%d replay_ops=%d REACHED%s native_stop_pc=%08x interp_stop_pc=%08x\n",
             (unsigned)block_pc, blocklen, reference_ops, replay_ops,
+            span_exact ? "" : "-CYC",
             (unsigned)native_stop_pc, (unsigned)m68k_getpc());
         jit_block_verify_compare(&interp, &native, block_pc, blocklen);
         if (jit_block_verify_last_mismatch) {

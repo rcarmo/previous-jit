@@ -1024,6 +1024,14 @@ STATIC_INLINE uae_u32* compemu_raw_endblock_pc_isconst(IM32 cycles, IMPTR v)
 	/* v is always >= NATMEM_OFFSET and < NATMEM_OFFSET + max. Amiga mem */
 	uae_u32* tba;
 
+	/* Same retirement charge as the other three endblock primitives.  Without
+	   it a chained hot-path loop retires guest instructions the emulated clock
+	   never sees -- and the block verifier, which measures its replay span from
+	   that charge, believes a run that chained through several blocks retired
+	   only the verified block's prefix.  That produced a false mismatch on a
+	   two-instruction loop tail at 0400244a. */
+	compemu_raw_accum_retired_cycles(cycles);
+
 	// countdown -= scaled_cycles(totcycles);
 	// Use absolute address for countdown (global variable, may be >32KB from regs)
 	LOAD_U64(REG_WORK3, (uintptr)&countdown);

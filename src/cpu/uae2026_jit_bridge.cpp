@@ -1049,9 +1049,36 @@ static bool bridge_rollback_mmu_txn(uae_u32 fault_pc)
     bridge_clear_mmu_txn();
     switch (txn.kind) {
         case bridge_mmu_txn_kind::call_push: {
-            /* A live call transaction now means the exact helper faulted before
-             * semantic commit (for example while writing the return address).
-             * Target translation runs only after Uae2026JitMmuTxnCommit(). */
+            /* A live call transaction only describes THIS call's target fetch.
+             * The runtime helpers (jit_runtime_jsr/bsr) call
+             * Uae2026JitMmuTxnCommit() as soon as the push is architecturally
+             * done, but natively translated JSR/BSR emit the Begin call and no
+             * commit at all, so every completed native call leaves its
+             * transaction live.  Without this check the next unrelated MMU
+             * fault -- a demand-paged operand anywhere in the callee -- restored
+             * that call's pre-push A7, leaving A7 four bytes high; the callee's
+             * RTS then popped the caller's first argument as its return address.
+             * Measured in libsys bcopy: entered at sp=001ff630, a source page
+             * fault in `moveb %a0@-,%a1@-` at 050071fe resumed with sp=001ff634,
+             * and the RTS at 05007244 returned to 0024e3dc -- the src argument --
+             * which is a data page, so the process took privilege violations at
+             * that PC for ever and the window system never came up.
+             *
+             * The legitimate case is the target code fetch of this very call:
+             * the fault PC is the call target and A7 still holds the post-push
+             * value. */
+            if (!txn.aux1 || fault_pc != txn.aux1 ||
+                m68k_areg(regs, 7) != txn.side_new) {
+                if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
+                    fprintf(stderr,
+                            "JIT_CALL_TARGET_ROLLBACK_TXN_STALE fault_pc=%08x op_pc=%08x op=%04x target=%08x addr=%08x sp=%08x oldsp=%08x newsp=%08x\n",
+                            (unsigned)fault_pc, (unsigned)txn.pc, (unsigned)txn.opcode,
+                            (unsigned)txn.aux1, (unsigned)regs.mmu_fault_addr,
+                            (unsigned)m68k_areg(regs, 7),
+                            (unsigned)txn.side_old, (unsigned)txn.side_new);
+                }
+                return false;
+            }
             if (!bridge_restore_txn_a7(txn.pre_a7, txn.pre_sr))
                 return false;
             if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
@@ -1126,15 +1153,22 @@ static bool bridge_is_bsr_opcode(uae_u16 opcode)
 static void bridge_restore_call_target_fault_side_effects(uae_u32 fault_pc)
 {
     const uae_u32 fault_addr = regs.mmu_fault_addr;
-    if (!fault_addr || fault_addr == fault_pc)
+    /* Whatever this fault turns out to be, the pending transaction does not
+     * survive it: an exception is about to be delivered, and a record kept
+     * across it can only be consumed by an unrelated later fault. */
+    if (!fault_addr || fault_addr == fault_pc) {
+        bridge_clear_mmu_txn();
         return;
+    }
     /* A call-target rollback is only valid after the return-address push
      * succeeded and a later target code fetch faulted.  If the faulting address
      * is the just-decremented stack location, this is the call push itself
      * faulting; the 040 interpreter leaves that stack side effect visible for
      * exception delivery instead of undoing it here. */
-    if (fault_addr + 4u == m68k_areg(regs, 7))
+    if (fault_addr + 4u == m68k_areg(regs, 7)) {
+        bridge_clear_mmu_txn();
         return;
+    }
     (void)bridge_rollback_mmu_txn(fault_pc);
 }
 

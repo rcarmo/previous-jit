@@ -2044,6 +2044,66 @@ extern "C" void dfc_put_long(uae_u32 addr, uae_u32 value);
 extern "C" void dfc_put_word(uae_u32 addr, uae_u16 value);
 extern "C" void dfc_put_byte(uae_u32 addr, uae_u8 value);
 
+/* ------------------------------------------------------------------------
+   Instruction fetch inside runtime semantic helpers.
+
+   newcpu.h selects get_ibyte/get_iword/get_ilong on FULLMMU.  The vendored
+   preamble deliberately undefines FULLMMU for this translation unit, so the
+   DIRECT_ADDRESSING forms are selected:
+
+       get_iword(o) == do_get_mem_word(get_real_address(m68k_getpc()) + o)
+
+   and get_real_address() is MEMBaseDiff + address, i.e. it treats the guest
+   PC as a *physical* address.  ROM and the identity-mapped kernel survive
+   that; every MMU-translated user address does not.  BFINS at 05008ae8 read
+   its extension word as 0000, decoded as Dn=0/offset=0/width=32, and wrote
+   all of D0 over a 30-bit field.
+
+   The barrier that calls these helpers publishes both halves of the PC pair
+   through compemu_raw_set_pc_full_i(): regs.pc holds the guest PC and
+   regs.pc_p/pc_oldp hold the host pointer the block compiler materialized
+   for that instruction through the code-host path (MMU-translated, shadow
+   coherent).  Fetch through regs.pc_p, which is also what this unit's
+   m68k_incpc() advances, so the two stay consistent across the incpc() that
+   the indexed EA forms perform.  Instructions that straddle a page are not
+   compiled, so pc_p + o cannot leave the materialized page.               */
+static ALWAYS_INLINE uae_u16 jit_helper_iword_at(uae_u32 offset)
+{
+    return do_get_mem_word((uae_u16 *)((uae_u8 *)regs.pc_p + offset));
+}
+static ALWAYS_INLINE uae_u8 jit_helper_ibyte_at(uae_u32 offset)
+{
+    return (uae_u8)do_get_mem_byte((uae_u8 *)regs.pc_p + offset);
+}
+static ALWAYS_INLINE uae_u32 jit_helper_ilong_at(uae_u32 offset)
+{
+    /* Extension longwords are only word-aligned; read as two words rather
+       than relying on an unaligned 32-bit host load. */
+    const uae_u32 hi = jit_helper_iword_at(offset);
+    const uae_u32 lo = jit_helper_iword_at(offset + 2);
+    return (hi << 16) | lo;
+}
+static ALWAYS_INLINE uae_u32 jit_helper_next_iword(void)
+{
+    const uae_u32 r = jit_helper_iword_at(0);
+    m68k_incpc(2);
+    return r;
+}
+static ALWAYS_INLINE uae_u32 jit_helper_next_ilong(void)
+{
+    const uae_u32 r = jit_helper_ilong_at(0);
+    m68k_incpc(4);
+    return r;
+}
+#undef get_ibyte
+#undef get_iword
+#undef get_ilong
+#define get_ibyte(o) jit_helper_ibyte_at((uae_u32)(o) + 1)
+#define get_iword(o) jit_helper_iword_at((uae_u32)(o))
+#define get_ilong(o) jit_helper_ilong_at((uae_u32)(o))
+#define next_iword() jit_helper_next_iword()
+#define next_ilong() jit_helper_next_ilong()
+
 static inline void jit_emit_runtime_helper_barrier(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2);
 static inline void jit_emit_runtime_helper_barrier_arch_pc(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2);
 static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2, uae_u32 helper_kind, bool architectural_pc);

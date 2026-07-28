@@ -622,10 +622,37 @@ void REGPARAM2 MakeSR (void)
 		|  GET_CFLG ());
 }
 
+/* B2_SP_ASSERT=1: leaving MakeFromSR() in user mode with A7 pointing into the
+   kernel stack region means a supervisor->user transition happened without the
+   USP/ISP swap.  The JIT was observed running user code with a kernel A7 --
+   exception records 3450/3451 of a failing boot carry identical vector, PC and
+   d0-d7/a0-a6 against a passing one, and differ in a7 alone (11152fa8 against
+   03ffff20).  Name the transition that produced it, not the fault that revealed
+   it.  "early" marks the fast-path return, which skips the swap by design and
+   is only correct if regs.s and A7 were already consistent. */
+static void Uae2026SpAssert(const char *site, int olds, int oldm)
+{
+	static int enabled = -1;
+	if (enabled < 0)
+		enabled = getenv("B2_SP_ASSERT") ? 1 : 0;
+	if (!enabled)
+		return;
+	if (regs.s || (uae_u32)m68k_areg(regs, 7) < 0x10000000u)
+		return;
+	static unsigned long n = 0;
+	if (++n > 40)
+		return;
+	fprintf(stderr,
+		"SPBAD n=%lu site=%s olds=%d oldm=%d sr=%04x pc=%08x a7=%08x usp=%08x isp=%08x msp=%08x\n",
+		n, site, olds, oldm, (unsigned)regs.sr, (unsigned)m68k_getpc(),
+		(unsigned)m68k_areg(regs, 7), (unsigned)regs.usp,
+		(unsigned)regs.isp, (unsigned)regs.msp);
+	fflush(stderr);
+}
+
 void REGPARAM2 MakeFromSR (void)
 {	int oldm = regs.m;
 	int olds = regs.s;
-
 	SET_XFLG ((regs.sr >> 4) & 1);
 	SET_NFLG ((regs.sr >> 3) & 1);
 	SET_ZFLG ((regs.sr >> 2) & 1);
@@ -635,9 +662,10 @@ void REGPARAM2 MakeFromSR (void)
 		regs.t0 == ((regs.sr >> 14) & 1) &&
 		regs.s  == ((regs.sr >> 13) & 1) &&
 		regs.m  == ((regs.sr >> 12) & 1) &&
-		regs.intmask == ((regs.sr >> 8) & 7))
+		regs.intmask == ((regs.sr >> 8) & 7)) {
+		Uae2026SpAssert("early", olds, oldm);
 		return;
-	regs.t1 = (regs.sr >> 15) & 1;
+	}	regs.t1 = (regs.sr >> 15) & 1;
 	regs.t0 = (regs.sr >> 14) & 1;
 	regs.s  = (regs.sr >> 13) & 1;
 	regs.m  = (regs.sr >> 12) & 1;
@@ -684,6 +712,8 @@ void REGPARAM2 MakeFromSR (void)
 	}
 	if (currprefs.mmu_model)
 		mmu_set_super (regs.s != 0);
+
+	Uae2026SpAssert("full", olds, oldm);
 
 	doint ();
 	if (regs.t1 || regs.t0)

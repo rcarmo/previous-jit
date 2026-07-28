@@ -590,7 +590,13 @@ static void jit_guest_path_record(uae_u32 pc)
             strtoul(count_after_arm_env, NULL, 0) : 0;
         initialized = true;
     }
-    if (jit_guest_path_arm_start_env() && !jit_guest_path_armed) {
+    /* A checkpoint arm starts the ring too.  It used to only clear the
+       "pending" gate, leaving the ring waiting for B2_JIT_GUEST_PATH_ARM_START
+       or an ARM_TARGET PC, so a checkpoint-armed capture dumped
+       "count=0 total=0" -- which reads as "the guest executed nothing" when it
+       means "the instrument was never started". */
+    if ((jit_guest_path_arm_start_env() || jit_guest_path_late_armed) &&
+        !jit_guest_path_armed) {
         jit_guest_path_armed = true;
         jit_guest_path_armed_index = jit_guest_path_index;
     }
@@ -2123,6 +2129,77 @@ static ALWAYS_INLINE uae_u32 jit_helper_next_ilong(void)
 #define get_ilong(o) jit_helper_ilong_at((uae_u32)(o))
 #define next_iword() jit_helper_next_iword()
 #define next_ilong() jit_helper_next_ilong()
+
+/* Indexed effective address, decoded in this translation unit.
+ *
+ * The runtime semantic helpers used to call Previous's get_disp_ea_020(base,
+ * idx).  That function IGNORES its second argument and fetches the brief
+ * extension word itself with next_diword(), which reads through regs.pc --
+ * while this unit's m68k_incpc()/next_iword() advance regs.pc_p.  The two
+ * sides therefore disagree about where the instruction stream is, so the
+ * callee read the wrong word at the wrong place and the argument that had
+ * already been fetched (and had already advanced pc_p) was thrown away.
+ * Order of evaluation made it worse: `get_disp_ea_020(m68k_getpc(),
+ * next_iword())` leaves it unspecified whether the base is read before or
+ * after the fetch advances the PC.
+ *
+ * Measured: BFTST (d8,A2,Xn) -- opcode e8f2 at 050290cc -- had regs.pc still
+ * pointing at the opcode, so next_diword() returned e8f2 and decoded it as a
+ * brief extension word: index register A6, scale 8, displacement -14.  The
+ * resulting address faulted, the process died, and /etc/rc's post-fsck
+ * `reboot` was never reached.
+ *
+ * Decode it here instead, reading every word through the guest PC pointer at
+ * an explicit offset, and report how many extension bytes were consumed so
+ * the caller can advance the PC exactly once. */
+static uae_u32 jit_disp_ea_020(uae_u32 base, int offset, int *consumed)
+{
+    int o = offset;
+    const uae_u16 dp = (uae_u16)get_iword(o);
+    o += 2;
+    const int reg = (dp >> 12) & 15;
+    uae_s32 regd = regs.regs[reg];
+    if ((dp & 0x800) == 0)
+        regd = (uae_s32)(uae_s16)regd;
+    regd <<= (dp >> 9) & 3;
+    uae_u32 ea;
+    if (dp & 0x100) {
+        uae_s32 outer = 0;
+        if (dp & 0x80)
+            base = 0;
+        if (dp & 0x40)
+            regd = 0;
+        if ((dp & 0x30) == 0x20) {
+            base += (uae_s32)(uae_s16)get_iword(o);
+            o += 2;
+        }
+        if ((dp & 0x30) == 0x30) {
+            base += get_ilong(o);
+            o += 4;
+        }
+        if ((dp & 0x3) == 0x2) {
+            outer = (uae_s32)(uae_s16)get_iword(o);
+            o += 2;
+        }
+        if ((dp & 0x3) == 0x3) {
+            outer = get_ilong(o);
+            o += 4;
+        }
+        if ((dp & 0x4) == 0)
+            base += regd;
+        if (dp & 0x3)
+            base = regs.mmu_enabled ? Uae2026JitMmuGetLong(base)
+                                    : phys_get_long(base);
+        if (dp & 0x4)
+            base += regd;
+        ea = base + outer;
+    } else {
+        ea = base + (uae_s32)((uae_s8)dp) + regd;
+    }
+    if (consumed)
+        *consumed = o - offset;
+    return ea;
+}
 
 static inline void jit_emit_runtime_helper_barrier(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2);
 static inline void jit_emit_runtime_helper_barrier_arch_pc(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2);
@@ -5672,10 +5749,13 @@ static void jit_runtime_mvsr2_full(uae_u32 opcode)
         dsta = m68k_areg(regs, dstreg) + (uae_s32)(uae_s16)get_iword(2);
         m68k_incpc(4);
         break;
-    case 0x0030: /* (d8,An,Xn) */
+    case 0x0030: /* (d8,An,Xn) */ {
+        int used = 0;
         m68k_incpc(2);
-        dsta = get_disp_ea_020(m68k_areg(regs, dstreg), next_iword());
+        dsta = jit_disp_ea_020(m68k_areg(regs, dstreg), 0, &used);
+        m68k_incpc(used);
         break;
+    }
     case 0x0038: /* absolute extension modes */
         if (dstreg == 0) {
             dsta = (uae_s32)(uae_s16)get_iword(2);
@@ -5745,13 +5825,16 @@ static void jit_runtime_mv2sr_word_full(uae_u32 opcode)
         MakeFromSR();
         m68k_incpc(4);
         return;
-    case 0x0030: /* (d8,An,Xn) */
+    case 0x0030: /* (d8,An,Xn) */ {
+        int used = 0;
         m68k_incpc(2);
-        srca = get_disp_ea_020(m68k_areg(regs, srcreg), next_iword());
+        srca = jit_disp_ea_020(m68k_areg(regs, srcreg), 0, &used);
+        m68k_incpc(used);
         src = get_word(srca);
         regs.sr = src;
         MakeFromSR();
         return;
+    }
     case 0x0038: /* extension modes */
         switch (srcreg) {
         case 0: /* (xxx).W */
@@ -5775,13 +5858,16 @@ static void jit_runtime_mv2sr_word_full(uae_u32 opcode)
             MakeFromSR();
             m68k_incpc(4);
             return;
-        case 3: /* (d8,PC,Xn) */
+        case 3: /* (d8,PC,Xn) */ {
+            int used = 0;
             m68k_incpc(2);
-            srca = get_disp_ea_020(m68k_getpc(), next_iword());
+            srca = jit_disp_ea_020(m68k_getpc(), 0, &used);
+            m68k_incpc(used);
             src = get_word(srca);
             regs.sr = src;
             MakeFromSR();
             return;
+        }
         case 4: /* #<data>.W */
             src = (uae_u16)get_iword(2);
             regs.sr = src;
@@ -6017,11 +6103,12 @@ static void jit_runtime_moves(uae_u32 opcode)
         ea = m68k_areg(regs, areg) + (uae_s32)(uae_s16)get_iword(4);
         fixed_length = 6;
         break;
-    case 6: /* (d8,An,Xn), including full-format memory-indirect forms */
-        m68k_incpc(4);
-        ea = get_disp_ea_020(m68k_areg(regs, areg), next_iword());
-        pc_already_advanced = true;
+    case 6: /* (d8,An,Xn), including full-format memory-indirect forms */ {
+        int used = 0;
+        ea = jit_disp_ea_020(m68k_areg(regs, areg), 4, &used);
+        fixed_length = 4 + used;
         break;
+    }
     case 7:
         if (areg == 0) {
             ea = (uae_s32)(uae_s16)get_iword(4);
@@ -6115,9 +6202,10 @@ static void jit_runtime_moves(uae_u32 opcode)
 static void jit_runtime_bitfield(uae_u32 opcode)
 {
     /* Decode the complete bitfield instruction at its exact pc_hist[] PC.
-       In particular, fixed-format memory faults retain the opcode PC, indexed
-       forms retain the PC advanced by get_disp_ea_020(), and successful
-       operations alone commit the fixed-format successor. */
+       A memory fault therefore retains the opcode PC for every mode -- the
+       indexed forms included, now that their extension words are decoded here
+       instead of by a callee with its own idea of where the PC is -- and only
+       a successful operation commits the successor PC. */
     const uae_u16 extension = (uae_u16)get_iword(2);
     const unsigned mode = (opcode >> 3) & 7;
     const unsigned reg = opcode & 7;
@@ -6140,11 +6228,12 @@ static void jit_runtime_bitfield(uae_u32 opcode)
         ea = m68k_areg(regs, reg) + (uae_s32)(uae_s16)get_iword(4);
         fixed_length = 6;
         break;
-    case 6: /* (d8,An,Xn), including full-format extensions */
-        m68k_incpc(4);
-        ea = get_disp_ea_020(m68k_areg(regs, reg), next_iword());
-        pc_already_advanced = true;
+    case 6: /* (d8,An,Xn), including full-format extensions */ {
+        int used = 0;
+        ea = jit_disp_ea_020(m68k_areg(regs, reg), 4, &used);
+        fixed_length = 4 + used;
         break;
+    }
     case 7:
         switch (reg) {
         case 0: /* (xxx).W */
@@ -6159,11 +6248,12 @@ static void jit_runtime_bitfield(uae_u32 opcode)
             ea = m68k_getpc() + 4 + (uae_s32)(uae_s16)get_iword(4);
             fixed_length = 6;
             break;
-        case 3: /* (d8,PC,Xn), including full-format extensions */
-            m68k_incpc(4);
-            ea = get_disp_ea_020(m68k_getpc(), next_iword());
-            pc_already_advanced = true;
+        case 3: /* (d8,PC,Xn), including full-format extensions */ {
+            int used = 0;
+            ea = jit_disp_ea_020(m68k_getpc() + 4, 4, &used);
+            fixed_length = 4 + used;
             break;
+        }
         default:
             jit_abort("bitfield semantic service received invalid EA opcode %04x",
                 (unsigned)opcode);
@@ -6218,11 +6308,12 @@ static void jit_runtime_cas(uae_u32 opcode)
         ea = m68k_areg(regs, areg) + (uae_s32)(uae_s16)get_iword(4);
         fixed_length = 6;
         break;
-    case 6: /* (d8,An,Xn), including full-format extensions */
-        m68k_incpc(4);
-        ea = get_disp_ea_020(m68k_areg(regs, areg), next_iword());
-        pc_already_advanced = true;
+    case 6: /* (d8,An,Xn), including full-format extensions */ {
+        int used = 0;
+        ea = jit_disp_ea_020(m68k_areg(regs, areg), 4, &used);
+        fixed_length = 4 + used;
         break;
+    }
     case 7:
         if (areg == 0) {
             ea = (uae_s32)(uae_s16)get_iword(4);

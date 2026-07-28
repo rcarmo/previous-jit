@@ -2126,6 +2126,34 @@ extern "C" void dfc_put_byte(uae_u32 addr, uae_u8 value);
    m68k_incpc() advances, so the two stay consistent across the incpc() that
    the indexed EA forms perform.  Instructions that straddle a page are not
    compiled, so pc_p + o cannot leave the materialized page.               */
+/* Advancing the PC has to move both representations.
+
+   This unit builds with FULLMMU undefined, so m68k_incpc() advances only
+   regs.pc_p.  That is enough for the fetch helpers below, which read through
+   pc_p -- but several runtime helpers decode their opcode here and then hand
+   the instruction to code compiled *with* FULLMMU, where m68k_getpc() is
+   regs.pc and the remaining extension words are fetched from it.
+
+   Measured: FMUL.S $040031b8,FP0 at 0400323c.  jit_runtime_fpp() did
+   m68k_incpc(4) -- moving pc_p only -- and called fpuop_arithmetic(), whose
+   abs.L case in fpp.c reads the operand address with x_cp_next_ilong() off
+   regs.pc.  regs.pc was still the instruction itself, so the address came out
+   as the instruction's own first two words, 0xf2394423, and the kernel died
+   with `faultaddr 0xf2394423` at `trap pc 0x400323c`.
+
+   The barrier publishes pc_p == pc_oldp, so keeping all three in step
+   preserves this unit's m68k_getpc() (regs.pc + pc_p - pc_oldp) while giving
+   the FULLMMU units the guest PC the interpreter would have had at the same
+   point -- gencpu emits exactly this m68k_incpc(4) before the fpuop call. */
+static ALWAYS_INLINE void jit_helper_incpc(int o)
+{
+    regs.pc_p += o;
+    regs.pc_oldp += o;
+    regs.pc += (uae_u32)o;
+}
+#undef m68k_incpc
+#define m68k_incpc(o) jit_helper_incpc((int)(o))
+
 static ALWAYS_INLINE uae_u16 jit_helper_iword_at(uae_u32 offset)
 {
     return do_get_mem_word((uae_u16 *)((uae_u8 *)regs.pc_p + offset));

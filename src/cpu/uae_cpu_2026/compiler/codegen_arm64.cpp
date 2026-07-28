@@ -866,6 +866,13 @@ LENDFUNC(NONE,NONE,1,compemu_raw_init_r_regstruct,(IMPTR s))
 // Handle end of compiled block
 LOWFUNC(NONE,NONE,2,compemu_raw_endblock_pc_inreg,(RR4 rr_pc, IM32 cycles))
 {
+	/* Charge what this block retired before any exit can leave generated code.
+	   compemu_raw_endblock_mmu_dispatch() does the same thing for the MMU-keyed
+	   path; without it here, every block that leaves through the countdown or
+	   spcflags exit retires guest instructions the emulated clock never sees.
+	   compemu_raw_maybe_do_nothing() is emitted BEFORE this primitive and exits
+	   when it fires, so the two cannot double-charge. */
+	compemu_raw_accum_retired_cycles(cycles);
 	// countdown -= scaled_cycles(totcycles);
 	LOAD_U64(REG_WORK3, (uintptr)&countdown);
 	LDR_wXi(REG_WORK1, REG_WORK3, 0);
@@ -921,6 +928,8 @@ LENDFUNC(NONE,NONE,2,compemu_raw_endblock_pc_inreg,(RR4 rr_pc, IM32 cycles))
  * derives regs.pc from host_pc-MEMBaseDiff, which is physical under aliases. */
 LOWFUNC(NONE,NONE,2,compemu_raw_endblock_canonical_pc,(RR4 rr_pc, IM32 cycles))
 {
+    /* Same retirement charge as the other two endblock primitives. */
+    compemu_raw_accum_retired_cycles(cycles);
     LOAD_U64(REG_WORK3, (uintptr)&countdown);
     LDR_wXi(REG_WORK1, REG_WORK3, 0);
     const uae_u32 dispatch_cycles = cycles > 0 ? (uae_u32)cycles : 1u;

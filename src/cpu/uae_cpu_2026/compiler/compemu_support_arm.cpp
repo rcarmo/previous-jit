@@ -1574,16 +1574,18 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     jit_block_verify_snapshot_restore(&jit_block_verify_entry_state);
     /* Bound the native run to ONE block.
      *
-     * countdown = -1 was supposed to do this and does not: the block epilogue
-     * tests regs.spcflags FIRST and skips the countdown path entirely when it
-     * is zero, so with spcflags cleared every block falls through and chains.
-     * The replay then covers a different span from the native run, which is
-     * how a single-instruction RTS block came to be reported as a memory
-     * mismatch.  SPCFLAG_JIT_EXEC_RETURN exists precisely to leave compiled
-     * code, carries no architectural meaning, and is already masked out of the
-     * state comparison, so it bounds the run without changing what is being
-     * verified. */
-    regs.spcflags = SPCFLAG_JIT_EXEC_RETURN;
+     * Not with SPCFLAG_JIT_EXEC_RETURN: compemu_raw_maybe_do_nothing() is
+     * emitted INSIDE the block, at control-flow instructions, and tests
+     * spcflags first -- so a non-zero spcflags made the run bail out after
+     * zero or one instruction with a cumulative charge of 0, which is why
+     * every record came back SKIP-NOREACH with replay_ops=0.
+     *
+     * The block epilogue tests the countdown FIRST (TBZ on bit 31) and only
+     * then spcflags, so a non-positive dispatch budget bounds the run at the
+     * first block end, after the block has run and charged what it retired.
+     * That is the bound this verifier wants: one whole block, with a
+     * measurable retirement span. */
+    regs.spcflags = 0;
     InterruptFlags = 0;
     jit_block_verify_compile_active = true;
     jit_block_verify_compile_pc = block_pc;
@@ -1607,13 +1609,15 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
        however many blocks it spanned. Replaying that many instructions makes
        the two spans equivalent by construction. */
     const uae_u32 retired_before = jit_native_retired_cpu_cycles;
+    const unsigned long exc_before_native = jit_exception_serial;
     /* A block that touches a device register cannot be executed twice from one
        entry state and compared: the register is under no obligation to answer
        both runs the same way, and the snapshot covers RAM and ROM only.  Count
        IO accesses across each run and report a difference as SKIP-IO. */
     extern unsigned long Uae2026IoAccessCount;
     const unsigned long io_before_native = Uae2026IoAccessCount;
-    countdown = -1;
+    /* Non-positive dispatch budget: the first block epilogue exits. */
+    countdown = 0;
     jit_block_verify_reentrant = true;
     ((jit_compiled_handler)pushall_call_handler)();
     jit_block_verify_reentrant = false;
@@ -1675,6 +1679,8 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
        address, which is garbage under a user-mode MMU and forces every
        userland block to SKIP-NOREACH. */
     const uae_u32 native_stop_pc = (uae_u32)m68k_getpc();
+    const unsigned long exc_native = jit_exception_serial - exc_before_native;
+    const uae_u32 spc_native = (uae_u32)regs.spcflags;
     const unsigned long io_native = Uae2026IoAccessCount - io_before_native;
 
     /* Delta 2: INTERP REFERENCE with an exact retirement bound. The block
@@ -1782,9 +1788,13 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
             }
         }
     } else {
-        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d native_ops=%d replay_ops=%d SKIP-NOREACH interp_pc=%08x native_pc=%08x\n",
+        fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d native_ops=%d replay_ops=%d SKIP-NOREACH interp_pc=%08x native_pc=%08x delta=%u retired=%d span=%d bycyc=%d\n",
             (unsigned)block_pc, blocklen, reference_ops, replay_ops,
-            (unsigned)m68k_getpc(), (unsigned)native_stop_pc);
+            (unsigned)m68k_getpc(), (unsigned)native_stop_pc,
+            (unsigned)retired_delta, native_retired_ops,
+            span_exact ? 1 : 0, bound_by_cycles ? 1 : 0);
+        fprintf(stderr, "  noreach exc=%lu spc=%08x cd=%d\n",
+            exc_native, (unsigned)spc_native, (int)countdown);
         /* A no-reach is as much a finding as a mismatch -- the two engines
            disagreed about where the block ends -- so it has to name the
            instructions too. */

@@ -3877,6 +3877,31 @@ static inline void jit_verify_sweep_tick(void)
     const unsigned long every = jit_verify_sweep_every();
     if (!every)
         return;
+    /* B2_JIT_VERIFY_SWEEP_AFTER_SEC: hold the sweep off until the boot has
+       reached the phase under investigation.  Sweeping is slow, so a uniform
+       sample over a whole boot spends nearly all of its budget before the
+       failure and perturbs the run enough that the failure is never reached.
+       Until the delay expires the run is unperturbed, so the wall-clock offset
+       of a plain run is a usable coordinate. */
+    {
+        static int after_sec = -1;
+        static time_t t0 = 0;
+        if (after_sec < 0) {
+            const char *env = getenv("B2_JIT_VERIFY_SWEEP_AFTER_SEC");
+            after_sec = (env && *env) ? (int)strtol(env, NULL, 0) : 0;
+            t0 = time(NULL);
+        }
+        if (after_sec > 0) {
+            static bool armed = false;
+            if (!armed) {
+                if (time(NULL) - t0 < after_sec)
+                    return;
+                armed = true;
+                fprintf(stderr, "JITSWEEPARM after %ds\n", after_sec);
+                fflush(stderr);
+            }
+        }
+    }
     static unsigned long n = 0;
     if (++n % every)
         return;
@@ -9452,6 +9477,31 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                 compop_func** comptbl;
                 uae_u32 opcode = DO_GET_OPCODE(pc_hist[i].location);
                 const uae_u32 op_m68k_pc = pc_hist[i].guest_pc;
+                /* B2_JIT_PC_CENSUS=1 with B2_JIT_VERIFY_BLOCKS ranges: enumerate
+                   the guest instructions the JIT actually compiles inside a
+                   localised window, once each.  A bisection that ends at a
+                   page is only actionable once the page can be read as code. */
+                {
+                    static int census_env = -1;
+                    if (census_env < 0)
+                        census_env = getenv("B2_JIT_PC_CENSUS") ? 1 : 0;
+                    if (census_env) {
+                        bool have_ranges = false;
+                        if (jit_verify_pc_in_ranges(op_m68k_pc, &have_ranges) && have_ranges) {
+                            enum { CENSUS_SLOTS = 4096 };
+                            static uae_u32 seen[CENSUS_SLOTS];
+                            const unsigned slot = (op_m68k_pc >> 1) & (CENSUS_SLOTS - 1);
+                            if (seen[slot] != op_m68k_pc) {
+                                seen[slot] = op_m68k_pc;
+                                const uae_u16 *w = (const uae_u16 *)pc_hist[i].location;
+                                fprintf(stderr, "JITPCCENSUS pc=%08x op=%04x ext=%04x %04x\n",
+                                    (unsigned)op_m68k_pc, (unsigned)(uae_u16)opcode,
+                                    w ? (unsigned)do_get_mem_word((uae_u16 *)&w[1]) : 0u,
+                                    w ? (unsigned)do_get_mem_word((uae_u16 *)&w[2]) : 0u);
+                            }
+                        }
+                    }
+                }
                 needed_flags = (liveflags[i + 1] & prop[cft_map(opcode)].set_flags);
 #ifdef UAE
                 special_mem = pc_hist[i].specmem;

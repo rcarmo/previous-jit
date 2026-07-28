@@ -630,6 +630,28 @@ void REGPARAM2 MakeSR (void)
    03ffff20).  Name the transition that produced it, not the fault that revealed
    it.  "early" marks the fast-path return, which skips the swap by design and
    is only correct if regs.s and A7 were already consistent. */
+
+/* B2_SP_ASSERT=1: name the writer that puts a supervisor stack pointer into
+   regs.usp.  MakeFromSR()'s swap was measured correct; the corruption is
+   upstream of it. */
+void Uae2026UspWrite(const char *site, uae_u32 value);
+void Uae2026UspWrite(const char *site, uae_u32 value)
+{
+	static int enabled = -1;
+	if (enabled < 0)
+		enabled = getenv("B2_SP_ASSERT") ? 1 : 0;
+	regs.usp = value;
+	if (!enabled || value < 0x10000000u)
+		return;
+	static unsigned long n = 0;
+	if (++n > 40)
+		return;
+	fprintf(stderr, "USPBAD n=%lu site=%s value=%08x s=%d m=%d sr=%04x pc=%08x a7=%08x isp=%08x\n",
+		n, site, (unsigned)value, (int)regs.s, (int)regs.m, (unsigned)regs.sr,
+		(unsigned)m68k_getpc(), (unsigned)m68k_areg(regs, 7), (unsigned)regs.isp);
+	fflush(stderr);
+}
+
 static void Uae2026SpAssert(const char *site, int olds, int oldm)
 {
 	static int enabled = -1;
@@ -686,7 +708,7 @@ void REGPARAM2 MakeFromSR (void)
 					regs.isp = m68k_areg (regs, 7);
 				m68k_areg (regs, 7) = regs.usp;
 			} else {
-				regs.usp = m68k_areg (regs, 7);
+				Uae2026UspWrite("sr_swap_a", m68k_areg (regs, 7));
 				m68k_areg (regs, 7) = regs.m ? regs.msp : regs.isp;
 			}
 		} else if (olds && oldm != regs.m) {
@@ -705,7 +727,7 @@ void REGPARAM2 MakeFromSR (void)
 				regs.isp = m68k_areg (regs, 7);
 				m68k_areg (regs, 7) = regs.usp;
 			} else {
-				regs.usp = m68k_areg (regs, 7);
+				Uae2026UspWrite("sr_swap_b", m68k_areg (regs, 7));
 				m68k_areg (regs, 7) = regs.isp;
 			}
 		}
@@ -916,7 +938,7 @@ static void Exception_mmu030 (int nr, uaecptr oldpc)
     MakeSR ();
     
     if (!regs.s) {
-        regs.usp = m68k_areg (regs, 7);
+        Uae2026UspWrite("exc_a", m68k_areg (regs, 7));
         m68k_areg(regs, 7) = regs.m ? regs.msp : regs.isp;
         regs.s = 1;
         mmu_set_super (1);
@@ -983,7 +1005,7 @@ static void Exception_mmu (int nr, uaecptr oldpc)
 	MakeSR ();
 
 	if (!regs.s) {
-		regs.usp = m68k_areg (regs, 7);
+		Uae2026UspWrite("exc_b", m68k_areg (regs, 7));
         if (currprefs.cpu_model >= 68020 && currprefs.cpu_model < 68060) {
 			m68k_areg (regs, 7) = regs.m ? regs.msp : regs.isp;
 		} else {
@@ -2737,7 +2759,7 @@ void m68k_dumpstate_2 (uaecptr pc, uaecptr *nextpc)
         if ((i & 3) == 3) printf (_T("\n"));
     }
     if (regs.s == 0)
-        regs.usp = m68k_areg (regs, 7);
+        Uae2026UspWrite("exc_c", m68k_areg (regs, 7));
     if (regs.s && regs.m)
         regs.msp = m68k_areg (regs, 7);
     if (regs.s && regs.m == 0)

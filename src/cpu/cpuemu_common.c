@@ -11,6 +11,7 @@
 #include "options_cpu.h"
 #include "memory.h"
 #include "newcpu.h"
+extern void Uae2026UspWrite(const char *site, uae_u32 value);
 #include "cpummu.h"
 #include "cpummu030.h"
 #include "host.h"
@@ -28,7 +29,7 @@ void val_move2c2 (int regno, uae_u32 val)
 	case 6: regs.dtt0 = val; break;
 	case 7: regs.dtt1 = val; break;
 	case 8: regs.buscr = val; break;
-	case 0x800: regs.usp = val; break;
+	case 0x800: Uae2026UspWrite("movec_val", val); break;
 	case 0x801: regs.vbr = val; break;
 	case 0x802: regs.caar = val; break;
 	case 0x803: regs.msp = val; break;
@@ -169,7 +170,7 @@ int m68k_move2c (int regno, uae_u32 *regp)
 			/* 68060 only */
 		case 8: regs.buscr = *regp & 0xf0000000; break;
 
-		case 0x800: regs.usp = *regp; break;
+		case 0x800: Uae2026UspWrite("movec_reg", *regp); break;
 		case 0x801: regs.vbr = *regp; break;
 		case 0x802: regs.caar = *regp; break;
 		case 0x803: regs.msp = *regp; if (regs.m == 1) m68k_areg (regs, 7) = regs.msp; break;

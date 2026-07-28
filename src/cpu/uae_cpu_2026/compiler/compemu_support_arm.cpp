@@ -2056,6 +2056,7 @@ extern "C" uae_u32 Uae2026JitMmuGetLong(uae_u32 addr);
 extern "C" void Uae2026JitMmuPutLong(uae_u32 addr, uae_u32 value);
 /* Previous's SFC/DFC helpers have C linkage. The vendored preamble
    deliberately undefines FULLMMU, so select these from runtime MMU state. */
+extern "C" void Uae2026UspWrite(const char *site, uae_u32 value);
 extern "C" uae_u32 sfc_get_long(uae_u32 addr);
 extern "C" uae_u16 sfc_get_word(uae_u32 addr);
 extern "C" uae_u8 sfc_get_byte(uae_u32 addr);
@@ -5899,7 +5900,7 @@ static void jit_runtime_system_control(uae_u32 opcode)
     }
 
     if ((opcode & 0xfff8) == 0x4e60) { /* MOVE An,USP */
-        regs.usp = m68k_areg(regs, opcode & 7);
+        Uae2026UspWrite("move2usp", m68k_areg(regs, opcode & 7));
         m68k_incpc(2);
         return;
     }

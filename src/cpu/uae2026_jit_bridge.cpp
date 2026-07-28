@@ -966,15 +966,53 @@ static bool bridge_normalize_proven_movem_continuation_fault_tuple(uae_u32 pc)
     return true;
 }
 
+extern "C" void Uae2026UspWrite(const char *site, uae_u32 value);
+
 static void bridge_set_active_a7(uae_u32 value)
 {
     m68k_areg(regs, 7) = value;
     if (!regs.s)
-        regs.usp = value;
+        Uae2026UspWrite("bridge_a7", value);
     else if (regs.m)
         regs.msp = value;
     else
         regs.isp = value;
+}
+
+/* Restore a transaction's pre-instruction A7 after a precise fault.
+ *
+ * bridge_set_active_a7() mirrors A7 into usp/isp/msp according to the CURRENT
+ * regs.s, which is only right while the privilege state has not moved.  RTE
+ * pops the exception frame and applies the new SR through MakeFromSR() -- and
+ * therefore performs the USP/ISP swap -- BEFORE the return target is fetched,
+ * so a fault on that fetch rolls back with regs.s already 0 while pre_a7 is
+ * still a supervisor stack pointer.  Mirroring it by the current S wrote a
+ * kernel address into regs.usp; the next supervisor->user transition then
+ * loaded it into A7 and user code ran on the kernel stack.  Measured:
+ *
+ *   USPBAD site=bridge_a7 value=11152fa8 s=0 sr=0010 pc=00004364
+ *   SPBAD  site=full olds=1 sr=0010 pc=04002162 a7=11152fa8 usp=11152fa8
+ *
+ * Route the value to the stack it actually belongs to, and leave the active A7
+ * alone when the SR change has already selected the other one. */
+static bool bridge_restore_txn_a7(uae_u32 value, uae_u32 pre_sr)
+{
+    const int pre_s = (int)((pre_sr >> 13) & 1);
+    const int pre_m = (int)((pre_sr >> 12) & 1);
+    if ((int)regs.s == pre_s && (int)regs.m == pre_m) {
+        bridge_set_active_a7(value);
+        return true;
+    }
+    /* The privilege state moved between the transaction beginning and the
+     * fault: RTE pops the frame and applies the new SR through MakeFromSR(),
+     * which performs the USP/ISP swap, BEFORE the return target is fetched.  A
+     * fault on that fetch is a NEW exception in the new context, not something
+     * to undo -- the interpreter has no rollback here and delivers it as it
+     * stands.  Rolling back regardless mirrored a supervisor A7 into regs.usp
+     * (measured: USPBAD site=bridge_a7 value=11152fa8 s=0 pc=00004364), and
+     * reverting the SR instead resumed the guest at a user PC in supervisor
+     * mode.  Decline the rollback. */
+    return false;
 }
 
 enum class bridge_mmu_txn_kind : uae_u32 {
@@ -1014,7 +1052,8 @@ static bool bridge_rollback_mmu_txn(uae_u32 fault_pc)
             /* A live call transaction now means the exact helper faulted before
              * semantic commit (for example while writing the return address).
              * Target translation runs only after Uae2026JitMmuTxnCommit(). */
-            bridge_set_active_a7(txn.pre_a7);
+            if (!bridge_restore_txn_a7(txn.pre_a7, txn.pre_sr))
+                return false;
             if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
                 fprintf(stderr,
                         "JIT_CALL_TARGET_ROLLBACK_TXN fault_pc=%08x op_pc=%08x op=%04x addr=%08x sp=%08x oldsp=%08x newsp=%08x\n",
@@ -1045,7 +1084,8 @@ static bool bridge_rollback_mmu_txn(uae_u32 fault_pc)
                 }
                 return false;
             }
-            bridge_set_active_a7(txn.pre_a7);
+            if (!bridge_restore_txn_a7(txn.pre_a7, txn.pre_sr))
+                return false;
             if (getenv("B2_JIT_TRACE_CALL_ROLLBACK")) {
                 fprintf(stderr,
                         "JIT_RETURN_TARGET_ROLLBACK_TXN fault_pc=%08x op_pc=%08x op=%04x addr=%08x sp=%08x oldsp=%08x newsp=%08x\n",

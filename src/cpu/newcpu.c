@@ -1159,6 +1159,40 @@ static void ExceptionX (int nr, uaecptr address)
             goto sc_done;
         if (sc_file && sc_seq < sc_limit && (nr < 24 || nr > 31)) {
             MakeSR();
+            /* B2_DISASM_AT=<addr>[,<count>]: one-shot disassembly of guest
+               code, taken at the first traced exception so the page is
+               resident.  Kernel text is identity-mapped, so this reaches
+               0x040xxxxx without any extra plumbing; it exists because the
+               bisection instruments name a PC and nothing in the harness
+               could say which instruction lives there. */
+            {
+                static int disasm_state = -1;
+                if (disasm_state < 0) {
+                    const char *da = getenv("B2_DISASM_AT");
+                    disasm_state = (da && *da) ? 0 : 1;
+                }
+                if (disasm_state == 0) {
+                    const char *da = getenv("B2_DISASM_AT");
+                    const uaecptr da_addr = (uaecptr)strtoul(da, NULL, 0);
+                    const char *cs = strchr(da, ',');
+                    int da_cnt = cs ? atoi(cs + 1) : 16;
+                    if (da_cnt < 1) da_cnt = 1;
+                    if (da_cnt > 256) da_cnt = 256;
+                    const int da_sz = (MAX_LINEWIDTH + 1) * da_cnt;
+                    TCHAR *da_buf = xmalloc(TCHAR, da_sz);
+                    if (da_buf) {
+                        uaecptr da_next = 0;
+                        da_buf[0] = 0;
+                        m68k_disasm_2(da_buf, da_sz, da_addr, &da_next,
+                                      da_cnt, NULL, NULL, 1);
+                        fprintf(stderr, "B2_DISASM_AT %08x count=%d\n%s",
+                                (unsigned)da_addr, da_cnt, da_buf);
+                        fflush(stderr);
+                        xfree(da_buf);
+                    }
+                    disasm_state = 1;
+                }
+            }
             extern int64_t nCyclesMainCounter;
 #if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
             /* Retired-instruction census alongside the emulated clock.  The
@@ -1184,11 +1218,12 @@ static void ExceptionX (int nr, uaecptr address)
             const unsigned jcc = 0;
 #endif
             fprintf(sc_file,
-                "%lu v=%d pc=%08x sr=%04x s=%d io=%lu cyc=%lld obs=%lu disp=%lu jcc=%02x "
+                "%lu v=%d pc=%08x sr=%04x s=%d io=%lu fa=%08x ssw=%04x cyc=%lld obs=%lu disp=%lu jcc=%02x "
                 "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
                 "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
                 ++sc_seq, nr, (unsigned)m68k_getpc(), (unsigned)regs.sr, (int)regs.s,
                 Uae2026ScsiIoSeq,
+                (unsigned)regs.mmu_fault_addr, (unsigned)regs.mmu_ssw,
                 (long long)nCyclesMainCounter, obs_total, disp_total, jcc,
                 (unsigned)regs.regs[0], (unsigned)regs.regs[1],
                 (unsigned)regs.regs[2], (unsigned)regs.regs[3],

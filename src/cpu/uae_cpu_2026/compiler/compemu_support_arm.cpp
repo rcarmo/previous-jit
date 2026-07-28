@@ -1880,6 +1880,16 @@ static void jit_verify_post(uae_u32 pc, uae_u32 tagged_opcode)
 	memcpy(&regflags, &jit_verify_pre_state.flags, sizeof(regflags));
 	put_byte(jit_verify_pre_state.mem_a2_addr, jit_verify_pre_state.mem_a2_byte);
 	put_byte(jit_verify_pre_state.mem_a2_p400_addr, jit_verify_pre_state.mem_a2_p400_byte);
+	/* Anchor the fetch pointer on the instruction being replayed.  Compiled
+	   code keeps the guest PC lazily -- regs.pc is the block entry, not this
+	   instruction -- while the interpreter handlers read their extension
+	   words through m68k_getpc().  Without this the replay decodes every
+	   extension word from the wrong address (typically as zero), which reads
+	   as a displacement defect in the *compiled* run.  Set both
+	   representations: the CPU unit builds with FULLMMU (regs.pc), this unit
+	   without it (regs.pc + pc_p - pc_oldp). */
+	regs.pc = pc;
+	regs.pc_oldp = regs.pc_p;
 	(*cpufunctbl[opcode])(opcode);
 
 	const uae_u8 interp_mem_a2 = get_byte(jit_verify_pre_state.mem_a2_addr);
@@ -1926,6 +1936,29 @@ static void jit_verify_post(uae_u32 pc, uae_u32 tagged_opcode)
 			(unsigned)compiled_post.regs.regs[14], (unsigned)compiled_post.regs.regs[15],
 			compiled_post.flags.nzcv, compiled_post.flags.x,
 			(unsigned)compiled_post.mem_a2_byte, (unsigned)compiled_post.mem_a2_p400_byte);
+		/* Companion line: the raw instruction words the two engines decoded from,
+		   plus the entry values of the registers the EA is built from.  A wrong
+		   displacement shows up here immediately; a wrong base register does not. */
+		fprintf(stderr,
+			"JITVERIFYX pc=%08x op=%04x w1=%04x w2=%04x w3=%04x pre:d1=%08x a0=%08x a1=%08x a2=%08x a6=%08x a7=%08x\n",
+			(unsigned)pc, (unsigned)opcode,
+			(unsigned)get_word(pc + 2), (unsigned)get_word(pc + 4), (unsigned)get_word(pc + 6),
+			(unsigned)jit_verify_pre_state.regs.regs[1],
+			(unsigned)jit_verify_pre_state.regs.regs[8],
+			(unsigned)jit_verify_pre_state.regs.regs[9],
+			(unsigned)jit_verify_pre_state.regs.regs[10],
+			(unsigned)jit_verify_pre_state.regs.regs[14],
+			(unsigned)jit_verify_pre_state.regs.regs[15]);
+		{
+			/* Window of guest memory around the base register the EA is built from.
+			   If the compiled value appears at a different offset, the displacement
+			   is what is wrong; if it appears nowhere, the load itself is. */
+			const uae_u32 base = (uae_u32)jit_verify_pre_state.regs.regs[14];
+			fprintf(stderr, "JITVERIFYM pc=%08x base=%08x", (unsigned)pc, (unsigned)base);
+			for (int k = -16; k <= 40; k += 4)
+				fprintf(stderr, " %+d=%08x", k, (unsigned)get_long(base + k));
+			fprintf(stderr, "\n");
+		}
 		jit_verify_log_count++;
 	}
 

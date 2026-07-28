@@ -1219,10 +1219,7 @@ static bool jit_block_verify_reentrant = false;
  * that range produced 2 armings and then nothing, every later candidate
  * reporting reentrant=1.  The bridge clears it where control resumes after an
  * abnormal exit. */
-extern "C" void Uae2026JitVerifyNestedRunAborted(void)
-{
-    jit_block_verify_reentrant = false;
-}
+extern "C" void Uae2026JitVerifyNestedRunAborted(void);
 static bool jit_block_verify_compile_active = false;
 static uae_u32 jit_block_verify_compile_pc = 0xffffffffu;
 static bool jit_block_verify_last_mismatch = false;
@@ -1267,9 +1264,41 @@ static uae_u32 jit_block_verify_entry_pc = 0xffffffffu;
 typedef void (*jit_compiled_handler)(void);
 static inline unsigned int get_opcode_cft_map(unsigned int f);
 
+/* Every snapshot owns a RAM+ROM sized buffer, and all but the entry state are
+   stack locals of jit_block_verify_run().  The nested native run can leave
+   through the bridge's longjmp, which discards those locals while their
+   buffers stay allocated: a sweeping verify run reached 5.7GB of anonymous
+   RSS and was OOM-killed, taking the unrelated control run on the same host
+   with it.  Track the live allocations so the abort hook can release the ones
+   whose owners no longer exist. */
+#define JIT_VERIFY_SNAP_SLOTS 8
+static uae_u8 *jit_block_verify_snap_live[JIT_VERIFY_SNAP_SLOTS];
+static unsigned long jit_block_verify_snap_leaked = 0;
+
+static void jit_block_verify_snap_track(uae_u8 *p)
+{
+    for (int i = 0; i < JIT_VERIFY_SNAP_SLOTS; i++) {
+        if (!jit_block_verify_snap_live[i]) {
+            jit_block_verify_snap_live[i] = p;
+            return;
+        }
+    }
+}
+
+static void jit_block_verify_snap_untrack(uae_u8 *p)
+{
+    for (int i = 0; i < JIT_VERIFY_SNAP_SLOTS; i++) {
+        if (jit_block_verify_snap_live[i] == p) {
+            jit_block_verify_snap_live[i] = NULL;
+            return;
+        }
+    }
+}
+
 static void jit_block_verify_snapshot_free(jit_block_verify_snapshot *snap)
 {
     if (snap->mem) {
+        jit_block_verify_snap_untrack(snap->mem);
         free(snap->mem);
         snap->mem = NULL;
     }
@@ -1295,6 +1324,7 @@ static bool jit_block_verify_snapshot_capture(jit_block_verify_snapshot *snap)
     snap->mem = (uae_u8*)malloc(snap->mem_size);
     if (!snap->mem)
         return false;
+    jit_block_verify_snap_track(snap->mem);
     memcpy(&snap->regs, &regs, sizeof(regs));
     memcpy(&snap->flags, &regflags, sizeof(regflags));
     snap->countdown = countdown;
@@ -1340,6 +1370,25 @@ static void jit_block_verify_entry_capture(uae_u32 block_pc)
         return;
     jit_block_verify_entry_valid = true;
     jit_block_verify_entry_pc = block_pc;
+}
+
+/* The bridge calls this where control resumes after the nested native run has
+   left abnormally.  Clearing the reentrancy latch is what keeps verification
+   alive (7c0d2f7); releasing the orphaned snapshots is what keeps the process
+   alive. */
+extern "C" void Uae2026JitVerifyNestedRunAborted(void)
+{
+    jit_block_verify_reentrant = false;
+    for (int i = 0; i < JIT_VERIFY_SNAP_SLOTS; i++) {
+        uae_u8 *p = jit_block_verify_snap_live[i];
+        if (!p)
+            continue;
+        if (p == jit_block_verify_entry_state.mem)
+            continue;   /* still owned by a static that outlives the longjmp */
+        jit_block_verify_snap_live[i] = NULL;
+        jit_block_verify_snap_leaked++;
+        free(p);
+    }
 }
 
 static inline uae_u32 jit_block_verify_arch_spcflags(uae_u32 spcflags)
@@ -1439,8 +1488,9 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
     {
         const unsigned long every = jit_block_verify_stats_every();
         if (every && (jit_block_verify_compare_count % every) == 0) {
-            fprintf(stderr, "JITBLOCKVERIFY stats compared=%lu mismatched=%lu\n",
-                jit_block_verify_compare_count, jit_block_verify_mismatch_count);
+            fprintf(stderr, "JITBLOCKVERIFY stats compared=%lu mismatched=%lu orphaned=%lu\n",
+                jit_block_verify_compare_count, jit_block_verify_mismatch_count,
+                jit_block_verify_snap_leaked);
             fflush(stderr);
         }
     }

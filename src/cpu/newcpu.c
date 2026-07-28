@@ -1132,6 +1132,8 @@ static void ExceptionX (int nr, uaecptr address)
         static unsigned long sc_limit = 0;
         static unsigned long sc_dump_at = 0;
         static unsigned long sc_arm_at = 0;
+        static unsigned long sc_arm_io = 0;
+        extern unsigned long Uae2026ScsiIoSeq;
         if (!sc_init) {
             sc_init = 1;
             const char *path = getenv("B2_SYSCALL_TRACE");
@@ -1143,7 +1145,18 @@ static void ExceptionX (int nr, uaecptr address)
             sc_dump_at = (dat && *dat) ? strtoul(dat, NULL, 0) : 0;
             const char *aat = getenv("B2_JIT_GUEST_PATH_ARM_CHECKPOINT");
             sc_arm_at = (aat && *aat) ? strtoul(aat, NULL, 0) : 0;
+            /* Start logging only once the guest has reached a given block-I/O
+               record.  The exception serial stops aligning the two engines the
+               moment interrupt arrival differs, but disk transactions are
+               driven by guest semantics: both engines issue the same reads and
+               writes in the same order for as long as they agree.  Arming on
+               that counter puts a bounded window of both streams at the same
+               guest point, however deep into the boot it is. */
+            const char *iat = getenv("B2_SYSCALL_TRACE_ARM_IO");
+            sc_arm_io = (iat && *iat) ? strtoul(iat, NULL, 0) : 0;
         }
+        if (sc_arm_io && Uae2026ScsiIoSeq < sc_arm_io)
+            goto sc_done;
         if (sc_file && sc_seq < sc_limit && (nr < 24 || nr > 31)) {
             MakeSR();
             extern int64_t nCyclesMainCounter;
@@ -1171,10 +1184,11 @@ static void ExceptionX (int nr, uaecptr address)
             const unsigned jcc = 0;
 #endif
             fprintf(sc_file,
-                "%lu v=%d pc=%08x sr=%04x s=%d cyc=%lld obs=%lu disp=%lu jcc=%02x "
+                "%lu v=%d pc=%08x sr=%04x s=%d io=%lu cyc=%lld obs=%lu disp=%lu jcc=%02x "
                 "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
                 "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
                 ++sc_seq, nr, (unsigned)m68k_getpc(), (unsigned)regs.sr, (int)regs.s,
+                Uae2026ScsiIoSeq,
                 (long long)nCyclesMainCounter, obs_total, disp_total, jcc,
                 (unsigned)regs.regs[0], (unsigned)regs.regs[1],
                 (unsigned)regs.regs[2], (unsigned)regs.regs[3],
@@ -1211,6 +1225,7 @@ static void ExceptionX (int nr, uaecptr address)
 #endif
             }
         }
+    sc_done: ;
     }
     {
         /* B2_INT_RATE probe: exception-vector histogram. Vector 2 (access

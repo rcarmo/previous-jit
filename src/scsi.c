@@ -711,6 +711,48 @@ void SCSI_WriteSector(Uint8 *cdb) {
                SCSIdisk[target].blockcounter, SCSIdisk[target].lba, BLOCKSIZE);
 }
 
+/* Block-level I/O trace (B2_SCSI_TRACE=1).
+ *
+ * The exception stream stops being a useful differential once interrupt
+ * arrival differs between engines, but the sequence of disk blocks the guest
+ * asks for -- and the bytes it is handed -- is driven by guest semantics, not
+ * by interrupt timing.  Two engines running the same image must request the
+ * same blocks and receive the same contents; the first place they do not is a
+ * real divergence with a name.  Off by default. */
+static int scsi_trace_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+        cached = getenv("B2_SCSI_TRACE") ? 1 : 0;
+    return cached;
+}
+
+static Uint32 scsi_trace_sum(const Uint8 *p, int n)
+{
+    Uint32 h = 2166136261u;
+    for (int i = 0; i < n; i++) {
+        h ^= p[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* Block-level I/O sequence.  Both engines pass through exactly the same disk
+ * transactions in the same order for as long as they agree, so this counter is
+ * a shared coordinate system that survives interrupt-timing drift -- unlike
+ * the exception serial, which stops aligning once interrupt arrival differs.
+ * Always maintained; the trace itself is opt-in. */
+unsigned long Uae2026ScsiIoSeq = 0;
+
+static void scsi_trace_block(const char *what, Uint32 lba, const Uint8 *data)
+{
+    unsigned long seq = Uae2026ScsiIoSeq++;
+    if (!scsi_trace_enabled())
+        return;
+    fprintf(stderr, "SCSIIO %lu %s lba=%u sum=%08x\n",
+            seq, what, (unsigned)lba, (unsigned)scsi_trace_sum(data, BLOCKSIZE));
+}
+
 void scsi_write_sector(void) {
     Uint8 target = SCSIbus.target;
     Uint64 offset = 0;
@@ -721,6 +763,7 @@ void scsi_write_sector(void) {
     offset = ((Uint64)SCSIdisk[target].lba)*BLOCKSIZE;
     
     if (offset < SCSIdisk[target].size) {
+        scsi_trace_block("WR", SCSIdisk[target].lba, scsi_buffer.data);
         if (ConfigureParams.SCSI.nWriteProtection != WRITEPROT_ON) {
             File_Write(scsi_buffer.data, BLOCKSIZE, offset, SCSIdisk[target].dsk);
         } else {
@@ -806,6 +849,7 @@ void scsi_read_sector(void) {
             File_Read(scsi_buffer.data, BLOCKSIZE, offset, SCSIdisk[target].dsk);
         }
         scsi_buffer.limit=scsi_buffer.size=BLOCKSIZE;
+        scsi_trace_block("RD", SCSIdisk[target].lba, scsi_buffer.data);
 
         SCSIdisk[target].status = STAT_GOOD;
         SCSIdisk[target].sense.code = SC_NO_ERROR;

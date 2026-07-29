@@ -384,6 +384,7 @@ static uae_u32 jit_guest_path_watch_pc(void)
 static void jit_guest_path_watch(uae_u32 pc)
 {
     static unsigned long watch_after_io = 0;
+    static bool follow_user_only = false;
     static unsigned long watch_limit = 0;
     static unsigned long watch_count = 0;
     static unsigned long follow_total = 0;
@@ -409,10 +410,19 @@ static void jit_guest_path_watch(uae_u32 pc)
          * watched PC itself. */
         const char *fol = getenv("B2_JIT_GUEST_PATH_WATCH_FOLLOW");
         follow_total = (fol && *fol) ? strtoul(fol, NULL, 0) : 0;
+        /* B2_JIT_GUEST_PATH_WATCH_USER_ONLY=1: log only user-mode instructions
+         * during a follow.  Supervisor state is 99.6% of the retired stream
+         * around a process launch (exec paging), and the kernel side is not
+         * comparable between two runs anyway once their thread stacks differ,
+         * so spending the follow budget on it caps the capture thousands of
+         * times short of the user-mode event under investigation. */
+        follow_user_only = getenv("B2_JIT_GUEST_PATH_WATCH_USER_ONLY") != NULL;
         watch_init = true;
     }
     if (pc != watch_pc) {
         if (!follow_left)
+            return;
+        if (follow_user_only && regs.s)
             return;
         --follow_left;
         fprintf(stderr, "PATHFOLLOW %lu.%lu pc=%08x s=%d ccr=%02x icc=%02x d0=%08x d1=%08x d3=%08x d4=%08x a0=%08x a3=%08x a4=%08x a5=%08x a7=%08x\n",

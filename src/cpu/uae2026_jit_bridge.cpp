@@ -480,22 +480,55 @@ static uae_u32 bridge_live_peek_word(uae_u32 addr)
  * raises a nested bus error, so it cannot disturb the exception about to be
  * delivered.  A miss falls back to the historical physical reading, which
  * leaves identity-mapped ROM and kernel text behaving exactly as before. */
-static uae_u32 bridge_code_phys(uae_u32 pc)
+/* Resolve a guest PC to a physical address that is safe to read with the
+ * *physical* live reader.  Two outcomes are safe: the ATC probe supplied a
+ * real translation, or the MMU is off and the address is already physical.
+ *
+ * The third case -- MMU on, probe misses -- is not.  The historical fallback
+ * read the untranslated logical address, and a low user PC such as 0x000323fa
+ * passes bridge_live_readable() through the sub-0x40000 window while the
+ * corresponding *physical* page is unmapped, so wordget() reaches the dummy
+ * bank and calls M68000_BusError().  That turns a decision-support peek into a
+ * delivered guest exception: exception2() -> mmu_bus_error(nonmmu=true) with
+ * fc=user-data and size=byte, i.e. SSW=0x0121 instead of the code-fetch page
+ * fault the interpreter reports (SSW=0x0542), and the kernel then handles a
+ * text page-in as a hard bus error.  A peek must never be able to fault.
+ *
+ * On a probe miss the fallback is therefore restricted to the address ranges
+ * this machine maps identically and always backs with memory -- ROM and RAM --
+ * which is exactly the set the fallback existed to preserve (identity-mapped
+ * ROM and kernel text); everything else reports "not readable". */
+static bool bridge_code_phys_ok(uae_u32 pc, uae_u32 *out_phys)
 {
     uaecptr phys = pc;
-    if (regs.mmu_enabled && mmu_probe_atc((uaecptr)pc, regs.s != 0, &phys))
-        return (uae_u32)phys;
-    return pc;
+    if (regs.mmu_enabled) {
+        if (mmu_probe_atc((uaecptr)pc, regs.s != 0, &phys)) {
+            *out_phys = (uae_u32)phys;
+            return true;
+        }
+        const uae_u32 canon = bridge_live_canonical_addr(pc);
+        if (!((canon >= 0x01000000u && canon < 0x01020000u) ||
+              (canon >= 0x04000000u && canon < 0x08000000u)))
+            return false;
+    }
+    *out_phys = pc;
+    return true;
 }
 
 static bool bridge_code_readable(uae_u32 pc, uae_u32 bytes)
 {
-    return bridge_live_readable(bridge_code_phys(pc), bytes);
+    uae_u32 phys = pc;
+    if (!bridge_code_phys_ok(pc, &phys))
+        return false;
+    return bridge_live_readable(phys, bytes);
 }
 
 static uae_u32 bridge_peek_code_word(uae_u32 pc)
 {
-    return bridge_live_peek_word(bridge_code_phys(pc));
+    uae_u32 phys = pc;
+    if (!bridge_code_phys_ok(pc, &phys))
+        return 0;
+    return bridge_live_peek_word(phys);
 }
 
 static uae_u32 bridge_live_peek_long(uae_u32 addr)

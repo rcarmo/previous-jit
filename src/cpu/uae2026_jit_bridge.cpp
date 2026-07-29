@@ -886,6 +886,53 @@ static int bridge_move_size_increment(uae_u16 opcode, int areg)
     return 0;
 }
 
+/* A MOVE's destination store is the last thing the instruction does.  The
+ * 68040 therefore reports a fault on that store as a continuation fault: every
+ * auto-EA side effect is already committed, the PC has already advanced past
+ * the opcode, and the store itself is handed to the kernel in the frame's WB3
+ * entry.  The generated 040 interpreter says so literally -- it clears
+ * mmufixup, does m68k_incpci(), publishes regs.instruction_pc and sets
+ * mmu_restart = false immediately before put_*_mmu040() -- so a JIT fault on
+ * the same store must not roll anything back and must not restart.
+ *
+ * Measured against the interpreter at the same guest point (block-I/O record
+ * 53138, MOVE.L -(A0),-(A1) at 0500721c inside libsys _bcopy):
+ *   interpreter   pc=0500721e a0=00273ffc a1=11161ffc
+ *   JIT (before)  pc=0500721c a0=00273ffc a1=11162000
+ * The JIT restarted the instruction having rolled back only the operand whose
+ * address matched the fault, so the source predecrement was applied a second
+ * time and A0 lost four bytes on every page-crossing fault of a long copy.
+ * After three faults the byte tail of that bcopy read below its own source
+ * buffer, and the process faulted on an unmapped page for ever.
+ *
+ * Restricted to EA forms that encode in exactly one word, so the
+ * post-instruction PC is fault_pc + 2 with no extension-word decoding. */
+static bool bridge_move_dest_write_continuation(uae_u32 pc)
+{
+    if (!pc || !bridge_code_readable(pc, 2))
+        return false;
+    const uae_u16 opcode = (uae_u16)bridge_peek_code_word(pc);
+    if ((opcode & 0xc000u) != 0 || (opcode & 0x3000u) == 0)
+        return false; /* not a MOVE/MOVEA */
+    const int src_mode = (opcode >> 3) & 7;
+    const int dst_mode = (opcode >> 6) & 7;
+    const int dst_reg = (opcode >> 9) & 7;
+    /* src Dn/An/(An)/(An)+/-(An) and dst (An)/(An)+/-(An): one opcode word. */
+    if (src_mode > 4 || dst_mode < 2 || dst_mode > 4)
+        return false;
+    if (regs.mmu_ssw & 0x0100u)
+        return false; /* SSW RW set: a read fault, not the destination store */
+    if (bridge_mmio_addr(regs.mmu_fault_addr))
+        return false; /* device cycles are replayed through the interpreter */
+    const uae_u32 fault_addr = regs.mmu_fault_addr;
+    const uae_u32 areg = m68k_areg(regs, dst_reg);
+    if (dst_mode == 3)
+        return areg == fault_addr + (uae_u32)bridge_move_size_increment(opcode, dst_reg);
+    /* (An) never moves, -(An) has already been decremented to the store
+     * address; either way the register must name the faulting bus cycle. */
+    return areg == fault_addr;
+}
+
 static bool bridge_proven_post_advance_byte_write_opcode(uae_u32 pc)
 {
     if (!bridge_code_readable(pc, 2))
@@ -1685,7 +1732,13 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
                 mmufixup[fixup_index].reg = -1;
             }
         }
-        bridge_restore_autoea_fault_side_effects(regs.fault_pc, mmu_restart);
+        /* Decided before any rollback, because the rollback is what has to be
+         * suppressed: a fault on a MOVE's destination store is a continuation
+         * fault and no side effect may be undone. */
+        const bool move_dest_write_cont =
+            (prb == 2) && bridge_move_dest_write_continuation(regs.fault_pc);
+        if (!move_dest_write_cont)
+            bridge_restore_autoea_fault_side_effects(regs.fault_pc, mmu_restart);
         /* B2_AUTOEA_TRACE_ADDR=<addr>: report the auto-EA rollback decision for
          * faults at one exact address.  The rollback is keyed on regs.fault_pc
          * and on the fault being restartable; when either is missing the
@@ -1722,7 +1775,14 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
          * in the pre-Exception dump.  Keep broader/native policy gated to the
          * exact opcodes and preserve the historical PC-only compatibility shim
          * for the original boot seams if an unlisted opcode reaches them. */
-        if (prb == 2 && bridge_normalize_proven_trap_frame_fault_tuple(regs.fault_pc)) {
+        if (move_dest_write_cont) {
+            const uae_u32 post_pc = regs.fault_pc + 2;
+            mmu_restart = false;
+            regs.fault_pc = 0;
+            regs.instruction_pc = post_pc;
+            regs.mmu_effective_addr = 0;
+            m68k_setpc(post_pc);
+        } else if (prb == 2 && bridge_normalize_proven_trap_frame_fault_tuple(regs.fault_pc)) {
             /* Exact trap-frame tuple handled above. */
         } else if (prb == 2 && bridge_normalize_proven_movem_continuation_fault_tuple(regs.fault_pc)) {
             /* Exact MOVEM continuation tuple handled above. */

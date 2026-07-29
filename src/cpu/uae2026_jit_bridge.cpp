@@ -222,6 +222,108 @@ extern "C" void Uae2026JitHelperClear(void)
     bridge_helper_state = {};
 }
 
+/* Interpreter-fallback census.
+ *
+ * "Is the JIT running 100% natively?" cannot be answered from the compile-time
+ * JIT_FALLBACK log: it is capped, it counts compilations rather than
+ * executions, and it says nothing about how much guest work each fallback
+ * family actually does.  Every fallback execution passes through
+ * Uae2026JitHelperBegin with kind EXACT_OPCODE, so counting there is uncapped,
+ * always available and weighted by execution.  B2_JIT_HELPER_CENSUS=<n> dumps
+ * the histogram every n fallback executions (default 20000000).
+ */
+static unsigned long long bridge_helper_census_ops[2][65536];
+static unsigned long long bridge_helper_census_site[4];
+static unsigned long long bridge_helper_census_kind[8];
+static unsigned long long bridge_helper_census_total = 0;
+
+static unsigned long long bridge_helper_census_every(void)
+{
+    static long long cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("B2_JIT_HELPER_CENSUS");
+        if (!env || !*env || !strcmp(env, "0"))
+            cached = 0;
+        else {
+            long long v = strtoll(env, NULL, 0);
+            cached = (v > 1) ? v : 20000000ll;
+        }
+    }
+    return (unsigned long long)cached;
+}
+
+static void bridge_helper_census_top(int site, const char *label)
+{
+    enum { TOP = 20 };
+    unsigned top[TOP];
+    int found = 0;
+    for (int slot = 0; slot < TOP; slot++) {
+        unsigned long long best = 0;
+        unsigned best_op = 0;
+        for (unsigned op = 0; op < 65536u; op++) {
+            if (!bridge_helper_census_ops[site][op])
+                continue;
+            bool taken = false;
+            for (int k = 0; k < slot; k++)
+                if (top[k] == op) { taken = true; break; }
+            if (taken)
+                continue;
+            if (bridge_helper_census_ops[site][op] > best) {
+                best = bridge_helper_census_ops[site][op];
+                best_op = op;
+            }
+        }
+        if (!best)
+            break;
+        top[slot] = best_op;
+        found = slot + 1;
+    }
+    for (int slot = 0; slot < found; slot++)
+        fprintf(stderr, "JITHELPEROP %s op=%04x n=%llu\n",
+            label, top[slot], bridge_helper_census_ops[site][top[slot]]);
+}
+
+static void bridge_helper_census_dump(void)
+{
+    extern unsigned long jit_retire_obs[4];
+    extern unsigned long jit_stat_dispatch;
+    extern unsigned long jit_stat_compile;
+    extern int64_t nCyclesMainCounter;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    fprintf(stderr, "JITHELPERCENSUS wall=%lld.%03ld total=%llu inblock=%llu trace=%llu "
+        "nostats=%llu nostats_lim=%llu kinds=%llu/%llu/%llu/%llu/%llu/%llu "
+        "obs=%lu/%lu/%lu/%lu disp=%lu comp=%lu cyc=%lld\n",
+        (long long)ts.tv_sec, ts.tv_nsec / 1000000,
+        bridge_helper_census_total,
+        bridge_helper_census_site[0], bridge_helper_census_site[1],
+        bridge_helper_census_site[2], bridge_helper_census_site[3],
+        bridge_helper_census_kind[0], bridge_helper_census_kind[1],
+        bridge_helper_census_kind[2], bridge_helper_census_kind[3],
+        bridge_helper_census_kind[4], bridge_helper_census_kind[5],
+        jit_retire_obs[0], jit_retire_obs[1], jit_retire_obs[2],
+        jit_retire_obs[3],
+        jit_stat_dispatch, jit_stat_compile, (long long)nCyclesMainCounter);
+    bridge_helper_census_top(0, "inblock");
+    bridge_helper_census_top(1, "trace");
+    fflush(stderr);
+}
+
+/* site 0 = interpreter fallback inside a compiled block (the instruction has
+ * no native handler), 1 = first-pass tracer, 2 = exec_nostats, 3 = the bounded
+ * exec_nostats.  Only site 0 means "compiled code could not do this natively";
+ * the others mean "this block was not running as compiled code at all". */
+extern "C" void Uae2026JitFallbackCensus(uae_u32 opcode, uae_u32 site)
+{
+    if (!bridge_helper_census_every())
+        return;
+    bridge_helper_census_site[site & 3u]++;
+    if (site < 2u)
+        bridge_helper_census_ops[site][opcode & 0xffffu]++;
+    if ((++bridge_helper_census_total % bridge_helper_census_every()) == 0)
+        bridge_helper_census_dump();
+}
+
 extern "C" void Uae2026JitHelperBegin(uae_u32 op_pc, uae_u32 descriptor)
 {
     if (bridge_helper_state.active)
@@ -230,6 +332,8 @@ extern "C" void Uae2026JitHelperBegin(uae_u32 op_pc, uae_u32 descriptor)
             op_pc, descriptor & 0xffffu);
 
     bridge_helper_state.active = true;
+    if (bridge_helper_census_every())
+        bridge_helper_census_kind[((descriptor >> 16) & 0xffu) & 7u]++;
     bridge_helper_state.kind = (uae_u16)((descriptor >> 16) & 0xffu);
     bridge_helper_state.opcode = (uae_u16)descriptor;
     bridge_helper_state.instruction_bytes = (uae_u16)(descriptor >> 24);

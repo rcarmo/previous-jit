@@ -81,6 +81,20 @@ void Main_Speed(double realTime, double hostTime) {
     speedFactor /= ConfigureParams.System.nCpuFreq;
     speedFactor /= 1000 * 1000;
     speedFactor /= dRT;
+    /* Engine-independent throughput instrument.  The status bar only shows this
+     * as a rounded MHz string, and only when the SDL event loop runs it at all,
+     * so a JIT run that never updates it reads as "no data" rather than "slow".
+     * B2_CYCLE_RATE=1 puts the same measurement in the log for both engines. */
+    {
+        static int rate_env = -1;
+        if (rate_env < 0)
+            rate_env = getenv("B2_CYCLE_RATE") ? 1 : 0;
+        if (rate_env && dRT > 0.0)
+            fprintf(stderr, "CYCLERATE rt=%.3f dRT=%.3f cyc=%lld dcyc=%lld mhz=%.3f\n",
+                realTime, dRT, (long long)nCyclesMainCounter,
+                (long long)(nCyclesMainCounter - (int64_t)lastCycles),
+                ((double)(nCyclesMainCounter - (int64_t)lastCycles)) / dRT / 1.0e6);
+    }
     lastRT     = realTime;
     lastCycles = nCyclesMainCounter;
 }

@@ -581,7 +581,7 @@ static void jit_guest_path_user_return(uae_u32 pc)
             extern unsigned long Uae2026SupervisorExits;
             fprintf(stderr,
                 "USERRET %lu v=%d pc=%08x ccr=%02x icc=%02x cyc=%lld d0=%08x d1=%08x a0=%08x a7=%08x "
-                "sx=%lu obs=%lu/%lu/%lu\n",
+                "sx=%lu obs=%lu/%lu/%lu/%lu\n",
                 emitted, jit_last_exception_vector, (unsigned)pc,
                 (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
                            (GET_VFLG() << 1) | GET_CFLG()),
@@ -590,7 +590,8 @@ static void jit_guest_path_user_return(uae_u32 pc)
                 (unsigned)regs.regs[0], (unsigned)regs.regs[1],
                 (unsigned)regs.regs[8], (unsigned)m68k_areg(regs, 7),
                 Uae2026SupervisorExits,
-                jit_retire_obs[0], jit_retire_obs[1], jit_retire_obs[2]);
+                jit_retire_obs[0], jit_retire_obs[1], jit_retire_obs[2],
+                jit_retire_obs[3]);
             if ((emitted & 0x3f) == 0)
                 fflush(stderr);
         }
@@ -743,6 +744,32 @@ extern "C" void jit_guest_path_record_nostats(uae_u32 pc)
 extern "C" void jit_guest_path_record_trace(uae_u32 pc)
 {
     jit_retire_obs[2]++;
+    jit_guest_instruction_retired(pc);
+}
+
+extern "C" void Uae2026JitFallbackCensus(uae_u32 opcode, uae_u32 site);
+
+/* B2_JIT_HELPER_CENSUS: emit the per-opcode fallback counter inside compiled
+ * blocks.  Compile-time gating keeps the counter out of the code the
+ * measurement runs are not asking for. */
+static bool jit_fallback_census_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("B2_JIT_HELPER_CENSUS");
+        cached = (env && *env && strcmp(env, "0")) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+/* Site 3: an instruction inside a compiled block that has no native handler
+ * and is executed by calling the interpreter's C opcode routine.  It retires
+ * exactly like a natively translated instruction, so it used to share site 0 --
+ * which made "is this engine actually running native code?" unanswerable from
+ * the census.  Separating it is what makes the native fraction measurable. */
+extern "C" void jit_guest_path_record_fallback(uae_u32 pc)
+{
+    jit_retire_obs[3]++;
     jit_guest_instruction_retired(pc);
 }
 
@@ -2391,9 +2418,32 @@ static inline bool jit_force_optlev1_opcode(uae_u16 op)
 	return false;
 }
 
+/* getenv() is a linear scan of environ, and these gates are consulted once per
+ * opcode per compile.  Measured on a plain JIT boot before this cache, getenv
+ * was 2.85% of all host samples and ~12% of the emulation thread, essentially
+ * all of it from jit_restore_barrier_at_pc().  The environment does not change
+ * after start-up, so cache by the literal's address. */
+static inline const char *jit_env_cached(const char *env_name)
+{
+	enum { SLOTS = 24 };
+	static const char *keys[SLOTS];
+	static const char *vals[SLOTS];
+	static int count = 0;
+	for (int i = 0; i < count; i++)
+		if (keys[i] == env_name)
+			return vals[i];
+	const char *v = getenv(env_name);
+	if (count < SLOTS) {
+		keys[count] = env_name;
+		vals[count] = v;
+		count++;
+	}
+	return v;
+}
+
 static inline bool jit_env_has_csv_token(const char *env_name, const char *token)
 {
-	const char *env = getenv(env_name);
+	const char *env = jit_env_cached(env_name);
 	if (!env || !*env)
 		return false;
 	const size_t token_len = strlen(token);
@@ -2424,7 +2474,7 @@ static inline bool jit_restore_barrier_at_pc(const char *token, uae_u32 pc)
 {
 	if (!jit_restore_barrier(token))
 		return false;
-	const char *ranges = getenv("B2_JIT_RESTORE_BARRIER_PCS");
+	const char *ranges = jit_env_cached("B2_JIT_RESTORE_BARRIER_PCS");
 	return !ranges || !*ranges ||
 		jit_pc_in_env_ranges("B2_JIT_RESTORE_BARRIER_PCS", pc);
 }
@@ -10376,8 +10426,12 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                            a branch-displacement bug. State is already flushed
                            above for the fallback call, so this samples the same
                            architectural point the compiled path does. */
-                        compemu_raw_call_observer_i((uintptr)jit_guest_path_record_native,
+                        compemu_raw_call_observer_i((uintptr)jit_guest_path_record_fallback,
                             op_m68k_pc);
+                    }
+                    if (jit_fallback_census_enabled()) {
+                        compemu_raw_call_observer_ii((uintptr)Uae2026JitFallbackCensus,
+                            (uae_u32)opcode, 0u);
                     }
                     if (jit_trace_target_pc(op_m68k_pc)) {
                         compemu_raw_call_observer_ii((uintptr)jit_trace_pc_hit,

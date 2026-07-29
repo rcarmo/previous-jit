@@ -1276,7 +1276,8 @@ static void ExceptionX (int nr, uaecptr address)
             extern unsigned long jit_retire_obs[4];
             extern unsigned long jit_stat_dispatch;
             const unsigned long obs_total =
-                jit_retire_obs[0] + jit_retire_obs[1] + jit_retire_obs[2];
+                jit_retire_obs[0] + jit_retire_obs[1] + jit_retire_obs[2] +
+                jit_retire_obs[3];
             const unsigned long disp_total = jit_stat_dispatch;
             /* The JIT's live condition codes, beside the ones MakeSR() just
                put in regs.sr.  A difference here means the frame about to be

@@ -1122,6 +1122,7 @@ void exec_nostats(void)
 		Uae2026JitHelperBegin(before_pc,
 			UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
 				UAE2026_JIT_HELPER_EXACT_OPCODE));
+		Uae2026JitFallbackCensus(opcode, 2);
 		if (trace_this) {
 			fprintf(stderr,
 				"TRACEWINJ BEFORE step=%lu pc=%08x op=%04x regs.pc=%08x pc_p=%p oldp=%p d0=%08x d1=%08x d2=%08x d3=%08x a0=%08x a1=%08x a2=%08x a3=%08x a7=%08x sr=%04x nzcv=%08x x=%08x\n",
@@ -1224,6 +1225,7 @@ static void exec_nostats_limited(int maxrun_limit)
 		Uae2026JitHelperBegin(pc,
 			UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
 				UAE2026_JIT_HELPER_EXACT_OPCODE));
+		Uae2026JitFallbackCensus(opcode, 3);
 		const int jit_trace_op_cycles = (int)((jit_cpuop_cycles_func)cpufunctbl[opcode])(opcode);
 		Uae2026InterpreterFlagsToJit();
 		Uae2026JitHelperClear();
@@ -1619,6 +1621,7 @@ jit_pctrace_done:
 			Uae2026JitHelperBegin(hist->guest_pc,
 				UAE2026_JIT_HELPER_DESCRIPTOR(opcode,
 					UAE2026_JIT_HELPER_EXACT_OPCODE));
+			Uae2026JitFallbackCensus(opcode, 1);
 			if (jit_guest_instruction_observer_enabled())
 				jit_guest_path_record_trace(jit_current_interp_pc);
 			if (jit_trace_target_pc(jit_current_interp_pc))

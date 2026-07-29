@@ -361,26 +361,80 @@ static inline bool Uae2026JitMmioLiveRange(uae_u32 addr)
     return addr >= 0x02000000u && addr < 0x02200000u;
 }
 
+/* The MMIO and framebuffer-alias windows are *physical* addresses.  With the
+ * MMU on, a user logical address may land anywhere in them and have nothing
+ * to do with a device: libnw's Mach-O header is mapped at logical 0x0c000000,
+ * squarely inside the second video alias window, so classifying the logical
+ * address routed every native access to that library's first 256KB into the
+ * NeXT framebuffer.  Classify on the physical address instead.
+ *
+ * The probe must not be able to raise a fault -- it runs on the ordinary data
+ * path, ahead of the access that is entitled to fault -- so it resolves only
+ * through the transparent translation registers and a read-only ATC lookup.
+ * A miss declines, and the caller takes the full MMU path, which translates
+ * and reaches the device through Previous's own bank layer anyway; a device
+ * page that is neither TTR-mapped nor ATC-resident cannot be one the guest is
+ * in the middle of using. */
+extern "C" int mmu_match_ttr(uaecptr addr, bool super, bool data);
+extern "C" bool mmu_probe_atc(uaecptr addr, bool super, uaecptr *out_phys);
+#define UAE2026_TTR_NO_MATCH 0
+
+static inline bool Uae2026JitBankPhysProbe(uae_u32 addr, uae_u32 *out_phys)
+{
+    if (!Uae2026JitRuntimeMmuEnabled()) {
+        *out_phys = addr;
+        return true;
+    }
+    if (mmu_match_ttr(addr, regs.s != 0, true) != UAE2026_TTR_NO_MATCH) {
+        *out_phys = addr;
+        return true;
+    }
+    uaecptr phys = 0;
+    if (mmu_probe_atc(addr, regs.s != 0, &phys)) {
+        *out_phys = (uae_u32)phys;
+        return true;
+    }
+    return false;
+}
+
+/* True when the access must be served by the live device/video bank, with the
+ * physical address it should use. */
+static inline bool Uae2026JitBankLive(uae_u32 addr, uae_u32 bytes, uae_u32 *phys_out,
+    uae_u32 *video_off_out)
+{
+    uae_u32 phys = 0;
+    if (!Uae2026JitBankPhysProbe(addr, &phys))
+        return false;
+    uae_u32 off = 0;
+    if (!Uae2026JitMmioLiveRange(phys) && !Uae2026JitVideoReadOffset(phys, bytes, &off))
+        return false;
+    *phys_out = phys;
+    if (video_off_out)
+        *video_off_out = off;
+    return true;
+}
+
 static uae_u32 Uae2026JitBankGetByte(uaecptr addr)
 {
-    uae_u32 off = 0;
-    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 1, &off))
-        return Uae2026JitLiveBankGetByte(addr);
+    uae_u32 phys = 0;
+    if (Uae2026JitBankLive(addr, 1, &phys, NULL))
+        return Uae2026JitLiveBankGetByte(phys);
     return Uae2026JitRuntimeMmuEnabled() ? Uae2026JitMmuGetByte(addr) : Uae2026JitPhysGetByte(addr);
 }
 
 static uae_u32 Uae2026JitBankGetWord(uaecptr addr)
 {
-    uae_u32 off = 0;
-    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 2, &off))
-        return Uae2026JitLiveBankGetWord(addr);
+    uae_u32 phys = 0;
+    if (Uae2026JitBankLive(addr, 2, &phys, NULL))
+        return Uae2026JitLiveBankGetWord(phys);
     return Uae2026JitRuntimeMmuEnabled() ? Uae2026JitMmuGetWord(addr) : Uae2026JitPhysGetWord(addr);
 }
 
 static uae_u32 Uae2026JitBankGetLong(uaecptr addr)
 {
-    uae_u32 off = 0;
-    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 4, &off)) {
+    uae_u32 phys = 0;
+    if (Uae2026JitBankLive(addr, 4, &phys, NULL)) {
+        addr = phys;
         const uae_u32 value = Uae2026JitLiveBankGetLong(addr);
         if (getenv("B2_JIT_TRACE_RTC_BANK") && addr == 0x0200d000u) {
             static unsigned count = 0;
@@ -402,10 +456,10 @@ static uae_u32 Uae2026JitBankGetLong(uaecptr addr)
 
 static void Uae2026JitBankPutByte(uaecptr addr, uae_u32 value)
 {
-    uae_u32 off = 0;
-    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 1, &off)) {
-        Uae2026JitLiveBankPutByte(addr, value);
-        Uae2026JitSyncVideoRangeToShadow(addr, 1);
+    uae_u32 phys = 0;
+    if (Uae2026JitBankLive(addr, 1, &phys, NULL)) {
+        Uae2026JitLiveBankPutByte(phys, value);
+        Uae2026JitSyncVideoRangeToShadow(phys, 1);
     } else if (Uae2026JitRuntimeMmuEnabled())
         Uae2026JitMmuPutByte(addr, value);
     else
@@ -414,10 +468,10 @@ static void Uae2026JitBankPutByte(uaecptr addr, uae_u32 value)
 
 static void Uae2026JitBankPutWord(uaecptr addr, uae_u32 value)
 {
-    uae_u32 off = 0;
-    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 2, &off)) {
-        Uae2026JitLiveBankPutWord(addr, value);
-        Uae2026JitSyncVideoRangeToShadow(addr, 2);
+    uae_u32 phys = 0;
+    if (Uae2026JitBankLive(addr, 2, &phys, NULL)) {
+        Uae2026JitLiveBankPutWord(phys, value);
+        Uae2026JitSyncVideoRangeToShadow(phys, 2);
     } else if (Uae2026JitRuntimeMmuEnabled())
         Uae2026JitMmuPutWord(addr, value);
     else
@@ -426,10 +480,10 @@ static void Uae2026JitBankPutWord(uaecptr addr, uae_u32 value)
 
 static void Uae2026JitBankPutLong(uaecptr addr, uae_u32 value)
 {
-    uae_u32 off = 0;
-    if (Uae2026JitMmioLiveRange(addr) || Uae2026JitVideoReadOffset(addr, 4, &off)) {
-        Uae2026JitLiveBankPutLong(addr, value);
-        Uae2026JitSyncVideoRangeToShadow(addr, 4);
+    uae_u32 phys = 0;
+    if (Uae2026JitBankLive(addr, 4, &phys, NULL)) {
+        Uae2026JitLiveBankPutLong(phys, value);
+        Uae2026JitSyncVideoRangeToShadow(phys, 4);
     } else if (Uae2026JitRuntimeMmuEnabled())
         Uae2026JitMmuPutLong(addr, value);
     else

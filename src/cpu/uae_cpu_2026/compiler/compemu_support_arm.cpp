@@ -64,6 +64,7 @@
 #include "../../uae2026_jit_bridge.h"
 #include <SDL2/SDL.h>
 
+extern "C" bool Uae2026JitSafePeekLong(uae_u32 addr, uae_u32 *out);
 extern "C" void jit_op_bftst(void);
 extern "C" void jit_op_bfextu(void);
 extern "C" void jit_op_bfchg(void);
@@ -404,14 +405,15 @@ static void jit_guest_path_watch(uae_u32 pc)
         if (!follow_left)
             return;
         --follow_left;
-        fprintf(stderr, "PATHFOLLOW %lu.%lu pc=%08x s=%d ccr=%02x icc=%02x d0=%08x d1=%08x d3=%08x d4=%08x a0=%08x a4=%08x a7=%08x\n",
+        fprintf(stderr, "PATHFOLLOW %lu.%lu pc=%08x s=%d ccr=%02x icc=%02x d0=%08x d1=%08x d3=%08x d4=%08x a0=%08x a3=%08x a4=%08x a5=%08x a7=%08x\n",
             watch_count, follow_total - follow_left, (unsigned)pc, (int)regs.s,
             (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
                        (GET_VFLG() << 1) | GET_CFLG()),
             (unsigned)Uae2026InterpreterCcr(),
             (unsigned)regs.regs[0], (unsigned)regs.regs[1],
             (unsigned)regs.regs[3], (unsigned)regs.regs[4],
-            (unsigned)regs.regs[8], (unsigned)regs.regs[12],
+            (unsigned)regs.regs[8], (unsigned)regs.regs[11],
+            (unsigned)regs.regs[12], (unsigned)regs.regs[13],
             (unsigned)m68k_areg(regs, 7));
         if (!follow_left)
             fflush(stderr);
@@ -429,6 +431,39 @@ static void jit_guest_path_watch(uae_u32 pc)
         fprintf(stderr, "PATHWORDS pc=%08x", (unsigned)pc);
         for (int w = 0; w < 6; w++)
             fprintf(stderr, " %04x", (unsigned)do_get_mem_word((uae_u16 *)(regs.pc_p + w * 2)));
+        fprintf(stderr, "\n");
+    }
+    if (getenv("B2_JIT_GUEST_PATH_WATCH_STACK")) {
+        /* The words at A7 name the caller: a watched leaf routine says what it
+         * is doing, not who keeps asking.  Read through the bridge's ATC probe
+         * so the instrument cannot fault. */
+        fprintf(stderr, "PATHSTACK pc=%08x a7=%08x a6=%08x", (unsigned)pc,
+                (unsigned)m68k_areg(regs, 7), (unsigned)m68k_areg(regs, 6));
+        for (int w = 0; w < 8; w++) {
+            uae_u32 v = 0;
+            const uae_u32 a = (uae_u32)m68k_areg(regs, 7) + (uae_u32)(w * 4);
+            if (Uae2026JitSafePeekLong(a, &v))
+                fprintf(stderr, " %08x", (unsigned)v);
+            else
+                fprintf(stderr, " --------");
+        }
+        /* The frame-pointer chain is what names the caller: A7 points at
+         * locals once the prologue has run, A6 at the saved frame pointer with
+         * the return address one long above it.  Walk four frames. */
+        fprintf(stderr, " |");
+        uae_u32 fp = (uae_u32)m68k_areg(regs, 6);
+        for (int f = 0; f < 4; f++) {
+            uae_u32 next = 0, ret = 0;
+            if (!Uae2026JitSafePeekLong(fp, &next) ||
+                !Uae2026JitSafePeekLong(fp + 4, &ret)) {
+                fprintf(stderr, " --------");
+                break;
+            }
+            fprintf(stderr, " %08x", (unsigned)ret);
+            if (next <= fp)
+                break;
+            fp = next;
+        }
         fprintf(stderr, "\n");
     }
     /* A NeXTSTEP/Mach m68k syscall reports failure in the carry flag and the

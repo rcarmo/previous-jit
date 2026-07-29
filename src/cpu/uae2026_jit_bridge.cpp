@@ -536,6 +536,35 @@ static uae_u32 bridge_live_peek_long(uae_u32 addr)
     return bridge_live_readable(addr, 4) ? bridge_live_peek_word(addr) << 16 | bridge_live_peek_word(addr + 2) : 0;
 }
 
+/* Diagnostic: read a guest long through the same read-only ATC probe the
+ * fault-repair peeks use, so an instrument can look at guest data (a return
+ * address on the user stack, say) without being able to raise a fault or
+ * disturb the ATC.  Probes each word separately: a long may straddle a page
+ * boundary whose second page is not resident. */
+extern "C" bool Uae2026JitSafePeekWord(uae_u32 addr, uae_u32 *out)
+{
+    uae_u32 phys = addr;
+    if (regs.mmu_enabled) {
+        uaecptr p = 0;
+        if (!mmu_probe_atc((uaecptr)addr, regs.s != 0, &p))
+            return false;
+        phys = (uae_u32)p;
+    }
+    if (!bridge_live_readable(phys, 2))
+        return false;
+    *out = Uae2026JitLiveGetWord(bridge_live_canonical_addr(phys));
+    return true;
+}
+
+extern "C" bool Uae2026JitSafePeekLong(uae_u32 addr, uae_u32 *out)
+{
+    uae_u32 hi = 0, lo = 0;
+    if (!Uae2026JitSafePeekWord(addr, &hi) || !Uae2026JitSafePeekWord(addr + 2, &lo))
+        return false;
+    *out = (hi << 16) | (lo & 0xffffu);
+    return true;
+}
+
 static bool bridge_mmio_addr(uae_u32 addr)
 {
     return addr >= 0x02000000u && addr < 0x02200000u;

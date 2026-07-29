@@ -3191,6 +3191,31 @@ uae_u8* start_pc_p;
 uae_u32 start_pc;
 uintptr current_block_pc_p;
 static uintptr current_block_start_target;
+
+/* Deferred instruction-cache maintenance.
+ *
+ * write_jmp_target() patches one 4-byte branch and then flushes exactly those
+ * four bytes.  On AArch64 that is a DC CVAU / IC IVAU pair with two full
+ * barriers, and `perf` measured __clear_cache at 40% of the emulation thread:
+ * compile_block() patches every forward branch it emitted, and the block it is
+ * emitting is not executable yet -- it ends with one flush over the whole
+ * block.  While a block is being emitted, any patch at or above its start is
+ * therefore already covered by that final flush.  Patches below it (re-chaining
+ * a live block) still flush immediately, because that code can be executing. */
+static uae_u8 *jit_icache_defer_lo = NULL;
+unsigned long jit_icache_flush_deferred = 0;
+unsigned long jit_icache_flush_immediate = 0;
+
+/* Set PREVIOUS_UAE2026_JIT_ICACHE_DEFER=0 to flush every patched branch. */
+static inline bool jit_icache_defer_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("PREVIOUS_UAE2026_JIT_ICACHE_DEFER");
+        cached = (env && *env && strcmp(env, "0") == 0) ? 0 : 1;
+    }
+    return cached != 0;
+}
 uae_u32 needed_flags;
 static uintptr next_pc_p;
 static uintptr taken_pc_p;
@@ -3876,6 +3901,55 @@ static inline bool jit_mmu_generation_keying_enabled(void)
     return cached != 0;
 }
 
+/* Identity-rejection census.  A dispatch that finds a block at the right host
+ * code pointer and still refuses it costs a full retranslation, so the reason
+ * for the refusal is the throughput question: `gen` alone means the block was
+ * discarded by the global MMU generation bump and nothing else, and `gen1p`
+ * counts the subset whose entire guest code span lies on the entry page --
+ * the blocks a per-page policy could keep. */
+unsigned long jit_ident_ok = 0;
+unsigned long jit_ident_rej_ident = 0;
+unsigned long jit_ident_rej_gen = 0;
+unsigned long jit_ident_rej_gen_1page = 0;
+unsigned long jit_ident_rej_gen_1page4k = 0;
+unsigned long jit_ident_exempt_1page = 0;
+
+/* Default off: measured, the exemption removes 94% of the generation-keyed
+ * refusals (21.0M -> 1.2M over a boot) and changes neither the compile count
+ * nor the wall clock, because the recompile storm is not driven by them.  It
+ * is kept because it is the measurement, and because it is the only sound
+ * narrowing of a key documented as load-bearing.  Set
+ * PREVIOUS_UAE2026_JIT_MMU_GEN_KEY_1PAGE=1 to enable it. */
+static inline bool jit_mmu_gen_key_single_page_exempt(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("PREVIOUS_UAE2026_JIT_MMU_GEN_KEY_1PAGE");
+        cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+/* Guest code span of a compiled block, in bytes, from its checksum span (host
+ * pointers map 1:1 onto guest bytes).  Zero when the block has no span. */
+static inline uae_u32 jit_block_guest_span(const blockinfo *bi)
+{
+    uae_u32 span = 0;
+    for (const checksum_info *csi = bi->csi; csi; csi = csi->next)
+        if ((uae_u32)csi->length > span)
+            span = (uae_u32)csi->length;
+    return span;
+}
+
+static inline bool jit_block_guest_span_single_page(const blockinfo *bi,
+    uae_u32 pagemask)
+{
+    const uae_u32 span = jit_block_guest_span(bi);
+    if (!span)
+        return false;
+    return ((bi->guest_pc & ~pagemask) == ((bi->guest_pc + span - 1) & ~pagemask));
+}
+
 static inline bool jit_block_identity_matches(blockinfo *bi, void *addr,
     uae_u32 guest_pc, uae_u8 supervisor)
 {
@@ -3884,10 +3958,14 @@ static inline bool jit_block_identity_matches(blockinfo *bi, void *addr,
     if (!jit_allow_ram_dispatch_env() || !regs.mmu_enabled)
         return true;
     if (!bi->mmu_identity_valid || bi->guest_pc != guest_pc ||
-        bi->mmu_supervisor != supervisor)
+        bi->mmu_supervisor != supervisor) {
+        jit_ident_rej_ident++;
         return false;
-    if (!jit_mmu_generation_keying_enabled())
+    }
+    if (!jit_mmu_generation_keying_enabled()) {
+        jit_ident_ok++;
         return true;
+    }
     /* The generation must actually reject a stale block. Three ways to avoid the
      * resulting retranslation cost were tried and all regress the boot from
      * 16768 exception checkpoints to ~3300:
@@ -3902,7 +3980,32 @@ static inline bool jit_block_identity_matches(blockinfo *bi, void *addr,
      * real per-page invalidation -- tracking which blocks live on which guest
      * page and invalidating only the pages a PFLUSH actually names -- rather
      * than a cheaper predicate here. */
-    return bi->mmu_generation == Uae2026JitMmuGeneration();
+    if (bi->mmu_generation == Uae2026JitMmuGeneration()) {
+        jit_ident_ok++;
+        return true;
+    }
+    /* Single-page exemption.  Measured on a plain boot: 21.0M of 423M lookups
+     * are refused on the generation alone, and 16.3M of those (77%) are blocks
+     * whose entire guest code span lies on the entry page.  A block like that
+     * carries no translation state beyond its entry: reaching it requires the
+     * dispatcher to translate the guest PC, which faults if the page has been
+     * unmapped and yields a different pc_p if it has been remapped, so the
+     * generation adds nothing.  A block that straddles a page boundary does
+     * carry state -- the second page was resolved at compile time and is never
+     * re-checked -- and stays keyed.  That distinction is what the earlier
+     * blanket "refresh whenever the identity matches" attempt lacked. */
+    if (jit_mmu_gen_key_single_page_exempt() &&
+        jit_block_guest_span_single_page(bi, 0x0fffu)) {
+        bi->mmu_generation = Uae2026JitMmuGeneration();
+        jit_ident_exempt_1page++;
+        return true;
+    }
+    jit_ident_rej_gen++;
+    if (jit_block_guest_span_single_page(bi, 0x1fffu))
+        jit_ident_rej_gen_1page++;
+    if (jit_block_guest_span_single_page(bi, 0x0fffu))
+        jit_ident_rej_gen_1page4k++;
+    return false;
 }
 
 static inline blockinfo* get_blockinfo_addr_key(void* addr, uae_u32 guest_pc,
@@ -4348,6 +4451,16 @@ static inline bool jit_code_page_test(uae_u32 rel, uae_u32 size)
     return false;
 }
 
+static inline void jit_code_page_clear(uae_u32 rel, uae_u32 size)
+{
+    if (size == 0)
+        return;
+    const uae_u32 first = rel >> UAE2026_CODEPAGE_SHIFT;
+    const uae_u32 last = (rel + size - 1u) >> UAE2026_CODEPAGE_SHIFT;
+    for (uae_u32 p = first; p <= last && p < UAE2026_CODEPAGE_COUNT; p++)
+        g_jit_code_page_bits[p >> 5] &= ~(1u << (p & 31));
+}
+
 static void jit_invalidate_guest_code_linear(uae_u32 address, uae_u32 size,
                                              bool trace,
                                              bool count_coherent_write)
@@ -4497,7 +4610,23 @@ extern "C" void Uae2026JitNotifyGuestStore(uae_u32 phys, uae_u32 size)
         return;
     if (!jit_code_page_test(rel, size))
         return;
-    jit_invalidate_guest_code_linear(rel, size, false, false);
+    /* Widen to whole code pages and clear their bits.
+     *
+     * The scan is a linear walk of the active and dormant lists, and the page
+     * bit was never cleared, so every later store into a page that had ever
+     * held translated code paid for the whole walk again.  A guest page-in is
+     * two thousand long stores into one page: `perf` measured this function at
+     * 14.8% of all host samples, about 70% of the emulation thread.  Widening
+     * to the page means every block on it is invalidated by the first store,
+     * after which the bit is false and the rest of the copy is a load and a
+     * test.  Over-invalidation is always sound; under-invalidation is not. */
+    const uae_u32 pagemask = (1u << UAE2026_CODEPAGE_SHIFT) - 1u;
+    uae_u32 wide = rel & ~pagemask;
+    uae_u32 wide_size = ((rel + size - 1u) | pagemask) + 1u - wide;
+    if (wide_size > (uae_u32)RAMSize - wide)
+        wide_size = (uae_u32)RAMSize - wide;
+    jit_invalidate_guest_code_linear(wide, wide_size, false, false);
+    jit_code_page_clear(wide, wide_size);
 }
 
 static inline bool jit_mmu_execution_key_active(void)
@@ -6274,9 +6403,29 @@ static void jit_runtime_cache_control(uae_u32 opcode)
     flush_internals();
     /* CINV and CPUSH use one architectural transition contract.  The
        canonical core invalidates translated code only for instruction-cache
-       forms (bit 7); data-cache-only forms have no additional host state. */
-    if (opcode & 0x80)
-        flush_icache_hard(0);
+       forms (bit 7); data-cache-only forms have no additional host state.
+
+       The invalidation must be the *lazy* one.  A hard flush discards the whole
+       code cache, and NeXTSTEP's kernel issues instruction-cache CINV/CPUSH
+       about 116 times a second: measured on a plain boot, 9,080 hard flushes in
+       78 seconds against 5.4M compiles, 4.9M of them fresh -- roughly 540 blocks
+       rebuilt after every flush, which is the recompile storm.  The lazy flush
+       expresses the same architectural statement ("this code may have changed")
+       without throwing the translations away: every block is re-armed with its
+       checksum stub and reactivates unless its guest bytes really did change.
+       Over that same boot the checksum answered `bad=0`, so the hard flush was
+       pure loss.  Set PREVIOUS_UAE2026_JIT_CINV_HARD=1 to restore it. */
+    if (opcode & 0x80) {
+        static int hard_env = -1;
+        if (hard_env < 0) {
+            const char *env = getenv("PREVIOUS_UAE2026_JIT_CINV_HARD");
+            hard_env = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+        }
+        if (hard_env)
+            flush_icache_hard(0);
+        else
+            flush_icache(0);
+    }
     m68k_incpc(2);
 }
 
@@ -9308,6 +9457,8 @@ static void flush_icache_none(int v)
 
 void flush_icache_hard(int n)
 {
+    /* The code cache is about to be rewound; no deferred window survives it. */
+    jit_icache_defer_lo = NULL;
 #if defined(CPU_AARCH64)
     if (jit_diag_enabled()) {
         jit_diag_flush_icache_hard_calls++;
@@ -9677,6 +9828,8 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
         set_dhtu(bi, bi->direct_handler);
         bi->status = BI_COMPILING;
         current_block_start_target = (uintptr)get_target();
+        jit_icache_defer_lo = jit_icache_defer_enabled()
+            ? (uae_u8*)current_block_start_target : NULL;
 #if defined(CPU_AARCH64)
         /* Instrument the actual native entry, before countdown or translated
            operations. Placing this in the non-direct wrapper misses direct
@@ -10861,6 +11014,7 @@ endblock_done:
 
 
         flush_cpu_icache((void*)current_block_start_target, (void*)target);
+        jit_icache_defer_lo = NULL;
         current_compile_p = get_target();
         raise_in_cl_list(bi);
         bi->nexthandler = current_compile_p;

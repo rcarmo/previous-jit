@@ -838,7 +838,14 @@ STATIC_INLINE void write_jmp_target(uae_u32* jmpaddr, uintptr a)
 
 	jit_begin_write_window();
 	*jmpaddr = patched;
-	flush_cpu_icache((void *)jmpaddr, (void *)&jmpaddr[1]);
+	/* Covered by the whole-block flush at the end of compile_block(). */
+	if (jit_icache_defer_lo && (uae_u8*)jmpaddr >= jit_icache_defer_lo &&
+	    (uae_u8*)jmpaddr < (uae_u8*)get_target()) {
+		jit_icache_flush_deferred++;
+	} else {
+		jit_icache_flush_immediate++;
+		flush_cpu_icache((void *)jmpaddr, (void *)&jmpaddr[1]);
+	}
 	jit_end_write_window();
 }
 

@@ -128,6 +128,12 @@ struct bridge_jit_helper_state {
 static bridge_jit_helper_state bridge_helper_state{};
 static uae_u32 mmu_translation_generation = 1;
 static bool compiler_initialized = false;
+
+/* Bump census, by the register write that caused it. */
+enum { MMU_CHANGE_SOURCES = 12 };
+struct mmu_change_source { uae_u32 source; unsigned long count; };
+static mmu_change_source mmu_change_by_source[MMU_CHANGE_SOURCES]{};
+static unsigned long mmu_change_count = 0;
 }
 
 /* Bit-position conversion between Previous's legacy flag layout and the
@@ -306,6 +312,23 @@ static void bridge_helper_census_dump(void)
         jit_stat_dispatch, jit_stat_compile, (long long)nCyclesMainCounter);
     bridge_helper_census_top(0, "inblock");
     bridge_helper_census_top(1, "trace");
+    {
+        extern unsigned long jit_ident_ok, jit_ident_rej_ident, jit_ident_rej_gen,
+            jit_ident_rej_gen_1page, jit_ident_rej_gen_1page4k, jit_ident_exempt_1page;
+        extern unsigned long jit_icache_flush_deferred, jit_icache_flush_immediate;
+        fprintf(stderr, "JITIDENT ok=%lu rej_ident=%lu rej_gen=%lu gen1p8k=%lu "
+            "gen1p4k=%lu exempt1p=%lu gen=%u bumps=%lu icdefer=%lu icflush=%lu",
+            jit_ident_ok, jit_ident_rej_ident, jit_ident_rej_gen,
+            jit_ident_rej_gen_1page, jit_ident_rej_gen_1page4k,
+            jit_ident_exempt_1page,
+            mmu_translation_generation, mmu_change_count,
+            jit_icache_flush_deferred, jit_icache_flush_immediate);
+        for (int i = 0; i < MMU_CHANGE_SOURCES; i++)
+            if (mmu_change_by_source[i].count)
+                fprintf(stderr, " %08x=%lu", mmu_change_by_source[i].source,
+                    mmu_change_by_source[i].count);
+        fprintf(stderr, "\n");
+    }
     fflush(stderr);
 }
 
@@ -373,6 +396,19 @@ extern "C" void Uae2026JitMmuTranslationChanged(uae_u32 source)
      * to invalidate. The first live JIT context starts at generation one. */
     if (!compiler_initialized)
         return;
+
+    /* Which register write caused the bump.  Per-page invalidation can only
+     * help the sources that name a page (PFLUSH of one entry); PFLUSHA, a TTR
+     * write and a root-pointer write name none. */
+    for (int i = 0; i < MMU_CHANGE_SOURCES; i++) {
+        if (mmu_change_by_source[i].source == source ||
+            mmu_change_by_source[i].count == 0) {
+            mmu_change_by_source[i].source = source;
+            mmu_change_by_source[i].count++;
+            break;
+        }
+    }
+    mmu_change_count++;
 
     /* Generation zero is reserved for non-JIT stubs. Wrapping is practically
      * unreachable, but skip it so no live MMU block can acquire the sentinel. */

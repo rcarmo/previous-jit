@@ -64,6 +64,7 @@
 #include "../../uae2026_jit_bridge.h"
 #include <SDL2/SDL.h>
 
+extern "C" unsigned long Uae2026ScsiIoSeq;
 extern "C" bool Uae2026JitSafePeekLong(uae_u32 addr, uae_u32 *out);
 extern "C" void jit_op_bftst(void);
 extern "C" void jit_op_bfextu(void);
@@ -382,6 +383,7 @@ static uae_u32 jit_guest_path_watch_pc(void)
 
 static void jit_guest_path_watch(uae_u32 pc)
 {
+    static unsigned long watch_after_io = 0;
     static unsigned long watch_limit = 0;
     static unsigned long watch_count = 0;
     static unsigned long follow_total = 0;
@@ -393,6 +395,14 @@ static void jit_guest_path_watch(uae_u32 pc)
     if (!watch_init) {
         const char *lim = getenv("B2_JIT_GUEST_PATH_WATCH_LIMIT");
         watch_limit = (lim && *lim) ? strtoul(lim, NULL, 0) : 40;
+        /* B2_JIT_GUEST_PATH_WATCH_AFTER_IO=<n>: ignore hits until the guest has
+         * reached a given block-I/O record.  A watched PC is rarely unique to
+         * the process under investigation -- 0x0000491c is loginwindow's entry
+         * and also an ordinary mid-routine address in other binaries -- so
+         * without a gate the capture lands on the first unrelated process to
+         * execute that address, thousands of disk transactions too early. */
+        const char *aio = getenv("B2_JIT_GUEST_PATH_WATCH_AFTER_IO");
+        watch_after_io = (aio && *aio) ? strtoul(aio, NULL, 0) : 0;
         /* B2_JIT_GUEST_PATH_WATCH_FOLLOW=<n>: after each hit, also log the next
          * n retired instructions. A syscall's result is only visible on the
          * far side of the trap, so the interesting state is never at the
@@ -420,6 +430,8 @@ static void jit_guest_path_watch(uae_u32 pc)
         return;
     }
     if (watch_count >= watch_limit)
+        return;
+    if (watch_after_io && Uae2026ScsiIoSeq < watch_after_io)
         return;
     ++watch_count;
     follow_left = follow_total;

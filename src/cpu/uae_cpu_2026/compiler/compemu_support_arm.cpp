@@ -425,8 +425,15 @@ static void jit_guest_path_watch(uae_u32 pc)
         if (follow_user_only && regs.s)
             return;
         --follow_left;
-        fprintf(stderr, "PATHFOLLOW %lu.%lu pc=%08x s=%d ccr=%02x icc=%02x d0=%08x d1=%08x d3=%08x d4=%08x a0=%08x a3=%08x a4=%08x a5=%08x a7=%08x\n",
+        /* urp= is the MMU user root pointer: the only field on this line that
+         * identifies the *address space*.  The follow ring records every
+         * user-mode instruction, so an unrelated process scheduled in the
+         * middle of the capture is otherwise indistinguishable from the one
+         * under investigation -- and two engines schedule differently, which
+         * makes a raw stream diff report a context switch as a divergence. */
+        fprintf(stderr, "PATHFOLLOW %lu.%lu pc=%08x s=%d urp=%08x ccr=%02x icc=%02x d0=%08x d1=%08x d3=%08x d4=%08x a0=%08x a3=%08x a4=%08x a5=%08x a7=%08x\n",
             watch_count, follow_total - follow_left, (unsigned)pc, (int)regs.s,
+            (unsigned)regs.urp,
             (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
                        (GET_VFLG() << 1) | GET_CFLG()),
             (unsigned)Uae2026InterpreterCcr(),
@@ -494,10 +501,10 @@ static void jit_guest_path_watch(uae_u32 pc)
      * flags back to regflags, so this reads the architectural value in both
      * engines. */
     fprintf(stderr,
-        "PATHWATCH %lu pc=%08x s=%d ccr=%02x icc=%02x "
+        "PATHWATCH %lu pc=%08x s=%d urp=%08x ccr=%02x icc=%02x "
         "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
         "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
-        watch_count, (unsigned)pc, (int)regs.s,
+        watch_count, (unsigned)pc, (int)regs.s, (unsigned)regs.urp,
         (unsigned)((GET_XFLG() << 4) | (GET_NFLG() << 3) | (GET_ZFLG() << 2) |
                    (GET_VFLG() << 1) | GET_CFLG()),
         (unsigned)Uae2026InterpreterCcr(),

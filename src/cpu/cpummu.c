@@ -731,6 +731,35 @@ fail:
     return status;
 }
 
+/* Read-only ATC probe.  Unlike mmu_translate() this never fills the ATC, never
+   sets U/M bits and never raises a bus error, so it is safe to call from a
+   fault handler that is about to build an exception frame: a miss declines
+   instead of clobbering regs.mmu_fault_addr / regs.mmu_ssw.  The JIT bridge
+   uses it to read the faulting instruction's own words, which live at a
+   logical address whenever the fault happened in MMU-translated user space. */
+bool mmu_probe_atc(uaecptr addr, bool super, uaecptr *out_phys)
+{
+    uae_u32 tag = ((super ? 0x80000000 : 0x00000000) | (addr >> 1)) & mmu_tagmask;
+    int index, type, way;
+
+    if (!out_phys)
+        return false;
+    if (mmu_pagesize_8k)
+        index = (addr & 0x0001E000) >> 13;
+    else
+        index = (addr & 0x0000F000) >> 12;
+    for (type = 0; type < ATC_TYPE; type++) {
+        for (way = 0; way < ATC_WAYS; way++) {
+            struct mmu_atc_line *l = &mmu_atc_array[type][way][index];
+            if (l->valid && l->tag == tag && (l->status & MMU_MMUSR_R)) {
+                *out_phys = l->phys | (addr & mmu_pagemask);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 uaecptr mmu_translate(uaecptr addr, uae_u32 val, bool super, bool data, bool write, int size)
 {
     int way, i, index, way_invalid;

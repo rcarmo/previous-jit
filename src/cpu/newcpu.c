@@ -1155,6 +1155,77 @@ static void ExceptionX (int nr, uaecptr address)
             const char *iat = getenv("B2_SYSCALL_TRACE_ARM_IO");
             sc_arm_io = (iat && *iat) ? strtoul(iat, NULL, 0) : 0;
         }
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+        /* B2_JIT_GUEST_PATH_ARM_IO=<n>: arm the path observer on the block-I/O
+           clock rather than on an exception serial.  A serial number only
+           exists downstream of B2_SYSCALL_TRACE_ARM_IO and moves as soon as the
+           observer perturbs device timing; the I/O record is engine- and
+           observer-independent, so it can put the ring in front of an event
+           whose serial is not known in advance. */
+        {
+            static int path_arm_io_state = -1;
+            static unsigned long path_arm_io = 0;
+            if (path_arm_io_state < 0) {
+                const char *pai = getenv("B2_JIT_GUEST_PATH_ARM_IO");
+                path_arm_io = (pai && *pai) ? strtoul(pai, NULL, 0) : 0;
+                path_arm_io_state = path_arm_io ? 0 : 1;
+            }
+            if (path_arm_io_state == 0 && Uae2026ScsiIoSeq >= path_arm_io) {
+                extern void jit_guest_path_late_arm(void);
+                extern void Uae2026CompilerFlushCacheHard(void);
+                path_arm_io_state = 1;
+                jit_guest_path_late_arm();
+                Uae2026CompilerFlushCacheHard();
+                fprintf(stderr, "B2_JIT_GUEST_PATH: observer armed at io=%lu\n",
+                    Uae2026ScsiIoSeq);
+                fflush(stderr);
+            }
+        }
+#endif
+        /* B2_SYSCALL_TRACE_DUMP_PC=<pc>: dump the path ring at the first
+           exception taken *at* a given guest PC, and report the guest state
+           there.  Arming at a serial number perturbs device timing, so the
+           serial of the event under investigation moves; the faulting PC does
+           not.  The ring records retired instructions and a faulting
+           instruction never retires, so the trigger has to come from the
+           exception path.  Deliberately outside the ARM_IO gate: the first
+           occurrence of a fault is usually earlier than the window the trace
+           file is armed for. */
+        {
+            static int dump_pc_state = -1;
+            static uae_u32 dump_pc = 0;
+            if (dump_pc_state < 0) {
+                const char *dp = getenv("B2_SYSCALL_TRACE_DUMP_PC");
+                dump_pc = (dp && *dp) ? (uae_u32)strtoul(dp, NULL, 0) : 0;
+                dump_pc_state = dump_pc ? 0 : 1;
+            }
+            if (dump_pc_state == 0 && (uae_u32)m68k_getpc() == dump_pc) {
+                dump_pc_state = 1;
+                MakeSR();
+                fprintf(stderr,
+                    "SCDUMPPC v=%d pc=%08x sr=%04x s=%d io=%lu fa=%08x ssw=%04x "
+                    "d0=%08x d1=%08x d2=%08x d3=%08x d4=%08x d5=%08x d6=%08x d7=%08x "
+                    "a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a5=%08x a6=%08x a7=%08x\n",
+                    nr, (unsigned)m68k_getpc(), (unsigned)regs.sr, (int)regs.s,
+                    Uae2026ScsiIoSeq,
+                    (unsigned)regs.mmu_fault_addr, (unsigned)regs.mmu_ssw,
+                    (unsigned)regs.regs[0], (unsigned)regs.regs[1],
+                    (unsigned)regs.regs[2], (unsigned)regs.regs[3],
+                    (unsigned)regs.regs[4], (unsigned)regs.regs[5],
+                    (unsigned)regs.regs[6], (unsigned)regs.regs[7],
+                    (unsigned)regs.regs[8], (unsigned)regs.regs[9],
+                    (unsigned)regs.regs[10], (unsigned)regs.regs[11],
+                    (unsigned)regs.regs[12], (unsigned)regs.regs[13],
+                    (unsigned)regs.regs[14], (unsigned)regs.regs[15]);
+                fflush(stderr);
+                if (sc_file)
+                    fflush(sc_file);
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+                extern void jit_guest_path_dump_external(const char *reason);
+                jit_guest_path_dump_external("syscall-dump-pc");
+#endif
+            }
+        }
         if (sc_arm_io && Uae2026ScsiIoSeq < sc_arm_io)
             goto sc_done;
         if (sc_file && sc_seq < sc_limit && (nr < 24 || nr > 31)) {
@@ -1259,6 +1330,14 @@ static void ExceptionX (int nr, uaecptr address)
                 jit_guest_path_dump_external("syscall-checkpoint");
 #endif
             }
+            /* B2_SYSCALL_TRACE_DUMP_PC=<pc>: dump the path ring at the first
+               exception taken *at* a given guest PC.  Arming the observer at a
+               serial number perturbs device timing, so the serial of the event
+               under investigation moves; the faulting PC does not.  The ring
+               records retired instructions, and a faulting instruction never
+               retires, so the dump has to be triggered from the exception path
+               rather than from the observer. */
+
         }
     sc_done: ;
     }

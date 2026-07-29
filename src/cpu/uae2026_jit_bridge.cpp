@@ -49,6 +49,7 @@ extern "C" {
     void prev_m68k_reset(int hard) __asm__("m68k_reset");
 }
 extern bool mmu_restart;
+extern "C" bool mmu_probe_atc(uaecptr addr, bool super, uaecptr *out_phys);
 extern uae_u16 mmu_opcode;
 
 extern "C" void Uae2026JitPublishTraceInstructionState(uae_u32 pc, uae_u16 opcode)
@@ -465,6 +466,38 @@ static uae_u32 bridge_live_peek_word(uae_u32 addr)
     return bridge_live_readable(addr, 2) ? Uae2026JitLiveGetWord(addr) : 0;
 }
 
+/* Every fault-repair decision in this file decodes the faulting instruction's
+ * own words, and Uae2026JitLiveGetWord() is a *physical* reader.  A user PC
+ * such as 0x05007226 is inside the RAM window when read as a physical address,
+ * so the peek silently returns an unrelated word -- zero, in the measured case
+ * -- and every opcode-gated repair is skipped (or, worse, taken on a
+ * misdecoded opcode) for MMU-translated user space.  This is the same
+ * PC-representation seam as fb76772 (get_iword) and ceea2d0 (indexed EAs), on
+ * the fault-repair side.
+ *
+ * Translate through a read-only ATC probe: the faulting instruction was just
+ * fetched, so its page is resident; the probe never fills the ATC and never
+ * raises a nested bus error, so it cannot disturb the exception about to be
+ * delivered.  A miss falls back to the historical physical reading, which
+ * leaves identity-mapped ROM and kernel text behaving exactly as before. */
+static uae_u32 bridge_code_phys(uae_u32 pc)
+{
+    uaecptr phys = pc;
+    if (regs.mmu_enabled && mmu_probe_atc((uaecptr)pc, regs.s != 0, &phys))
+        return (uae_u32)phys;
+    return pc;
+}
+
+static bool bridge_code_readable(uae_u32 pc, uae_u32 bytes)
+{
+    return bridge_live_readable(bridge_code_phys(pc), bytes);
+}
+
+static uae_u32 bridge_peek_code_word(uae_u32 pc)
+{
+    return bridge_live_peek_word(bridge_code_phys(pc));
+}
+
 static uae_u32 bridge_live_peek_long(uae_u32 addr)
 {
     return bridge_live_readable(addr, 4) ? bridge_live_peek_word(addr) << 16 | bridge_live_peek_word(addr + 2) : 0;
@@ -487,7 +520,7 @@ static bool bridge_try_handle_mmio_byte_op(void)
      * single faulting opcode to Previous's normal interpreter function table,
      * whose byte/word/long accesses already go through the live addrbanks. */
     const uae_u32 pc = regs.fault_pc;
-    const uae_u16 opcode = (uae_u16)bridge_live_peek_word(pc);
+    const uae_u16 opcode = (uae_u16)bridge_peek_code_word(pc);
     cpuop_func *handler = cpufunctbl[opcode];
     if (!handler)
         return false;
@@ -855,9 +888,9 @@ static int bridge_move_size_increment(uae_u16 opcode, int areg)
 
 static bool bridge_proven_post_advance_byte_write_opcode(uae_u32 pc)
 {
-    if (!bridge_live_readable(pc, 2))
+    if (!bridge_code_readable(pc, 2))
         return false;
-    const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(pc);
+    const uae_u16 opcode = (uae_u16)bridge_peek_code_word(pc);
     /* Interpreter-oracle covered non-restartable byte-write shapes:
      *   1082  MOVE.B D2,(A0)       (fault_write_byte_d2)
      *   109a  MOVE.B (A2)+,(A0)    (fault_write_byte_postinc)
@@ -867,10 +900,10 @@ static bool bridge_proven_post_advance_byte_write_opcode(uae_u32 pc)
 
 static bool bridge_normalize_proven_moves_fault_tuple(uae_u32 pc)
 {
-    if (!bridge_live_readable(pc, 4))
+    if (!bridge_code_readable(pc, 4))
         return false;
-    const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(pc);
-    const uae_u16 ext = (uae_u16)Uae2026JitLiveGetWord(pc + 2);
+    const uae_u16 opcode = (uae_u16)bridge_peek_code_word(pc);
+    const uae_u16 ext = (uae_u16)bridge_peek_code_word(pc + 2);
 
     /* Interpreter-oracle covered MOVES.L shapes:
      *   0e90 0800  MOVES.L D0,(A0) through DFC; non-restartable write reports
@@ -929,9 +962,9 @@ static bool bridge_normalize_proven_moves_fault_tuple(uae_u32 pc)
 
 static bool bridge_normalize_proven_trap_frame_fault_tuple(uae_u32 pc)
 {
-    if (!bridge_live_readable(pc, 2))
+    if (!bridge_code_readable(pc, 2))
         return false;
-    const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(pc);
+    const uae_u16 opcode = (uae_u16)bridge_peek_code_word(pc);
     /* Interpreter-oracle covered nested trap-frame write fault:
      *   4e40  TRAP #0 from user mode.  The SR frame word write faults after the
      *         trap has switched to supervisor and advanced PC past the opcode.
@@ -949,10 +982,10 @@ static bool bridge_normalize_proven_trap_frame_fault_tuple(uae_u32 pc)
 
 static bool bridge_normalize_proven_movem_continuation_fault_tuple(uae_u32 pc)
 {
-    if (!bridge_live_readable(pc, 4))
+    if (!bridge_code_readable(pc, 4))
         return false;
-    const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(pc);
-    const uae_u16 ext = (uae_u16)Uae2026JitLiveGetWord(pc + 2);
+    const uae_u16 opcode = (uae_u16)bridge_peek_code_word(pc);
+    const uae_u16 ext = (uae_u16)bridge_peek_code_word(pc + 2);
     /* Interpreter-oracle covered MOVEM.L predecrement continuation fault:
      *   48e0 c000  MOVEM.L D0-D1,-(A0).  The 68040 continuation frame reports
      *              the MOVEM opcode PC, clears fault_pc, and preserves
@@ -1174,9 +1207,9 @@ static void bridge_restore_call_target_fault_side_effects(uae_u32 fault_pc)
 
 static void bridge_restore_autoea_fault_side_effects(uae_u32 fault_pc, bool restartable)
 {
-    if (!bridge_live_readable(fault_pc, 2))
+    if (!bridge_code_readable(fault_pc, 2))
         return;
-    const uae_u16 opcode = (uae_u16)Uae2026JitLiveGetWord(fault_pc);
+    const uae_u16 opcode = (uae_u16)bridge_peek_code_word(fault_pc);
     const uae_u32 fault_addr = regs.mmu_fault_addr;
 
     /* MOVES.<size> <reg>,(An)+ / -(An) and memory->reg variants.  Native and
@@ -1367,7 +1400,7 @@ extern "C" void Uae2026JitMmuTxnBeginCallPushPreTargetCurrentA7(uae_u32 pc, uae_
 {
     if (!regs.mmu_enabled)
         return;
-    const uae_u32 opcode = bridge_live_readable(pc, 2) ? Uae2026JitLiveGetWord(pc) : 0;
+    const uae_u32 opcode = bridge_peek_code_word(pc);
     Uae2026JitMmuTxnBeginCallPushPreTarget(pc, opcode, m68k_areg(regs, 7), target_pc);
 }
 
@@ -1429,7 +1462,7 @@ extern "C" void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uae_u32 pc, uae_
 extern "C" void Uae2026JitMmuTxnBeginCallPushTarget(uae_u32 pc, uae_u32 target_pc)
 {
     const uae_u32 pushed_a7 = m68k_areg(regs, 7);
-    const uae_u32 opcode = bridge_live_readable(pc, 2) ? Uae2026JitLiveGetWord(pc) : 0;
+    const uae_u32 opcode = bridge_peek_code_word(pc);
     bridge_active_mmu_txn.kind = bridge_mmu_txn_kind::call_push;
     bridge_active_mmu_txn.pc = pc;
     bridge_active_mmu_txn.opcode = (uae_u16)opcode;
@@ -1653,6 +1686,34 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
             }
         }
         bridge_restore_autoea_fault_side_effects(regs.fault_pc, mmu_restart);
+        /* B2_AUTOEA_TRACE_ADDR=<addr>: report the auto-EA rollback decision for
+         * faults at one exact address.  The rollback is keyed on regs.fault_pc
+         * and on the fault being restartable; when either is missing the
+         * predecrement stays committed and the instruction is no longer
+         * restartable, which is invisible from the exception stream alone. */
+        {
+            static int autoea_trace_state = -1;
+            static uae_u32 autoea_trace_addr = 0;
+            if (autoea_trace_state < 0) {
+                const char *ta = getenv("B2_AUTOEA_TRACE_ADDR");
+                autoea_trace_addr = (ta && *ta) ? (uae_u32)strtoul(ta, NULL, 0) : 0;
+                autoea_trace_state = autoea_trace_addr ? 0 : 1;
+            }
+            if (autoea_trace_state == 0 && regs.mmu_fault_addr == autoea_trace_addr) {
+                const uae_u32 fpc = regs.fault_pc;
+                const bool readable = fpc && bridge_code_readable(fpc, 2);
+                fprintf(stderr,
+                    "JITAUTOEA prb=%d fault_pc=%08x readable=%d op=%04x ipc=%08x "
+                    "restart=%d ssw=%04x fa=%08x a0=%08x a1=%08x a7=%08x\n",
+                    prb, (unsigned)fpc, (int)readable,
+                    (unsigned)(readable ? (uae_u16)bridge_peek_code_word(fpc) : 0),
+                    (unsigned)regs.instruction_pc, (int)mmu_restart,
+                    (unsigned)regs.mmu_ssw, (unsigned)regs.mmu_fault_addr,
+                    (unsigned)m68k_areg(regs, 0), (unsigned)m68k_areg(regs, 1),
+                    (unsigned)m68k_areg(regs, 7));
+                fflush(stderr);
+            }
+        }
         bridge_restore_call_target_fault_side_effects(regs.fault_pc);
         /* Confirmed byte-write seams: the 040 interpreter reports these
          * non-restartable faults after advancing PC to the next instruction.
@@ -1674,7 +1735,7 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
             regs.mmu_effective_addr = 0;
             m68k_setpc(post_pc);
         }
-        const bool bridge_rte_fault = bridge_live_peek_word(regs.fault_pc) == 0x4e73u;
+        const bool bridge_rte_fault = bridge_peek_code_word(regs.fault_pc) == 0x4e73u;
         /* If a RAM/MMU fault escapes while RTE has only partially completed,
          * the generated 040 handler has already loaded the frame SR and may
          * have switched A7 to USP.  Exception(2) must describe the faulting RTE

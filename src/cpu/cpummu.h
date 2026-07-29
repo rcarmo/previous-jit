@@ -196,6 +196,7 @@ extern int mmu_do_match_ttr(uae_u32 ttr, uaecptr addr, bool super);
 extern int mmu_match_ttr(uaecptr addr, bool super, bool data);
 extern int mmu_match_ttr_write(uaecptr addr, bool super, bool data, uae_u32 val, int size, bool write);
 extern uaecptr mmu_translate(uaecptr addr, uae_u32 val, bool super, bool data, bool write, int size);
+extern bool mmu_probe_atc(uaecptr addr, bool super, uaecptr *out_phys);
 
 extern uae_u32 REGPARAM3 mmu060_get_rmw_bitfield (uae_u32 src, uae_u32 bdata[2], uae_s32 offset, int width) REGPARAM;
 extern void REGPARAM3 mmu060_put_rmw_bitfield (uae_u32 dst, uae_u32 bdata[2], uae_u32 val, uae_s32 offset, int width) REGPARAM;

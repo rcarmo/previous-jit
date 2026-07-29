@@ -770,18 +770,13 @@ void do_nothing(void)
 	countdown = JIT_DISPATCH_BUDGET;
 	if (quit_program > 0)
 		return;
-	if (jit_diag_enabled()) {
-		static unsigned long dn_count = 0;
-		dn_count++;
-		if (dn_count <= 20 || dn_count % 50000 == 0) {
-			uaecptr sp = regs.regs[15];
-			fprintf(stderr, "DN[%lu] pc=%08x im=%u spc=%x d0=%08x d1=%08x d2=%08x d3=%08x a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x a7=%08x s0=%08x s4=%08x t490=%08x t554=%08x t574=%08x\n",
-				dn_count, m68k_getpc(), (unsigned)regs.intmask,
-				(unsigned)regs.spcflags, regs.regs[0], regs.regs[1], regs.regs[2], regs.regs[3], regs.regs[8], regs.regs[9], regs.regs[10], regs.regs[11], regs.regs[12], regs.regs[15],
-				(unsigned)get_long(sp), (unsigned)get_long(sp + 4),
-				(unsigned)get_long(0x490), (unsigned)get_long(0x554), (unsigned)get_long(0x574));
-		}
-	}
+	/* No guest-memory dump here.  A per-dispatch trace used to print the two
+	 * long words at A7 with get_long(), which in this unit is a *physical*
+	 * read (MEMBaseDiff + address) with no bounds test: under the MMU a
+	 * supervisor A7 is a logical kernel-stack address like 0x1114bfc0, far
+	 * outside the 64MB RAM window, so B2_JIT_DIAG=1 segfaulted the emulator
+	 * mid-boot.  Same seam as fb76772/ceea2d0/0ee1de9, on the diagnostic
+	 * side.  Counters above are safe; guest reads from here are not. */
 	MakeSR();
 	m68k_do_specialties();
 #endif

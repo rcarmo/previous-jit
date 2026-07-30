@@ -4610,6 +4610,17 @@ extern "C" void Uae2026JitNotifyGuestStore(uae_u32 phys, uae_u32 size)
         return;
     if (!jit_code_page_test(rel, size))
         return;
+    /* Set PREVIOUS_UAE2026_JIT_STORE_WIDEN=0 to invalidate only the store's own
+     * span and leave the page bit set, which is the pre-46345d4 behaviour. */
+    static int widen = -1;
+    if (widen < 0) {
+        const char *e = getenv("PREVIOUS_UAE2026_JIT_STORE_WIDEN");
+        widen = (e && *e && strcmp(e, "0") == 0) ? 0 : 1;
+    }
+    if (!widen) {
+        jit_invalidate_guest_code_linear(rel, size, false, false);
+        return;
+    }
     /* Widen to whole code pages and clear their bits.
      *
      * The scan is a linear walk of the active and dormant lists, and the page

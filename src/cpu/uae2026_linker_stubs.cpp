@@ -581,19 +581,48 @@ static inline bool uae2026_shadow_verify_enabled(void)
     return cached != 0;
 }
 
-/* Returns true if this full page is already synced for the current generation.
-   Otherwise records it as synced and returns false (caller must sync). */
+/* The generation is NOT part of the key by default.
+ *
+ * The cache is keyed on the guest *physical* page, and what makes a physical
+ * page's shadow stale is a write to that page, not a change of address
+ * translation: every guest store reaches Uae2026JitShadowSyncInvalidate()
+ * through phys_put_*(), DMA announces itself, and those invalidate the entry
+ * directly.  Keying on the MMU generation as well meant that each of the ~132k
+ * generation bumps over a boot invalidated the sync state of every page, and
+ * the next code fetch on each page re-copied 8 KB one word at a time through
+ * the addrbank read path -- 4096 bank reads per page per bump.  Set
+ * PREVIOUS_UAE2026_JIT_SHADOW_SYNC_GEN=1 to restore the old key.
+ *
+ * Returns true if this full page is already synced; otherwise records it as
+ * synced and returns false (caller must sync). */
+unsigned long jit_shadow_sync_hits = 0;
+unsigned long jit_shadow_sync_copies = 0;
+
+static inline bool uae2026_shadow_sync_gen_key(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("PREVIOUS_UAE2026_JIT_SHADOW_SYNC_GEN");
+        cached = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
 static inline bool uae2026_shadow_page_already_synced(uae_u32 page_base)
 {
-    const uae_u32 gen = Uae2026JitMmuGeneration();
+    const uae_u32 gen = uae2026_shadow_sync_gen_key()
+        ? Uae2026JitMmuGeneration() : 0u;
     const uae_u32 idx = (page_base >> 13) & (UAE2026_SHADOW_SYNC_CACHE_ENTRIES - 1u);
     if (g_shadow_sync_cache[idx].valid &&
         g_shadow_sync_cache[idx].page_base == page_base &&
-        g_shadow_sync_cache[idx].gen == gen)
+        g_shadow_sync_cache[idx].gen == gen) {
+        jit_shadow_sync_hits++;
         return true;
+    }
     g_shadow_sync_cache[idx].page_base = page_base;
     g_shadow_sync_cache[idx].gen = gen;
     g_shadow_sync_cache[idx].valid = 1;
+    jit_shadow_sync_copies++;
     return false;
 }
 

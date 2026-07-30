@@ -316,13 +316,16 @@ static void bridge_helper_census_dump(void)
         extern unsigned long jit_ident_ok, jit_ident_rej_ident, jit_ident_rej_gen,
             jit_ident_rej_gen_1page, jit_ident_rej_gen_1page4k, jit_ident_exempt_1page;
         extern unsigned long jit_icache_flush_deferred, jit_icache_flush_immediate;
+        extern unsigned long jit_shadow_sync_hits, jit_shadow_sync_copies;
         fprintf(stderr, "JITIDENT ok=%lu rej_ident=%lu rej_gen=%lu gen1p8k=%lu "
-            "gen1p4k=%lu exempt1p=%lu gen=%u bumps=%lu icdefer=%lu icflush=%lu",
+            "gen1p4k=%lu exempt1p=%lu gen=%u bumps=%lu icdefer=%lu icflush=%lu "
+            "shhit=%lu shcopy=%lu",
             jit_ident_ok, jit_ident_rej_ident, jit_ident_rej_gen,
             jit_ident_rej_gen_1page, jit_ident_rej_gen_1page4k,
             jit_ident_exempt_1page,
             mmu_translation_generation, mmu_change_count,
-            jit_icache_flush_deferred, jit_icache_flush_immediate);
+            jit_icache_flush_deferred, jit_icache_flush_immediate,
+            jit_shadow_sync_hits, jit_shadow_sync_copies);
         for (int i = 0; i < MMU_CHANGE_SOURCES; i++)
             if (mmu_change_by_source[i].count)
                 fprintf(stderr, " %08x=%lu", mmu_change_by_source[i].source,

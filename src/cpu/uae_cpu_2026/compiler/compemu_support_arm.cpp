@@ -3974,31 +3974,31 @@ static inline bool jit_block_checksum_still_valid(blockinfo *bi)
  * panics the kernel with a 1111 emulator trap at 0x040013a4, ~1650 disk
  * transactions into the boot.
  *
- * Test what the exemption actually needs: every byte the block was compiled
- * from is on the page the dispatcher just translated.  Checksum spans and
- * bi->pc_p are host pointers into the execution shadow, which is 1:1 with
- * guest physical memory, so the comparison is exact in that space and needs no
- * logical/physical conversion.  csi->length carries LONGEST_68K_INST of slack,
- * which can only push a span past a page edge, so the test errs towards
+ * Test what the exemption actually needs: one contiguous checksum span, every
+ * byte of it on the page the dispatcher just translated.  More than one span
+ * means compile_block() followed a constant jump.  Those spans are host
+ * pointers into the physical execution shadow; two different logical pages
+ * can alias the same physical page, so even if every host span has the same
+ * physical page as bi->pc_p, re-translating only the block entry has *not*
+ * validated an inlined target's logical mapping.  Keep the generation key for
+ * every such block.
+ *
+ * For the single-span case, csi->length carries LONGEST_68K_INST of slack,
+ * which can only push the span past a page edge, so the test errs towards
  * keeping the generation key.  A block with no checksum chain (ROM) is not
  * exempt. */
 static inline bool jit_block_code_single_page(const blockinfo *bi,
     uae_u32 pagemask)
 {
+    const checksum_info *csi = bi->csi;
+    if (!csi || csi->next || !csi->length)
+        return false;
+
     const uintptr mask = ~(uintptr)pagemask;
     const uintptr base = ((uintptr)bi->pc_p) & mask;
-    bool any = false;
-
-    for (const checksum_info *csi = bi->csi; csi; csi = csi->next) {
-        if (!csi->length)
-            continue;
-        any = true;
-        const uintptr first = (uintptr)csi->start_p;
-        const uintptr last = first + (uintptr)csi->length - 1u;
-        if ((first & mask) != base || (last & mask) != base)
-            return false;
-    }
-    return any;
+    const uintptr first = (uintptr)csi->start_p;
+    const uintptr last = first + (uintptr)csi->length - 1u;
+    return (first & mask) == base && (last & mask) == base;
 }
 
 static inline bool jit_block_identity_matches(blockinfo *bi, void *addr,

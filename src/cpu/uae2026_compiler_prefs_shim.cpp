@@ -61,7 +61,17 @@ bool PrefsFindBool(const char *name)
     if (!strcmp(name, "jitlazyflush"))
         return env_truthy("PREVIOUS_UAE2026_JIT_LAZY_FLUSH", true);
     if (!strcmp(name, "jitinline"))
-        return env_truthy("PREVIOUS_UAE2026_JIT_CONST_JUMP", true);
+        /* Constant-jump following folds the target into the source block.  In
+         * MMU mode that silently removes the target's instruction-fetch
+         * boundary: generated code reaches it without re-running the
+         * instruction MMU, so an unmapped/protected target cannot fault there.
+         * The checksum spans and generation key can detect later code or map
+         * changes, but they cannot recreate the omitted fetch.  Measured on
+         * NeXTSTEP 3.3, the default-on policy kills WindowServer after it pages
+         * in 1920 sectors and loginwindow restarts forever; disabling it pages
+         * all 1952 sectors and reaches Workspace.  Keep it as an explicit
+         * diagnostic opt-in, never as the product default. */
+        return env_truthy("PREVIOUS_UAE2026_JIT_CONST_JUMP", false);
     return false;
 }
 

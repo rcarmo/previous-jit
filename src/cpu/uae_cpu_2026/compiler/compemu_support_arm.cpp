@@ -3914,40 +3914,91 @@ unsigned long jit_ident_rej_gen_1page = 0;
 unsigned long jit_ident_rej_gen_1page4k = 0;
 unsigned long jit_ident_exempt_1page = 0;
 
-/* Default off: measured, the exemption removes 94% of the generation-keyed
- * refusals (21.0M -> 1.2M over a boot) and changes neither the compile count
- * nor the wall clock, because the recompile storm is not driven by them.  It
- * is kept because it is the measurement, and because it is the only sound
- * narrowing of a key documented as load-bearing.  Set
- * PREVIOUS_UAE2026_JIT_MMU_GEN_KEY_1PAGE=1 to enable it. */
+/* Default ON: measured, 165 s to the NeXTSTEP desktop without it and 120 s
+ * with it, on the same binary and the same harness (qa21/qb22, 2026-07-30).
+ * The exemption is what makes the ~190k MMU generation bumps per boot stop
+ * discarding every live single-page block.  Set
+ * PREVIOUS_UAE2026_JIT_MMU_GEN_KEY_1PAGE=0 to restore the blanket key. */
 static inline bool jit_mmu_gen_key_single_page_exempt(void)
 {
     static int cached = -1;
     if (cached < 0) {
         const char *env = getenv("PREVIOUS_UAE2026_JIT_MMU_GEN_KEY_1PAGE");
+        cached = (env && *env && strcmp(env, "0") == 0) ? 0 : 1;
+    }
+    return cached != 0;
+}
+
+/* PREVIOUS_UAE2026_JIT_MMU_GEN_KEY_1PAGE_CSUM=1: require the block's checksum
+ * to still match before the single-page exemption keeps it.  Splits the two
+ * things the generation key can be standing in for -- stale *content* (a write
+ * that never reached the invalidator) from stale *translation* (a fault that
+ * should have been taken) -- because only the first is visible to a checksum. */
+static void calc_checksum(blockinfo* bi, uae_u32* c1, uae_u32* c2);
+unsigned long jit_ident_exempt_1page_csumfail = 0;
+
+static inline bool jit_mmu_gen_key_1page_checksum(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("PREVIOUS_UAE2026_JIT_MMU_GEN_KEY_1PAGE_CSUM");
         cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
     }
     return cached != 0;
 }
 
-/* Guest code span of a compiled block, in bytes, from its checksum span (host
- * pointers map 1:1 onto guest bytes).  Zero when the block has no span. */
-static inline uae_u32 jit_block_guest_span(const blockinfo *bi)
+static inline bool jit_block_checksum_still_valid(blockinfo *bi)
 {
-    uae_u32 span = 0;
-    for (const checksum_info *csi = bi->csi; csi; csi = csi->next)
-        if ((uae_u32)csi->length > span)
-            span = (uae_u32)csi->length;
-    return span;
+    if (!bi->csi)
+        return false;
+    uae_u32 c1 = 0, c2 = 0;
+    calc_checksum(bi, &c1, &c2);
+    if (c1 == bi->c1 && c2 == bi->c2)
+        return true;
+    jit_ident_exempt_1page_csumfail++;
+    return false;
 }
 
-static inline bool jit_block_guest_span_single_page(const blockinfo *bi,
+/* Does the block's whole compiled code footprint lie on its entry page?
+ *
+ * The earlier version of this test read the largest single checksum span and
+ * measured it forward from bi->guest_pc.  That is wrong twice over.  A block
+ * is not one contiguous run of guest code: with jitinline (default on,
+ * PREVIOUS_UAE2026_JIT_CONST_JUMP) compile_block() follows constant jumps and
+ * closes a checksum span at each one, so a block routinely covers two or more
+ * *disjoint* guest regions, and the largest of them says nothing about where
+ * the others live.  Taking the maximum also silently ignored every span but
+ * one, so a block whose entry span sits comfortably inside the page passed the
+ * test while its inlined jump target lived on a page the entry translation
+ * never re-checks.  Measured: with that predicate the single-page exemption
+ * panics the kernel with a 1111 emulator trap at 0x040013a4, ~1650 disk
+ * transactions into the boot.
+ *
+ * Test what the exemption actually needs: every byte the block was compiled
+ * from is on the page the dispatcher just translated.  Checksum spans and
+ * bi->pc_p are host pointers into the execution shadow, which is 1:1 with
+ * guest physical memory, so the comparison is exact in that space and needs no
+ * logical/physical conversion.  csi->length carries LONGEST_68K_INST of slack,
+ * which can only push a span past a page edge, so the test errs towards
+ * keeping the generation key.  A block with no checksum chain (ROM) is not
+ * exempt. */
+static inline bool jit_block_code_single_page(const blockinfo *bi,
     uae_u32 pagemask)
 {
-    const uae_u32 span = jit_block_guest_span(bi);
-    if (!span)
-        return false;
-    return ((bi->guest_pc & ~pagemask) == ((bi->guest_pc + span - 1) & ~pagemask));
+    const uintptr mask = ~(uintptr)pagemask;
+    const uintptr base = ((uintptr)bi->pc_p) & mask;
+    bool any = false;
+
+    for (const checksum_info *csi = bi->csi; csi; csi = csi->next) {
+        if (!csi->length)
+            continue;
+        any = true;
+        const uintptr first = (uintptr)csi->start_p;
+        const uintptr last = first + (uintptr)csi->length - 1u;
+        if ((first & mask) != base || (last & mask) != base)
+            return false;
+    }
+    return any;
 }
 
 static inline bool jit_block_identity_matches(blockinfo *bi, void *addr,
@@ -3995,15 +4046,17 @@ static inline bool jit_block_identity_matches(blockinfo *bi, void *addr,
      * re-checked -- and stays keyed.  That distinction is what the earlier
      * blanket "refresh whenever the identity matches" attempt lacked. */
     if (jit_mmu_gen_key_single_page_exempt() &&
-        jit_block_guest_span_single_page(bi, 0x0fffu)) {
+        jit_block_code_single_page(bi, 0x0fffu) &&
+        (!jit_mmu_gen_key_1page_checksum() ||
+         jit_block_checksum_still_valid(bi))) {
         bi->mmu_generation = Uae2026JitMmuGeneration();
         jit_ident_exempt_1page++;
         return true;
     }
     jit_ident_rej_gen++;
-    if (jit_block_guest_span_single_page(bi, 0x1fffu))
+    if (jit_block_code_single_page(bi, 0x1fffu))
         jit_ident_rej_gen_1page++;
-    if (jit_block_guest_span_single_page(bi, 0x0fffu))
+    if (jit_block_code_single_page(bi, 0x0fffu))
         jit_ident_rej_gen_1page4k++;
     return false;
 }
@@ -8433,12 +8486,67 @@ static void calc_checksum(blockinfo* bi, uae_u32* c1, uae_u32* c2)
     *c2 = k2;
 }
 
+static inline int block_check_checksum(blockinfo* bi);
+
+/* Revalidation census: a BI_NEED_CHECK block met on an execute_normal entry is
+ * either promoted back to BI_ACTIVE by its checksum or genuinely stale. */
+unsigned long jit_need_check_revalidated = 0;
+unsigned long jit_need_check_discarded = 0;
+
+/* Default OFF, and it is an instrument rather than an optimisation.  Turning
+ * it on with the single-page exemption panics the kernel with a 1111 emulator
+ * trap at 0x040013a4, ~1650 disk transactions into the boot -- but not because
+ * promoting a checksum-valid block is unsound.  execute_normal() *interprets*
+ * the instructions it traces before compiling them, so every retranslation is
+ * also an interpreted execution of that block; revalidating instead means the
+ * native translation runs where the storm used to interpret.  The panic is
+ * therefore a downstream codegen defect that the compile storm was masking,
+ * and this switch is the cheapest way to expose it.
+ * Set PREVIOUS_UAE2026_JIT_REVALIDATE=1 to enable. */
+static inline bool jit_revalidate_need_check_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("PREVIOUS_UAE2026_JIT_REVALIDATE");
+        cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
 int check_for_cache_miss(void)
 {
     blockinfo* bi = get_blockinfo_addr(regs.pc_p);
 
     if (bi) {
         int cl = cacheline(regs.pc_p);
+#if defined(CPU_AARCH64)
+        /* The lazy flush does not discard translations: it re-arms their
+           checksums, points the cacheline at popall_check_checksum and parks
+           the block on the dormant list as BI_NEED_CHECK, so the next entry
+           validates it and promotes it back rather than recompiling it.  In
+           MMU mode nothing ever reaches that stub -- every block leaves
+           through compemu_raw_endblock_mmu_dispatch() to popall_execute_normal,
+           because the logical identity can only be checked in C -- so the
+           block arrived here, failed both hit tests below and was retranslated
+           from a fresh interpreter trace.  Do here what the stub would have
+           done.
+
+           The failure branch must return: block_check_checksum() has by then
+           called invalidate_block(), and the `bi != cache_tags[cl + 1].bi`
+           test below would otherwise report a *hit* on a block that has just
+           been invalidated, so execute_normal() would decline to recompile and
+           the dispatcher would enter it anyway.  Measured, with the
+           single-page exemption keeping enough blocks alive to reach this
+           path: the kernel panics with a 1111 emulator trap at 0x040013a4,
+           ~1650 disk transactions into the boot. */
+        if (bi->status == BI_NEED_CHECK && jit_revalidate_need_check_enabled()) {
+            if (!block_check_checksum(bi)) {
+                jit_need_check_discarded++;
+                return 0;
+            }
+            jit_need_check_revalidated++;
+        }
+#endif
 #if defined(CPU_AARCH64)
         /* Reaching execute_normal through a stale predecessor edge does not
            invalidate an otherwise active cacheline-primary block.  Treat the

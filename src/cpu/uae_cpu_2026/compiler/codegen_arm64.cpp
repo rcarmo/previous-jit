@@ -999,6 +999,20 @@ LOWFUNC(NONE,NONE,2,compemu_raw_endblock_mmu_dispatch,(RR4 rr_pc, IM32 cycles))
         STR_wXi(REG_WORK2, REG_WORK3, 0);
     }
 
+    /* The MMU epilogue tail-jumps through popall_execute_normal; it does not
+       return to m68k_do_compile_execute(), so the C dispatcher's spcflags loop
+       cannot drain the cycles just published above.  Drain here, once per
+       block, before execute_normal tests spcflags.  Preserve all host state:
+       this is a service call in generated code, not an ABI boundary known to
+       the register allocator.  Unlike B2_JIT_RETIREMENT_TICK_EVERY, this does
+       not enable the per-instruction path observer or force allocator writeback
+       at every guest instruction. */
+    if (jit_mmu_epilogue_tick_enabled()) {
+        compemu_raw_observer_save();
+        compemu_raw_call((uintptr)cpu_do_check_ticks);
+        compemu_raw_observer_restore();
+    }
+
     LOAD_U64(REG_WORK3, (uintptr)&countdown);
     LDR_wXi(REG_WORK1, REG_WORK3, 0);
     const uae_u32 dispatch_cycles = cycles > 0 ? (uae_u32)cycles : 1u;

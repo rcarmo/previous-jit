@@ -297,10 +297,24 @@ static inline unsigned long jit_retirement_tick_every(void)
     static unsigned long value = 0;
     static bool initialized = false;
     if (!initialized) {
-        const char *env = getenv("B2_JIT_RETIREMENT_TICK_EVERY");        value = env && *env ? strtoul(env, NULL, 0) : 0;
+        const char *env = getenv("B2_JIT_RETIREMENT_TICK_EVERY");
+        value = env && *env ? strtoul(env, NULL, 0) : 0;
         initialized = true;
     }
     return value;
+}
+
+/* B2_JIT_MMU_EPILOGUE_TICK=0 restores the old MMU epilogue for the paired
+ * acceptance control.  Cached at compile time; generated code never scans the
+ * environment. */
+static inline bool jit_mmu_epilogue_tick_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("B2_JIT_MMU_EPILOGUE_TICK");
+        cached = (env && *env && strcmp(env, "0") == 0) ? 0 : 1;
+    }
+    return cached != 0;
 }
 
 /* B2_JIT_REAL_CYCLES=0 restores the old flat per-instruction charge.

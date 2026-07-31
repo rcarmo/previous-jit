@@ -6,6 +6,10 @@
 
 declare -a TEST_ORDER=(
   ori_sr_hardfail andi_sr_hardfail eori_sr_hardfail move_from_sr_hardfail move_to_sr_hardfail sr_ops_combo
+  move_sr_ccr_user move_sr_an move_sr_postinc move_sr_predec move_sr_d16 move_sr_indexed move_sr_absl
+  move_to_sr_dn move_to_sr_an move_to_sr_postinc move_to_sr_predec move_to_sr_d16 move_to_sr_indexed
+  move_to_sr_absl move_to_sr_pcdisp move_to_sr_pcindex move_to_sr_user_stack move_to_sr_master_roundtrip
+  move_sr_native_repeat move_to_sr_native_repeat
   scc_vc_vs dbf_after_fpu_runtime_edge dbeq_alignment_loop dbvc_loop_v_set dbvs_loop_v_clear dbvc_not_taken_v_clear dbvs_not_taken_v_set
   divs_word_hardfail divu_word_hardfail divs_neg_by_neg_edge divs_by_minus_one_edge divs_zero_dividend_edge divs_overflow_edge
   divu_exact_edge divu_with_remainder_edge divu_overflow_edge
@@ -22,6 +26,7 @@ declare -a TEST_ORDER=(
 )
 
 declare -a FAULT_TEST_ORDER=(
+  fault_move_sr_user_privilege fault_move_to_sr_user_privilege fault_move_to_sr_read fault_move_sr_write fault_move_to_sr_trace
   fault_bsr_target_fetch fault_jsr_target_fetch fault_rts_target_fetch fault_rtr_target_fetch fault_rte_return_fetch fault_rte_user_write_long
   fault_restart_flags_after_exact fault_trap_frame_write fault_write_byte_d2 fault_write_byte_postinc moves_dfc_write_fault moves_dfc_byte_postinc_fault moves_dfc_long_postinc_fault
   moves_sfc_read_fault movem_predec_write_fault
@@ -46,6 +51,8 @@ declare -A DATA_FAULT_WRITE
 # Uae2026JitBankWriteByOffset (size-selector + 3-arg call), which the default
 # writemem_real path doesn't cover.
 declare -A ALL_SPECIAL
+# Optional USP/ISP/MSP seeds, applied after B2_TEST_INIT and before execution.
+declare -A STACK_BANKS
 
 TESTS[ori_sr_hardfail]="007C 0700"
 TESTS[andi_sr_hardfail]="027C 27FF"
@@ -53,6 +60,102 @@ TESTS[eori_sr_hardfail]="0A7C 0010"
 TESTS[move_from_sr_hardfail]="40C0"
 TESTS[move_to_sr_hardfail]="46FC 2500 40C0"
 TESTS[sr_ops_combo]="46FC 2700 007C 0010 027C F7FF 0A7C 0004 40C0"
+
+# Full MOVE SR/CCR EA matrix. SR=2715 makes stale-CCR errors visible; memory
+# destinations are prefilled so both write width and endian placement compare.
+TESTS[move_sr_ccr_user]="42C0"
+INIT_REGS[move_sr_ccr_user]="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 04010000 0015"
+TESTS[move_sr_an]="40D0"
+INIT_REGS[move_sr_an]="0 0 0 0 0 0 0 0 0400A000 0 0 0 0 0 0 04010000 2715"
+MEM_LONGS[move_sr_an]="0400A000 AABBCCDD"
+DUMP_MEM_LONGS[move_sr_an]="0400A000"
+TESTS[move_sr_postinc]="40D8"
+INIT_REGS[move_sr_postinc]="0 0 0 0 0 0 0 0 0400A000 0 0 0 0 0 0 04010000 2715"
+MEM_LONGS[move_sr_postinc]="0400A000 AABBCCDD"
+DUMP_MEM_LONGS[move_sr_postinc]="0400A000"
+TESTS[move_sr_predec]="40E0"
+INIT_REGS[move_sr_predec]="0 0 0 0 0 0 0 0 0400A002 0 0 0 0 0 0 04010000 2715"
+MEM_LONGS[move_sr_predec]="0400A000 AABBCCDD"
+DUMP_MEM_LONGS[move_sr_predec]="0400A000"
+TESTS[move_sr_d16]="40E8 0010"
+INIT_REGS[move_sr_d16]="0 0 0 0 0 0 0 0 04009FF0 0 0 0 0 0 0 04010000 2715"
+MEM_LONGS[move_sr_d16]="0400A000 AABBCCDD"
+DUMP_MEM_LONGS[move_sr_d16]="0400A000"
+TESTS[move_sr_indexed]="40F0 1800"
+INIT_REGS[move_sr_indexed]="0 00000004 0 0 0 0 0 0 04009FFC 0 0 0 0 0 0 04010000 2715"
+MEM_LONGS[move_sr_indexed]="0400A000 AABBCCDD"
+DUMP_MEM_LONGS[move_sr_indexed]="0400A000"
+TESTS[move_sr_absl]="40F9 0400 A000"
+INIT_REGS[move_sr_absl]="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 04010000 2715"
+MEM_LONGS[move_sr_absl]="0400A000 AABBCCDD"
+DUMP_MEM_LONGS[move_sr_absl]="0400A000"
+
+# Full MOVE <ea>,SR read matrix, including both PC-relative forms and S/M stack
+# bank transitions. The source word 2715 exercises XNZVC materialisation.
+TESTS[move_to_sr_dn]="46C0"
+INIT_REGS[move_to_sr_dn]="00002715 0 0 0 0 0 0 0 0 0 0 0 0 0 0 04010000 2700"
+TESTS[move_to_sr_an]="46D0"
+INIT_REGS[move_to_sr_an]="0 0 0 0 0 0 0 0 0400A000 0 0 0 0 0 0 04010000 2700"
+MEM_LONGS[move_to_sr_an]="0400A000 2715AABB"
+TESTS[move_to_sr_postinc]="46D8"
+INIT_REGS[move_to_sr_postinc]="0 0 0 0 0 0 0 0 0400A000 0 0 0 0 0 0 04010000 2700"
+MEM_LONGS[move_to_sr_postinc]="0400A000 2715AABB"
+TESTS[move_to_sr_predec]="46E0"
+INIT_REGS[move_to_sr_predec]="0 0 0 0 0 0 0 0 0400A002 0 0 0 0 0 0 04010000 2700"
+MEM_LONGS[move_to_sr_predec]="0400A000 2715AABB"
+TESTS[move_to_sr_d16]="46E8 0010"
+INIT_REGS[move_to_sr_d16]="0 0 0 0 0 0 0 0 04009FF0 0 0 0 0 0 0 04010000 2700"
+MEM_LONGS[move_to_sr_d16]="0400A000 2715AABB"
+TESTS[move_to_sr_indexed]="46F0 1800"
+INIT_REGS[move_to_sr_indexed]="0 00000004 0 0 0 0 0 0 04009FFC 0 0 0 0 0 0 04010000 2700"
+MEM_LONGS[move_to_sr_indexed]="0400A000 2715AABB"
+TESTS[move_to_sr_absl]="46F9 0400 A000"
+INIT_REGS[move_to_sr_absl]="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 04010000 2700"
+MEM_LONGS[move_to_sr_absl]="0400A000 2715AABB"
+# PC base is TEST+2; displacement/index 8 selects the inline 2715 word at TEST+A.
+# The branch at TEST+4 skips data to the harness sentinel at TEST+C.
+TESTS[move_to_sr_pcdisp]="46FA 0008 6006 4E71 4E71 2715"
+TESTS[move_to_sr_pcindex]="46FB 0008 6006 4E71 4E71 2715"
+TESTS[move_to_sr_user_stack]="46FC 0015"
+INIT_REGS[move_to_sr_user_stack]="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0400F000 2700"
+STACK_BANKS[move_to_sr_user_stack]="0400E000 0400F000 04010000"
+TESTS[move_to_sr_master_roundtrip]="46FC 3700 46FC 2700"
+INIT_REGS[move_to_sr_master_roundtrip]="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0400F000 2700"
+STACK_BANKS[move_to_sr_master_roundtrip]="0400E000 0400F000 04010000"
+
+# Execute each dedicated helper enough times for the third visit to enter the
+# installed native block.  DBF is condition-false by definition and loops from
+# its extension word back to the SR opcode; the final NOP forces one more tracer
+# census point after the native helper has run.
+TESTS[move_sr_native_repeat]="7002 40C1 51C8 FFFC 4E71"
+# Keep A2 on an ordinary seeded RAM window so the per-op verifier's legacy
+# A2/A2+0x400 memory sentinels remain valid while it replays the SR opcode.
+INIT_REGS[move_sr_native_repeat]="0 0 0 0 0 0 0 0 0 0 0400A000 0 0 0 0 04010000 2715"
+MEM_LONGS[move_sr_native_repeat]="0400A000 11223344 0400A400 55667788"
+TESTS[move_to_sr_native_repeat]="7002 46FC 2715 51C8 FFFA 4E71"
+INIT_REGS[move_to_sr_native_repeat]="0 0 0 0 0 0 0 0 0 0 0400A000 0 0 0 0 04010000 2700"
+MEM_LONGS[move_to_sr_native_repeat]="0400A000 11223344 0400A400 55667788"
+
+# Privilege, restartable read, continuation write and trace side-effect oracles.
+TESTS[fault_move_sr_user_privilege]="40C0"
+INIT_REGS[fault_move_sr_user_privilege]="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0400E000 0000"
+EXPECT_EXCEPTION[fault_move_sr_user_privilege]=8
+TESTS[fault_move_to_sr_user_privilege]="46FC 2700"
+INIT_REGS[fault_move_to_sr_user_privilege]="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0400E000 0000"
+EXPECT_EXCEPTION[fault_move_to_sr_user_privilege]=8
+TESTS[fault_move_to_sr_read]="46D0"
+INIT_REGS[fault_move_to_sr_read]="0 0 0 0 0 0 0 0 0400A000 0 0 0 0 0 0 04010000 2700"
+EXPECT_EXCEPTION[fault_move_to_sr_read]=2
+DATA_FAULT_ADDR[fault_move_to_sr_read]="0400A000"
+DATA_FAULT_SIZE[fault_move_to_sr_read]=W
+TESTS[fault_move_sr_write]="40D8"
+INIT_REGS[fault_move_sr_write]="0 0 0 0 0 0 0 0 0400A000 0 0 0 0 0 0 04010000 2715"
+EXPECT_EXCEPTION[fault_move_sr_write]=2
+DATA_FAULT_ADDR[fault_move_sr_write]="0400A000"
+DATA_FAULT_SIZE[fault_move_sr_write]=W
+DATA_FAULT_WRITE[fault_move_sr_write]=1
+TESTS[fault_move_to_sr_trace]="46FC A700"
+EXPECT_EXCEPTION[fault_move_to_sr_trace]=9
 
 TESTS[scc_vc_vs]="203C 7FFF FFFF 5280 58C1 59C2"
 # ROM regression shape at 0x01005252: a six-byte FPU-immediate fallback

@@ -1103,6 +1103,12 @@ static void Exception_mmu (int nr, uaecptr oldpc)
 /* Handle exceptions. */
 static void ExceptionX (int nr, uaecptr address)
 {
+    /* Privilege and trace exceptions are delivered directly rather than via
+       the MMU longjmp catch. Let opcode tests capture those vectors at the same
+       architectural entry point as access faults. */
+    if (Uae2026OpcodeTestModeHandleExpectedException(nr))
+        return;
+
     /* Published for the shared guest-path observer: a supervisor->user
        transition is only a syscall return if the exception that entered the
        kernel was a trap. Interrupt returns are legitimately timed differently
@@ -1605,6 +1611,11 @@ static void do_trace (void)
 		unset_special (SPCFLAG_TRACE);
 		set_special (SPCFLAG_DOTRACE);
 	}
+}
+
+void Uae2026JitProcessTraceSpecialty (void)
+{
+	do_trace ();
 }
 
 void doint (void)

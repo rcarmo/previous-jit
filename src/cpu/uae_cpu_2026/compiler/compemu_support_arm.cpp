@@ -66,6 +66,8 @@
 
 extern "C" unsigned long Uae2026ScsiIoSeq;
 extern "C" bool Uae2026JitSafePeekLong(uae_u32 addr, uae_u32 *out);
+extern "C" uae_u32 Uae2026JitBankGetWordExport(uaecptr addr);
+extern "C" void Uae2026JitBankPutWordExport(uaecptr addr, uae_u32 value);
 extern "C" void jit_op_bftst(void);
 extern "C" void jit_op_bfextu(void);
 extern "C" void jit_op_bfchg(void);
@@ -2505,6 +2507,16 @@ static inline bool jit_force_exact_exec_nostats_pc(uae_u32 pc)
 	return false;
 }
 
+static inline bool jit_keep_sr_exact_env(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("B2_JIT_KEEP_SR_EXACT");
+        cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
 static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op, uae_u32 pc)
 {
 	/* ARM64: zero hardcoded barriers.
@@ -2513,39 +2525,14 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op, uae_u32 pc)
 	   MOVEM uses readlong/writelong in gencomp.c.
 	   PC_P uses 64-bit eviction/reload in tomem/do_load_reg. */
 
-	/* MOVE to SR must go through the interpreter.
-	   jnf_MV2SR_w -> inline_MakeFromSR writes sr/t1/t0/s/m/intmask and does the
-	   A7 stack swap, then loads the CCR into host NZCV -- but the generated
-	   op_46fc_0_comp_ff calls the jnf_ (no-flags) midfunc and never publishes
-	   flag liveness, so the architectural CCR keeps its previous value.  The
-	   inline also omits the tail of the real MakeFromSR(): doint(),
-	   mmu_set_super() and SPCFLAG_TRACE maintenance.  Measured against the
-	   interpreter on a single-instruction block:
-
-	     block=0409ece2 len=1  op[0] 46fc move #imm,sr
-	       flags interp nzcv=00000000  native nzcv=40000000
-	       sr    interp=00 native=04
-
-	   Forcing the barrier removes the CCR divergence.  It is privileged and
-	   confined to the kernel's spl() paths; measured throughput is unchanged
-	   (2216 trap returns in the same wall time either way). */
-	if (table68k[op].mnemo == i_MV2SR && table68k[op].size == sz_word)
-		return true;
-
-	/* MOVE SR,<ea> for the same reason, from the other direction: it READS the
-	   CCR, and the compiled path does not see the live one.  Measured on a
-	   four-instruction kernel block whose entry CCR is 0x14:
-
-	     op[0] 4284 clr.l d4      ; -> X=1 N=0 Z=1 V=0 C=0, i.e. CCR 0x14
-	     op[2] 40c0 move sr,d0
-	     interp d0=00002714   native d0=00002700
-
-	   The interpreter reports the CCR that clr.l just produced; the compiled
-	   path reports zero.  The kernel reads SR this way in its spl()/splx()
-	   pair, so a wrong CCR here is saved and later restored across the
-	   critical section. */
-	if (table68k[op].mnemo == i_MVSR2)
-		return true;
+    /* The dedicated full-SR helpers materialise flags across the JIT/Previous
+       ABI, call the authoritative MakeSR/MakeFromSR implementation, preserve
+       68040 restart ordering, and terminate at their runtime PC.  Keep the old
+       exact-interpreter path as an inverse control for boot and verifier A/B. */
+    if (jit_keep_sr_exact_env() &&
+        ((table68k[op].mnemo == i_MV2SR && table68k[op].size == sz_word) ||
+         table68k[op].mnemo == i_MVSR2))
+        return true;
 
 	/* Environment-gated barriers for debugging (B2_JIT_RESTORE_BARRIERS).
 	   B2_JIT_RESTORE_BARRIER_PCS optionally confines them to logical PCs. */
@@ -5096,21 +5083,21 @@ static inline void jit_endblock_runtime_pc(RR4 rr_pc, IM32 cycles)
     compemu_raw_endblock_pc_inreg(rr_pc, cycles);
 }
 
-/* Exact interpreter handlers using indirect-PC mode publish a logical target
-   in regs.pc only. In MMU mode regs.pc_p can still name the retired handler,
-   so translate that logical target before dispatch. */
+/* The interpreter opcode tables are built with FULLMMU, so their handlers
+   publish the retired successor in logical regs.pc.  They do not advance the
+   vendored JIT unit's direct regs.pc_p tuple.  Always translate that logical
+   successor before dispatch: consulting pc_p here re-enters the retired
+   opcode forever when an inverse-control barrier is exercised with the guest
+   MMU disabled (the opcode harness), and can resurrect a physical alias when
+   it is enabled.  The MMU-dispatch epilogue preserves the separately published
+   logical PC and deliberately returns through execute_normal. */
 static inline void jit_endblock_fallback_logical_pc(IM32 cycles)
 {
-    if (jit_mmu_execution_key_active()) {
-        prepare_for_call_1();
-        prepare_for_call_2();
-        compemu_raw_mov_l_rm(REG_PAR1, (uintptr)&regs.pc);
-        compemu_raw_call((uintptr)Uae2026JitPrepareMmuDispatchTarget);
-        compemu_raw_endblock_mmu_dispatch(REG_RESULT, cycles);
-        return;
-    }
-    compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
-    compemu_raw_endblock_pc_inreg(REG_PC_TMP, cycles);
+    prepare_for_call_1();
+    prepare_for_call_2();
+    compemu_raw_mov_l_rm(REG_PAR1, (uintptr)&regs.pc);
+    compemu_raw_call((uintptr)Uae2026JitPrepareMmuDispatchTarget);
+    compemu_raw_endblock_mmu_dispatch(REG_RESULT, cycles);
 }
 
 /* Constant/trace-known edges must publish the architectural virtual target;
@@ -6108,55 +6095,95 @@ static void prepare_for_call_2(void)
                                      flags at the very start of the call_r functions! */
 }
 
+static inline void jit_runtime_fullsr_begin(void)
+{
+    /* MakeSR/MakeFromSR are forwarding wrappers to Previous's C CPU core,
+       whose flag_struct uses the legacy CZNV bit layout. */
+    Uae2026JitFlagsToInterpreter();
+}
+
+static inline void jit_runtime_fullsr_end(void)
+{
+    Uae2026InterpreterFlagsToJit();
+}
+
+static inline void jit_trace_fullsr_helper(const char *kind, uae_u32 opcode)
+{
+    static int enabled = -1;
+    static unsigned long sequence = 0;
+    if (enabled < 0) {
+        const char *env = getenv("B2_JIT_TRACE_SR_HELPERS");
+        enabled = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    if (enabled && sequence < 256) {
+        fprintf(stderr, "JITSRHELPER n=%lu kind=%s pc=%08x op=%04x sr=%04x\n",
+            ++sequence, kind, (unsigned)m68k_getpc(), (unsigned)(opcode & 0xffffu),
+            (unsigned)regs.sr);
+    }
+}
+
 static void jit_runtime_orsr_word(uae_u32 src)
 {
+    jit_runtime_fullsr_begin();
     if (!regs.s) {
         Exception(8, 0);
+        jit_runtime_fullsr_end();
         return;
     }
     MakeSR();
     regs.sr |= (uae_u16)src;
     MakeFromSR();
+    jit_runtime_fullsr_end();
     m68k_incpc(4);
 }
 
 static void jit_runtime_andsr_word(uae_u32 src)
 {
+    jit_runtime_fullsr_begin();
     if (!regs.s) {
         Exception(8, 0);
+        jit_runtime_fullsr_end();
         return;
     }
     MakeSR();
     regs.sr &= (uae_u16)src;
     MakeFromSR();
+    jit_runtime_fullsr_end();
     m68k_incpc(4);
 }
 
 static void jit_runtime_eorsr_word(uae_u32 src)
 {
+    jit_runtime_fullsr_begin();
     if (!regs.s) {
         Exception(8, 0);
+        jit_runtime_fullsr_end();
         return;
     }
     MakeSR();
     regs.sr ^= (uae_u16)src;
     MakeFromSR();
+    jit_runtime_fullsr_end();
     m68k_incpc(4);
 }
 
 static void jit_runtime_mvsr2_full(uae_u32 opcode)
 {
+    jit_trace_fullsr_helper("mvsr2", opcode);
     const uae_u32 real_opcode = opcode;
     const uae_u32 dstreg = real_opcode & 7;
     const bool ccr_only = (real_opcode & 0x0200) != 0;
     uaecptr dsta;
 
+    jit_runtime_fullsr_begin();
     if (!ccr_only && !regs.s) {
         Exception(8, 0);
+        jit_runtime_fullsr_end();
         return;
     }
     MakeSR();
     const uae_u16 value = ccr_only ? (uae_u16)(regs.sr & 0x00ff) : regs.sr;
+    jit_runtime_fullsr_end();
 
     switch (real_opcode & 0x0038) {
     case 0x0000: /* Dn */
@@ -6204,19 +6231,26 @@ static void jit_runtime_mvsr2_full(uae_u32 opcode)
         op_illg(opcode);
         return;
     }
-    regs.fault_pc = m68k_getpc();
-    put_word(dsta, value);
+
+    /* The generated 68040 handler commits its auto-EA and successor before a
+       destination write, clears restart state, then performs the faultable bus
+       cycle. Match that continuation-fault contract exactly. */
+    Uae2026JitPrepareContinuationWrite(m68k_getpc());
+    Uae2026JitBankPutWordExport(dsta, value);
 }
 
 static void jit_runtime_mv2sr_word_full(uae_u32 opcode)
 {
+    jit_trace_fullsr_helper("mv2sr", opcode);
+    jit_runtime_fullsr_begin();
     if (!regs.s) {
         Exception(8, 0);
+        jit_runtime_fullsr_end();
         return;
     }
 
-    uae_u32 real_opcode = opcode;
-    uae_u32 srcreg = real_opcode & 7;
+    const uae_u32 real_opcode = opcode;
+    const uae_u32 srcreg = real_opcode & 7;
     uaecptr srca;
     uae_u16 src;
 
@@ -6225,36 +6259,41 @@ static void jit_runtime_mv2sr_word_full(uae_u32 opcode)
         src = (uae_u16)m68k_dreg(regs, srcreg);
         regs.sr = src;
         MakeFromSR();
+        jit_runtime_fullsr_end();
         m68k_incpc(2);
         return;
     case 0x0010: /* (An) */
         srca = m68k_areg(regs, srcreg);
-        src = get_word(srca);
+        src = (uae_u16)Uae2026JitBankGetWordExport(srca);
         regs.sr = src;
         MakeFromSR();
+        jit_runtime_fullsr_end();
         m68k_incpc(2);
         return;
     case 0x0018: /* (An)+ */
         srca = m68k_areg(regs, srcreg);
-        src = get_word(srca);
+        src = (uae_u16)Uae2026JitBankGetWordExport(srca);
         m68k_areg(regs, srcreg) += 2;
         regs.sr = src;
         MakeFromSR();
+        jit_runtime_fullsr_end();
         m68k_incpc(2);
         return;
     case 0x0020: /* -(An) */
         srca = m68k_areg(regs, srcreg) - 2;
-        src = get_word(srca);
+        src = (uae_u16)Uae2026JitBankGetWordExport(srca);
         m68k_areg(regs, srcreg) = srca;
         regs.sr = src;
         MakeFromSR();
+        jit_runtime_fullsr_end();
         m68k_incpc(2);
         return;
     case 0x0028: /* (d16,An) */
         srca = m68k_areg(regs, srcreg) + (uae_s32)(uae_s16)get_iword(2);
-        src = get_word(srca);
+        src = (uae_u16)Uae2026JitBankGetWordExport(srca);
         regs.sr = src;
         MakeFromSR();
+        jit_runtime_fullsr_end();
         m68k_incpc(4);
         return;
     case 0x0030: /* (d8,An,Xn) */ {
@@ -6262,32 +6301,36 @@ static void jit_runtime_mv2sr_word_full(uae_u32 opcode)
         m68k_incpc(2);
         srca = jit_disp_ea_020(m68k_areg(regs, srcreg), 0, &used);
         m68k_incpc(used);
-        src = get_word(srca);
+        src = (uae_u16)Uae2026JitBankGetWordExport(srca);
         regs.sr = src;
         MakeFromSR();
+        jit_runtime_fullsr_end();
         return;
     }
     case 0x0038: /* extension modes */
         switch (srcreg) {
         case 0: /* (xxx).W */
             srca = (uae_s32)(uae_s16)get_iword(2);
-            src = get_word(srca);
+            src = (uae_u16)Uae2026JitBankGetWordExport(srca);
             regs.sr = src;
             MakeFromSR();
+            jit_runtime_fullsr_end();
             m68k_incpc(4);
             return;
         case 1: /* (xxx).L */
             srca = get_ilong(2);
-            src = get_word(srca);
+            src = (uae_u16)Uae2026JitBankGetWordExport(srca);
             regs.sr = src;
             MakeFromSR();
+            jit_runtime_fullsr_end();
             m68k_incpc(6);
             return;
         case 2: /* (d16,PC) */
             srca = m68k_getpc() + 2 + (uae_s32)(uae_s16)get_iword(2);
-            src = get_word(srca);
+            src = (uae_u16)Uae2026JitBankGetWordExport(srca);
             regs.sr = src;
             MakeFromSR();
+            jit_runtime_fullsr_end();
             m68k_incpc(4);
             return;
         case 3: /* (d8,PC,Xn) */ {
@@ -6295,15 +6338,17 @@ static void jit_runtime_mv2sr_word_full(uae_u32 opcode)
             m68k_incpc(2);
             srca = jit_disp_ea_020(m68k_getpc(), 0, &used);
             m68k_incpc(used);
-            src = get_word(srca);
+            src = (uae_u16)Uae2026JitBankGetWordExport(srca);
             regs.sr = src;
             MakeFromSR();
+            jit_runtime_fullsr_end();
             return;
         }
         case 4: /* #<data>.W */
             src = (uae_u16)get_iword(2);
             regs.sr = src;
             MakeFromSR();
+            jit_runtime_fullsr_end();
             m68k_incpc(4);
             return;
         default:
@@ -7310,16 +7355,18 @@ static void op_fullsr_mvsr2_comp_ff(uae_u32 opcode)
     /* MOVE SR/CCR can raise privilege or destination access exceptions.  The
        helper owns all EA side effects and the live successor, so terminate at
        its runtime PC rather than continuing from compile-time PC facts. */
-    jit_emit_runtime_helper_barrier((uintptr)jit_runtime_mvsr2_full,
-        jit_compile_current_op_host_pc, opcode, 0, false);
+    jit_emit_runtime_helper_barrier_kind((uintptr)jit_runtime_mvsr2_full,
+        jit_compile_current_op_host_pc, opcode, 0, false,
+        UAE2026_JIT_HELPER_EXACT_OPCODE, false);
 }
 
 static void op_fullsr_mv2sr_w_comp_ff(uae_u32 opcode)
 {
-    /* Delegate exact EA semantics to the runtime helper. It advances PC on
-       success and raises privilege/address exceptions with the correct live PC. */
-    jit_emit_runtime_helper_barrier((uintptr)jit_runtime_mv2sr_word_full,
-        jit_compile_current_op_host_pc, opcode, 0, false);
+    /* Full SR replacement can swap USP/ISP/MSP and change MMU privilege.
+       Re-enter through the helper-published logical PC under the new mode. */
+    jit_emit_runtime_helper_barrier_kind((uintptr)jit_runtime_mv2sr_word_full,
+        jit_compile_current_op_host_pc, opcode, 0, false,
+        UAE2026_JIT_HELPER_EXACT_OPCODE, false);
 }
 
 #if defined(CPU_AARCH64) 
@@ -10816,18 +10863,11 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         data_check_end(12, 64);
 #endif
                         compemu_raw_maybe_do_nothing(retired_cycles);
-                        if (jit_mmu_execution_key_active()) {
-                            /* The fallback handler has already advanced logical
-                               regs.pc. Translate and dispatch that value rather
-                               than entering the host-to-logical set-PC stub. */
-                            jit_endblock_fallback_logical_pc(retired_cycles);
-                        } else if (i == blocklen - 1 &&
-                            jit_block_verify_compile_active && block_m68k_pc == jit_block_verify_compile_pc) {
-                            compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
-                            jit_endblock_runtime_pc(REG_PC_TMP, retired_cycles);
-                        } else {
-                            compemu_raw_execute_normal_cycles((uintptr)&regs.pc_p, retired_cycles);
-                        }
+                        /* The FULLMMU interpreter handler owns the successor
+                           in logical regs.pc even when runtime MMU translation
+                           is disabled.  Re-resolve it in every mode; pc_p still
+                           names the retired opcode in the inverse-control path. */
+                        jit_endblock_fallback_logical_pc(retired_cycles);
                         forced_interpreter_barrier = true;
                         break;
                     }

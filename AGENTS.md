@@ -76,7 +76,7 @@ These are read in `snapshot_bridge_prefs` (search for `env_truthy` /
 | `PREVIOUS_UAE2026_JIT_CACHE_KB`                | 8192    | JIT translation cache size in KB. |
 | `PREVIOUS_UAE2026_JIT_FPU`                     | off     | Compile FPU ops in JIT (vs interpreter fall-back). |
 | `PREVIOUS_UAE2026_JIT_LAZY_FLUSH`              | on      | Lazy cache invalidation. |
-| `PREVIOUS_UAE2026_JIT_CONST_JUMP`              | on      | Compile static branches as constant jumps. |
+| `PREVIOUS_UAE2026_JIT_CONST_JUMP`              | off     | Diagnostic opt-in for following static jumps inside a block. Keep off: `14bff83` proved this can cross an MMU instruction-fetch boundary without retranslation. |
 | `B2_JIT_RTE_FAULT_HANDOFF`                     | off     | On first RTE-fault, disable JIT and run the rest in interpreter. **Canonical boot recipe.** |
 | `B2_JIT_RTE_FAULT_HANDOFF_DISABLE`             | off     | Force-disable the above even if set in another env. |
 | `B2_JIT_RTE_FAULT_HANDOFF_SKIP_N`              | 0       | Defer handoff to the Nth RTE fault. Bisection helper. Per audit: SKIP_N=6 boots, SKIP_N=7 stalls. |

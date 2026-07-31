@@ -98,6 +98,7 @@ Right now the project is at the stage where:
 
 ### Docs
 
+- `docs/sr-native-helper-validation-20260731.md` — native SR/CCR semantic-helper implementation, focused correctness gates, inverse control and current full-boot fixture limitation
 - `docs/uae2026-jit-bringup.md`
 - `docs/uae2026-jit-mmu-strategy.md`
 - `docs/uae2026-compiler-blockers.md`

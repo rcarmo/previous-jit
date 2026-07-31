@@ -175,10 +175,11 @@ normalize_faultdump_for_compare() {
   local in_file="$1"
   local out_file="$2"
   # Forced-fault oracles stop before Exception(2). The interpreter catch path and
-  # JIT bridge catch path can differ in harness-only dump state that is not part
-  # of the access-error tuple under test: pending SPC sampling and the X bit in
-  # SR. Keep raw *.regdump files intact and normalize only compare copies.
-  perl -pe 'if (/^FAULTDUMP:/) { s/SPC=[0-9a-fA-F]+/SPC=<harness>/; s/SR=([0-9a-fA-F]{4})/sprintf("SR=%04x", hex($1) & ~0x10)/e; }' "$in_file" > "$out_file"
+  # JIT bridge catch path can differ in harness-only state that is not part of
+  # the architectural access-error tuple: pending SPC sampling, the X bit, and
+  # fault_pc (an internal restart hint). Keep raw dumps intact; compare the
+  # architectural PC, instruction_pc, MMU_RESTART and bus-error state instead.
+  perl -pe 'if (/^FAULTDUMP:/) { s/SPC=[0-9a-fA-F]+/SPC=<harness>/; s/FAULT_PC=[0-9a-fA-F]+/FAULT_PC=<internal>/; s/SR=([0-9a-fA-F]{4})/sprintf("SR=%04x", hex($1) & ~0x10)/e; }' "$in_file" > "$out_file"
 }
 
 run_case() {
@@ -201,6 +202,7 @@ run_case() {
   local data_fault_size="${DATA_FAULT_SIZE[$name]:-}"
   local data_fault_write="${DATA_FAULT_WRITE[$name]:-}"
   local all_special="${ALL_SPECIAL[$name]:-}"
+  local stack_banks="${STACK_BANKS[$name]:-}"
   local wait_sec="$INTERP_WAIT_SEC"
   local rc=0
   local dump_count
@@ -223,12 +225,15 @@ run_case() {
     PREVIOUS_UAE2026_JIT_CACHE_KB="${PREVIOUS_UAE2026_JIT_CACHE_KB:-8192}"
     PREVIOUS_UAE2026_JIT_FPU="${PREVIOUS_UAE2026_JIT_FPU:-0}"
     PREVIOUS_UAE2026_JIT_LAZY_FLUSH="${PREVIOUS_UAE2026_JIT_LAZY_FLUSH:-1}"
-    PREVIOUS_UAE2026_JIT_CONST_JUMP="${PREVIOUS_UAE2026_JIT_CONST_JUMP:-1}"
+    PREVIOUS_UAE2026_JIT_CONST_JUMP="${PREVIOUS_UAE2026_JIT_CONST_JUMP:-0}"
     PREVIOUS_UAE2026_JIT_RAM="${PREVIOUS_UAE2026_JIT_RAM:-0}"
     B2_JIT_RTE_FAULT_HANDOFF_DISABLE="${B2_JIT_RTE_FAULT_HANDOFF_DISABLE:-0}"
   )
   if [[ -n "$init_regs" ]]; then
     env_vars+=(B2_TEST_INIT="$(expand_test_addr_tokens "$init_regs" "$test_addr")")
+  fi
+  if [[ -n "$stack_banks" ]]; then
+    env_vars+=(B2_TEST_STACK_BANKS="$(expand_test_addr_tokens "$stack_banks" "$test_addr")")
   fi
   if [[ -n "$mem_longs" ]]; then
     env_vars+=(B2_TEST_MEM_LONGS="$(expand_test_addr_tokens "$mem_longs" "$test_addr")")

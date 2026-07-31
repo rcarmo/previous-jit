@@ -275,6 +275,21 @@ static bool run_opcode_test_mode_glue()
 		regs.usp = regs.isp = regs.msp = m68k_areg(regs, 7);
 	}
 	MakeFromSR();
+	const char *stack_banks = getenv("B2_TEST_STACK_BANKS");
+	if (stack_banks && *stack_banks) {
+		uint32 banks[3]; /* USP ISP MSP */
+		size_t bank_count = 0;
+		if (!parse_test_hex_longs_glue(stack_banks, banks, lengthof(banks), &bank_count) ||
+			bank_count != 3) {
+			fprintf(stderr, "B2_TEST_STACK_BANKS parse failed (need USP ISP MSP)\n");
+			quit_program = 1;
+			return true;
+		}
+		regs.usp = banks[0];
+		regs.isp = banks[1];
+		regs.msp = banks[2];
+		m68k_areg(regs, 7) = regs.s ? (regs.m ? regs.msp : regs.isp) : regs.usp;
+	}
 	regs.stopped = 0;
 	SPCFLAGS_CLEAR(SPCFLAG_STOP | SPCFLAG_BRK | SPCFLAG_DOTRACE | SPCFLAG_TRACE);
 

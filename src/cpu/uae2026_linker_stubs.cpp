@@ -36,6 +36,7 @@ extern "C" {
     uae_u32 prev_get_disp_ea_020(uae_u32 b, int dp) __asm__("get_disp_ea_020");
     int     prev_intlev(void)                        __asm__("intlev");
     void    prev_doint(void)                         __asm__("doint");
+    void    Uae2026JitProcessTraceSpecialty(void);
     void    prev_m68k_reset(int hard)                __asm__("m68k_reset");
     void    prev_read_table68k(void)                 __asm__("read_table68k");
     int     prev_m68k_move2c(int reg, uae_u32 *val) __asm__("m68k_move2c");
@@ -210,9 +211,12 @@ void m68k_reset(void)           { prev_m68k_reset(0); }
  * m68k_do_compile_execute() is provided by compemu_support.cpp.        *
  * ================================================================== */
 
+extern "C" uae_u32 Uae2026JitTraceSuccessorPending = 0;
+
 int m68k_do_specialties(void)
 {
 #define PREV_SPCFLAG_STOP       0x002
+#define PREV_SPCFLAG_TRACE      0x040
 #define PREV_SPCFLAG_DOTRACE    0x080
 #define PREV_SPCFLAG_DOINT      0x100
 #define PREV_SPCFLAG_INT        0x008
@@ -238,6 +242,21 @@ int m68k_do_specialties(void)
     if (regs.spcflags & PREV_SPCFLAG_STOP) {
         MakeSR();
         return 1;
+    }
+
+    /* Previous calls do_trace() after each retired instruction.  A T1 write
+       therefore changes TRACE -> DOTRACE at the end of the SR writer's
+       dispatch, executes exactly one successor, then delivers vector 9 from
+       the following do_specialties() call.  Generated dispatch would otherwise
+       observe DOTRACE before entering the successor block and trap one opcode
+       early.  Hide DOTRACE in a dispatcher-private pending bit; execute_normal
+       retraces one successor opcode and republishes DOTRACE after it retires. */
+    if (regs.spcflags & PREV_SPCFLAG_TRACE) {
+        Uae2026JitProcessTraceSpecialty();
+        if (regs.spcflags & PREV_SPCFLAG_DOTRACE) {
+            regs.spcflags &= ~PREV_SPCFLAG_DOTRACE;
+            Uae2026JitTraceSuccessorPending = 1;
+        }
     }
 
     if (regs.spcflags & PREV_SPCFLAG_DOINT) {
@@ -274,6 +293,9 @@ int m68k_do_specialties(void)
             regs.stopped = 0;
             regs.spcflags &= ~PREV_SPCFLAG_STOP;
             Exception(24 + intr, 0);
+            /* An intervening interrupt owns the exception boundary; do not
+             * leak a deferred trace trap into its handler. */
+            Uae2026JitTraceSuccessorPending = 0;
             regs.intmask = intr;
             prev_doint();
 

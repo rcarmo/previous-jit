@@ -1027,6 +1027,7 @@ static void jit_install_fast_interpreter_overrides(void)
  * whether an instruction happened to be compiled.  cpufunctbl returns the
  * instruction's cycle count; the tracer discarded it. */
 extern uae_u32 jit_native_retired_cpu_cycles;
+extern "C" uae_u32 Uae2026JitTraceSuccessorPending;
 
 static bool jit_retired_clock_enabled(void)
 {
@@ -1325,7 +1326,15 @@ void execute_normal(void)
 		}
 	}
 #endif
-	if (!check_for_cache_miss()) {
+	/* T1 trace requires exactly one successor instruction after the SR writer.
+	   Bypass any cached multi-op block while that one-shot is pending so the
+	   interpreter tracer can retire and compile precisely that successor. */
+	const bool trace_one_successor = Uae2026JitTraceSuccessorPending != 0;
+	if (trace_one_successor) {
+		const int cl = cacheline(regs.pc_p);
+		cache_tags[cl].handler = (cpuop_func*)popall_execute_normal;
+	}
+	if (trace_one_successor || !check_for_cache_miss()) {
 		cpu_history pc_hist[MAXRUN];
 #ifdef UAE
 		memset(pc_hist, 0, sizeof(pc_hist));
@@ -1506,7 +1515,9 @@ jit_pctrace_done:
 			jit_block_verify_entry_capture(verify_block_pc);
 #endif
 		int maxrun_limit = MAXRUN;
-		{
+		if (trace_one_successor) {
+			maxrun_limit = 1;
+		} else {
 			static int env_maxrun = -1;
 			if (env_maxrun < 0) {
 				const char *env = getenv("B2_JIT_MAXRUN");
@@ -1645,6 +1656,13 @@ jit_pctrace_done:
 				regs.pc_oldp = regs.pc_p;
 			}
 			jit_trace_retire_cycles(jit_trace_op_cycles);
+			if (trace_one_successor && Uae2026JitTraceSuccessorPending) {
+				/* The successor has now retired.  Publish DOTRACE only after its
+				   complete architectural state/PC is visible; the outer specialty
+				   pass will deliver vector 9 before any further opcode. */
+				Uae2026JitTraceSuccessorPending = 0;
+				regs.spcflags |= SPCFLAG_DOTRACE;
+			}
 			/* Record what this instruction actually cost so compile_block() can
 			   charge emulated time at the interpreter's rate rather than a flat
 			   constant.  totcycles is consumed as scaled_cycles(x)/CYCLE_UNIT,
@@ -1655,6 +1673,16 @@ jit_pctrace_done:
 				total_cycles += jit_real_cycles_enabled()
 					? (int)hist->real_cycles * SCALE * CYCLE_UNIT
 					: 4 * CYCLE_UNIT;
+			}
+			if (trace_one_successor) {
+				/* This opcode exists only to satisfy the architectural T1 delay; do
+				   not install a special one-op translation.  Re-anchor first (which
+				   clears inactive opcode metadata), then retain the retired successor
+				   opcode exactly as the interpreter does at the trace boundary. */
+				tick_inhibit = false;
+				jit_canonicalize_code_pc_if_ram_mmu();
+				mmu_opcode = (uae_u16)opcode;
+				return;
 			}
 			bool must_end = __atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) || blocklen >= maxrun_limit;
 			if (retired_through_exception && jit_end_block_on_exception()) {

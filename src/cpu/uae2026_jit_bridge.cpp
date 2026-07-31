@@ -397,6 +397,18 @@ extern "C" uae_u32 Uae2026JitMmuGeneration(void)
     return mmu_translation_generation;
 }
 
+extern "C" void Uae2026JitPrepareContinuationWrite(uae_u32 post_pc)
+{
+    /* Generated 68040 destination-write handlers publish the successor and
+       clear restart/fixup state immediately before the faultable bus cycle. */
+    regs.fault_pc = post_pc;
+    regs.instruction_pc = post_pc;
+    Uae2026JitLastInstructionPc = post_pc;
+    mmu_restart = false;
+    mmufixup[0].reg = -1;
+    mmufixup[1].reg = -1;
+}
+
 extern "C" void Uae2026JitMmuTranslationChanged(uae_u32 source)
 {
     /* Startup/reset calls made before compiler_init() have no compiled identity

@@ -782,6 +782,7 @@ static void scsi_trace_block(const char *what, Uint32 lba, const Uint8 *data)
             (unsigned)m68k_getpc());
 #endif
         CycInt_TimingAnchorReport();
+        Uae2026JitTimingAnchorReport();
         fflush(stderr);
         _Exit(0);
     }

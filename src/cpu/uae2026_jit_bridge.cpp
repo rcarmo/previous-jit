@@ -356,6 +356,12 @@ extern "C" void Uae2026JitFallbackCensus(uae_u32 opcode, uae_u32 site)
         bridge_helper_census_dump("periodic");
 }
 
+extern "C" void Uae2026JitTimingAnchorReport(void)
+{
+    bridge_helper_census_dump("timing-anchor");
+    Uae2026JitDiagnosticReport();
+}
+
 extern "C" void Uae2026JitBenchmarkReport(void)
 {
     const char *env = getenv("B2_JIT_BENCH_REPORT");

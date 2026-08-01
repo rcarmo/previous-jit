@@ -159,6 +159,7 @@ run_engine() {
     PREVIOUS_RTC_UNIX_TIME=0x2ec46472 \
     B2_SCSI_TRACE=1 B2_SCSI_TRACE_STOP_AT="$ANCHOR_IO" \
     B2_CYCINT_TRACE="$CYCARM_LIMIT" B2_JIT_GUEST_PATH=1 \
+    B2_JIT_HELPER_CENSUS=1000000000 B2_JIT_DIAG=1 \
     "${engine_env[@]}" "$BIN" >"$log" 2>&1 || rc=$?
   ((rc == 0)) || { echo "$engine anchor failed rc=$rc (see $log)" >&2; return 1; }
   [[ "$(grep -c '^SCSIIO ' "$log")" == "$ANCHOR_IO" ]] || {
@@ -168,6 +169,8 @@ run_engine() {
     echo "$engine missing exact timing anchor" >&2; return 1;
   }
   grep -q '^TIMINGANCHOR_CYCINT ' "$log" || { echo "$engine missing CycInt anchor" >&2; return 1; }
+  grep -q '^JITIDENT ' "$log" || { echo "$engine missing MMU identity census" >&2; return 1; }
+  grep -q '^JITBENCHDIAG ' "$log" || { echo "$engine missing dispatcher census" >&2; return 1; }
   [[ "$(grep -c '^CYCARM ' "$log")" == "$CYCARM_LIMIT" ]] || {
     echo "$engine did not emit exactly $CYCARM_LIMIT CycInt arm tuples" >&2; return 1;
   }
@@ -175,7 +178,8 @@ run_engine() {
   grep '^CYCARM ' "$log" | sed -E \
     's/^CYCARM [0-9]+ handler=([0-9]+) cycles=([0-9]+).*/\1 \2/' \
     > "$OUTDIR/$engine-cycarm-sequence.txt"
-  grep -E '^(TIMINGANCHOR |TIMINGANCHOR_CYCINT )' "$log" > "$OUTDIR/$engine-anchor.txt"
+  grep -E '^(TIMINGANCHOR |TIMINGANCHOR_CYCINT |JITHELPERCENSUS tag=timing-anchor |JITIDENT |JITBENCHDIAG )' \
+    "$log" > "$OUTDIR/$engine-anchor.txt"
 }
 
 SHA=$(git -C "$ROOT" rev-parse HEAD)
@@ -185,6 +189,7 @@ BIN_SHA256=$(sha256sum "$BIN" | awk '{print $1}')
   printf 'binary=%s\nbinary_sha256=%s\n' "$BIN" "$BIN_SHA256"
   printf 'source_image=%s\nsource_image_sha256=%s\n' "$SOURCE_IMAGE" "$(sha256sum "$SOURCE_IMAGE" | awk '{print $1}')"
   printf 'anchor_io=%s\ncycarm_limit=%s\nbench_cpu=%s\n' "$ANCHOR_IO" "$CYCARM_LIMIT" "$BENCH_CPU"
+  printf 'mmu_gen_key_1page=%s\n' "${PREVIOUS_UAE2026_JIT_MMU_GEN_KEY_1PAGE:-default-on}"
   printf 'cpu_policy=%s\npolicy_cpus=%s\ncpu_governor=%s\nfixed_frequency_khz=%s\n' \
     "$CPU_POLICY" "$(<"$CPU_POLICY/related_cpus")" "$(<"$CPU_POLICY/scaling_governor")" \
     "$(<"$CPU_POLICY/scaling_min_freq")"

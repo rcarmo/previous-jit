@@ -93,12 +93,14 @@ Right now the project is at the stage where:
 - `tools/headless-jit-bridge-smoke.sh` — full bridge smoke test
 - `tools/uae2026-opcode-harness.sh` — interpreter vs JIT opcode equivalence harness
 - `tools/uae2026-opcode-vectors.sh` — curated risky/missing opcode vectors
+- `tools/jit-microbench.sh` — matched bounded interpreter/JIT speed and execution-path census
 - `tools/fullloop-drop-validate.sh` — full SCSI-loop barrier-drop boot harness (pure-JIT frontier)
 - `tools/interp-nextbus-probe.sh` — pure-interp NextBus/kernel-reachability reference
 
 ### Docs
 
 - `docs/sr-native-helper-validation-20260731.md` — native SR/CCR semantic-helper implementation, focused correctness gates, inverse control and current full-boot fixture limitation
+- `docs/bounded-jit-benchmark-20260731.md` — immutable matched benchmark method, final census and 2.02× bounded-loop result
 - `docs/uae2026-jit-bringup.md`
 - `docs/uae2026-jit-mmu-strategy.md`
 - `docs/uae2026-compiler-blockers.md`
@@ -124,6 +126,7 @@ Current validation flow:
 ./tools/headless-jit-bootstrap-probe.sh
 ./tools/headless-jit-bridge-smoke.sh
 ./tools/uae2026-opcode-harness.sh
+./tools/jit-microbench.sh
 ./tools/uae2026-compiler-syntax-probe.sh
 ./tools/uae2026-compiler-object-probe.sh
 ```

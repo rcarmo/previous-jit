@@ -365,6 +365,28 @@ static int jit_block_retired_cycles(const cpu_history *pc_hist, int n)
     return sum * CYCLE_UNIT;
 }
 
+/* Every runtime-variable numeric cycle return in Previous's generated 68040
+ * core is a Bcc edge: taken=3, byte fall-through=2, word/long fall-through=4.
+ * The trace records only the edge that formed the block, so charging that value
+ * on both installed exits is wrong as soon as the predicate changes.  Compute
+ * the cumulative prefix with the final Bcc replaced by the selected runtime
+ * edge. B2_JIT_REAL_CYCLES=0 remains the same-binary flat-charge inverse. */
+static int jit_bcc_edge_retired_cycles(const cpu_history *pc_hist, int n,
+    bool taken)
+{
+    if (!jit_real_cycles_enabled() || !pc_hist || n <= 0)
+        return jit_block_retired_cycles(pc_hist, n);
+    const uae_u16 opcode = do_get_mem_word((uae_u16 *)pc_hist[n - 1].location);
+    if ((opcode & 0xf000u) != 0x6000u || ((opcode >> 8) & 0xfu) < 2u)
+        return jit_block_retired_cycles(pc_hist, n);
+    int sum = 0;
+    for (int i = 0; i < n - 1; i++)
+        sum += pc_hist[i].real_cycles ? pc_hist[i].real_cycles : 4;
+    const uae_u8 displacement = (uae_u8)opcode;
+    sum += taken ? 3 : (displacement == 0 || displacement == 0xff ? 4 : 2);
+    return sum * CYCLE_UNIT;
+}
+
 /* Product execution has no per-instruction callback. This observer is emitted
    only for an explicitly requested path capture or deterministic retirement-
    tick run. Keep the scheduler independent of capture arming: asking for
@@ -3389,11 +3411,37 @@ static void jit_diag_maybe_print(void)
         (unsigned)m68k_getpc());
     fflush(stderr);
 }
+
+extern "C" void Uae2026JitDiagnosticReport(void)
+{
+    if (!jit_diag_enabled())
+        return;
+    const double avg_blocklen = jit_diag_compile_block_calls
+        ? (double)jit_diag_compiled_m68k_insns / (double)jit_diag_compile_block_calls : 0.0;
+    const double avg_block_bytes = jit_diag_compile_block_calls
+        ? (double)jit_diag_compiled_code_bytes / (double)jit_diag_compile_block_calls : 0.0;
+    fprintf(stderr,
+        "JITBENCHDIAG dispatch=%lu exec_normal=%lu cache_hit=%lu compile=%lu fresh=%lu recomp=%lu "
+        "opt0=%lu optgt0=%lu nostats=%lu cache_miss=%lu recompile=%lu checksum=%lu/%lu/%lu "
+        "icflush=%lu avg_block=%.3f avg_code=%.3f peak_cache=%llu max_block=%lu/%lu/%lu\n",
+        jit_diag_dispatch_count, jit_diag_execute_normal_calls,
+        jit_diag_execute_normal_cache_hit, jit_diag_compile_block_calls,
+        jit_diag_compile_block_fresh, jit_diag_compile_block_recomp,
+        jit_diag_optlev0_blocks, jit_diag_optlev_gt0_blocks,
+        jit_diag_exec_nostats_calls, jit_diag_cache_miss_calls,
+        jit_diag_recompile_block_calls, jit_diag_check_checksum_calls,
+        jit_diag_checksum_good, jit_diag_checksum_bad,
+        jit_diag_flush_icache_hard_calls, avg_blocklen, avg_block_bytes,
+        jit_diag_peak_cache_bytes, jit_diag_max_blocklen,
+        jit_diag_max_block_cycles, jit_diag_max_block_bytes);
+    fflush(stderr);
+}
 #else
 static inline bool jit_diag_enabled(void) { return false; }
 static inline void jit_diag_note_compile_block(unsigned, unsigned, unsigned, unsigned long long) {}
 static inline void jit_diag_note_checksum_result(bool) {}
 static inline void jit_diag_maybe_print(void) {}
+extern "C" void Uae2026JitDiagnosticReport(void) {}
 #endif
 /* ---- end JIT dispatch diagnostic counters ---- */
 
@@ -10559,10 +10607,12 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                             uae_u32* patch_skip = (uae_u32*)get_target() - 1;
                             /* Side exit: carry both the translated host pointer
                                and the architectural target selected above. */
-                            const uae_u32 side_exit_m68k_pc =
-                                side_exit_pc == next_pc_p ? next_m68k_pc : taken_m68k_pc;
+                            const bool side_exit_taken = side_exit_pc == taken_pc_p;
+                            const uae_u32 side_exit_m68k_pc = side_exit_taken
+                                ? taken_m68k_pc : next_m68k_pc;
                             (void)jit_endblock_const_pc(
-                                jit_block_retired_cycles(pc_hist, i + 1),
+                                jit_bcc_edge_retired_cycles(pc_hist, i + 1,
+                                    side_exit_taken),
                                 side_exit_pc, side_exit_m68k_pc);
                             /* Patch skip branch to the traced-path continuation */
                             write_jmp_target(patch_skip, (uintptr)get_target());
@@ -10967,6 +11017,9 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                 blockinfo* tbi;
                 const uae_u16 final_op = DO_GET_OPCODE(pc_hist[blocklen - 1].location);
                 const bool final_is_dbcc = ((final_op & 0x00f8) == 0x00c8 && (final_op & 0xf000) == 0x5000);
+                const bool final_is_bcc =
+                    (final_op & 0xf000u) == 0x6000u &&
+                    ((final_op >> 8) & 0xfu) >= 2u;
 
 #if defined(CPU_AARCH64)
                 /* ARM64 bringup: keep backward branches on the simple
@@ -11018,7 +11071,11 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                    the virtual edge and return through keyed dispatch. */
                 if (jit_collect_edge_profile(bi))
                     compemu_raw_inc_m((uintptr)&bi->edge_exec_count[0]);
-                tba = jit_endblock_const_pc(scaled_cycles(totcycles), ct1, g1);
+                const int edge1_cycles = final_is_bcc
+                    ? jit_bcc_edge_retired_cycles(pc_hist, blocklen,
+                        t1 == taken_pc_p)
+                    : scaled_cycles(totcycles);
+                tba = jit_endblock_const_pc(edge1_cycles, ct1, g1);
                 if (!jit_mmu_execution_key_active()) {
                     const bool pred_prefer_direct = jit_source_edge_prefers_direct(bi, 0, ct1);
                     write_jmp_target(tba, get_handler_for_edge(bi, 0, ct1, g1));
@@ -11033,7 +11090,11 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
 
                 if (jit_collect_edge_profile(bi))
                     compemu_raw_inc_m((uintptr)&bi->edge_exec_count[1]);
-                tba = jit_endblock_const_pc(scaled_cycles(totcycles), ct2, g2);
+                const int edge2_cycles = final_is_bcc
+                    ? jit_bcc_edge_retired_cycles(pc_hist, blocklen,
+                        t2 == taken_pc_p)
+                    : scaled_cycles(totcycles);
+                tba = jit_endblock_const_pc(edge2_cycles, ct2, g2);
                 if (!jit_mmu_execution_key_active()) {
                     const bool notpred_prefer_direct = jit_source_edge_prefers_direct(bi, 1, ct2);
                     write_jmp_target(tba, get_handler_for_edge(bi, 1, ct2, g2));

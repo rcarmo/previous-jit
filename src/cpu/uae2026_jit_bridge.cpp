@@ -36,6 +36,7 @@ extern void compemu_reset(void);
 extern void jit_abort(const char *fmt, ...);
 extern "C" void Uae2026CompilerFlushCacheHard(void);
 extern "C" void Uae2026CompilerFlushCacheLazy(void);
+extern "C" void Uae2026JitDiagnosticReport(void);
 
 /* JIT execute loop (defined in uae2026_linker_stubs.cpp) */
 extern void m68k_do_compile_execute(void);
@@ -289,7 +290,7 @@ static void bridge_helper_census_top(int site, const char *label)
             label, top[slot], bridge_helper_census_ops[site][top[slot]]);
 }
 
-static void bridge_helper_census_dump(void)
+static void bridge_helper_census_dump(const char *tag)
 {
     extern unsigned long jit_retire_obs[4];
     extern unsigned long jit_stat_dispatch;
@@ -297,9 +298,10 @@ static void bridge_helper_census_dump(void)
     extern int64_t nCyclesMainCounter;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    fprintf(stderr, "JITHELPERCENSUS wall=%lld.%03ld total=%llu inblock=%llu trace=%llu "
+    fprintf(stderr, "JITHELPERCENSUS tag=%s active=%d wall=%lld.%03ld total=%llu inblock=%llu trace=%llu "
         "nostats=%llu nostats_lim=%llu kinds=%llu/%llu/%llu/%llu/%llu/%llu "
         "obs=%lu/%lu/%lu/%lu disp=%lu comp=%lu cyc=%lld\n",
+        tag ? tag : "periodic", Uae2026JitBridgeIsActive() ? 1 : 0,
         (long long)ts.tv_sec, ts.tv_nsec / 1000000,
         bridge_helper_census_total,
         bridge_helper_census_site[0], bridge_helper_census_site[1],
@@ -351,7 +353,16 @@ extern "C" void Uae2026JitFallbackCensus(uae_u32 opcode, uae_u32 site)
     if (site < 2u)
         bridge_helper_census_ops[site][opcode & 0xffffu]++;
     if ((++bridge_helper_census_total % bridge_helper_census_every()) == 0)
-        bridge_helper_census_dump();
+        bridge_helper_census_dump("periodic");
+}
+
+extern "C" void Uae2026JitBenchmarkReport(void)
+{
+    const char *env = getenv("B2_JIT_BENCH_REPORT");
+    if (!(env && *env && strcmp(env, "0")))
+        return;
+    bridge_helper_census_dump("final");
+    Uae2026JitDiagnosticReport();
 }
 
 extern "C" void Uae2026JitHelperBegin(uae_u32 op_pc, uae_u32 descriptor)

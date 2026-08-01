@@ -597,6 +597,7 @@ void Uae2026OpcodeTestModeFinish(void)
 	}
 
 	opcode_test_mode_active = false;
+	Uae2026JitBenchmarkReport();
 	if (opcode_test_dump_enabled()) {
 		const char *dump_mem = getenv("B2_TEST_DUMP_MEM_LONGS");
 		Uint32 dump_words[256];

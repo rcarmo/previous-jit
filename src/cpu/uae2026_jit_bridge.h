@@ -47,6 +47,7 @@ void Uae2026JitBridgeCompileExecute(void); /* main JIT loop step */
 const char *Uae2026JitBridgeSummary(void);
 void Uae2026JitBridgeInit(void);
 void Uae2026JitBridgeSyncOpcodeTestShadow(void);
+void Uae2026JitBenchmarkReport(void);
 void Uae2026JitBridgeShutdown(void);
 void Uae2026JitHelperBegin(uint32_t op_pc, uint32_t descriptor);
 void Uae2026JitFallbackCensus(uint32_t opcode, uint32_t site);
@@ -76,6 +77,7 @@ static inline const char *Uae2026JitBridgeSummary(void) {
 }
 static inline void Uae2026JitBridgeInit(void) {}
 static inline void Uae2026JitBridgeSyncOpcodeTestShadow(void) {}
+static inline void Uae2026JitBenchmarkReport(void) {}
 static inline void Uae2026JitBridgeShutdown(void) {}
 static inline void Uae2026JitHelperBegin(uint32_t op_pc, uint32_t descriptor) {
     (void)op_pc; (void)descriptor;

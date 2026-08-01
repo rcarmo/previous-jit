@@ -159,35 +159,54 @@ bool CycInt_SetNewInterruptUs(void) {
     return false;
 }
 
+static int cycint_rate_env = -1;
+static int cycint_anchor_env = -1;
+static unsigned long cycint_armed[MAX_INTERRUPTS] = {0};
+static unsigned long cycint_fired[MAX_INTERRUPTS] = {0};
+
+void CycInt_TimingAnchorReport(void)
+{
+	fprintf(stderr, "TIMINGANCHOR_CYCINT active=%d ptype=%d ptime=%lld",
+		ActiveInterrupt, PendingInterrupt.type, (long long)PendingInterrupt.time);
+	for (int i = 0; i < MAX_INTERRUPTS; i++)
+		if (cycint_armed[i] || cycint_fired[i])
+			fprintf(stderr, " h%d=%lu/%lu", i, cycint_armed[i], cycint_fired[i]);
+	fprintf(stderr, "\n");
+	fflush(stderr);
+}
+
 static void cycint_probe(int kind, int handler)
 {
 	/* B2_INT_RATE probe: per-handler arm/fire counts for the CycInt queue, so a
 	   device timer that stops firing under one engine can be named directly. */
-	static int rate_env = -1;
-	static unsigned long armed[MAX_INTERRUPTS] = {0};
-	static unsigned long fired[MAX_INTERRUPTS] = {0};
 	static time_t last = 0;
-	if (rate_env < 0)
-		rate_env = getenv("B2_INT_RATE") ? 1 : 0;
-	if (!rate_env)
+	if (cycint_rate_env < 0)
+		cycint_rate_env = getenv("B2_INT_RATE") ? 1 : 0;
+	if (cycint_anchor_env < 0)
+		cycint_anchor_env = getenv("B2_SCSI_TRACE_STOP_AT") ? 1 : 0;
+	/* The bounded timing anchor needs exact final counts without periodic
+	 * wall-clock reports. Keep counters whenever either diagnostic is armed. */
+	if (!cycint_rate_env && !cycint_anchor_env)
 		return;
 	if (handler >= 0 && handler < MAX_INTERRUPTS) {
 		if (kind == 0)
-			armed[handler]++;
+			cycint_armed[handler]++;
 		else
-			fired[handler]++;
+			cycint_fired[handler]++;
 	}
-	const time_t now = time(NULL);
-	if (now - last >= 2) {
-		last = now;
-		fprintf(stderr, "CYCINT active=%d ptype=%d ptime=%lld",
-			ActiveInterrupt, PendingInterrupt.type,
-			(long long)PendingInterrupt.time);
-		for (int i = 0; i < MAX_INTERRUPTS; i++)
-			if (armed[i] || fired[i])
-				fprintf(stderr, " h%d=%lu/%lu", i, armed[i], fired[i]);
-		fprintf(stderr, "\n");
-		fflush(stderr);
+	if (cycint_rate_env) {
+		const time_t now = time(NULL);
+		if (now - last >= 2) {
+			last = now;
+			fprintf(stderr, "CYCINT active=%d ptype=%d ptime=%lld",
+				ActiveInterrupt, PendingInterrupt.type,
+				(long long)PendingInterrupt.time);
+			for (int i = 0; i < MAX_INTERRUPTS; i++)
+				if (cycint_armed[i] || cycint_fired[i])
+					fprintf(stderr, " h%d=%lu/%lu", i, cycint_armed[i], cycint_fired[i]);
+			fprintf(stderr, "\n");
+			fflush(stderr);
+		}
 	}
 }
 

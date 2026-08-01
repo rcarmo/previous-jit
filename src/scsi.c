@@ -8,6 +8,13 @@
 #include "statusbar.h"
 #include "scsi.h"
 #include "file.h"
+#include "cycInt.h"
+
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+#include "uae2026_jit_bridge.h"
+extern unsigned long jit_retire_obs[4];
+extern unsigned long jit_exception_serial;
+#endif
 
 #define LOG_SCSI_LEVEL  LOG_DEBUG    /* Print debugging messages */
 
@@ -746,11 +753,38 @@ unsigned long Uae2026ScsiIoSeq = 0;
 
 static void scsi_trace_block(const char *what, Uint32 lba, const Uint8 *data)
 {
+    static unsigned long stop_at = 0;
+    static int stop_initialized = 0;
+    extern int64_t nCyclesMainCounter;
     unsigned long seq = Uae2026ScsiIoSeq++;
-    if (!scsi_trace_enabled())
-        return;
-    fprintf(stderr, "SCSIIO %lu %s lba=%u sum=%08x\n",
-            seq, what, (unsigned)lba, (unsigned)scsi_trace_sum(data, BLOCKSIZE));
+    if (scsi_trace_enabled())
+        fprintf(stderr, "SCSIIO %lu %s lba=%u sum=%08x\n",
+                seq, what, (unsigned)lba, (unsigned)scsi_trace_sum(data, BLOCKSIZE));
+    if (!stop_initialized) {
+        const char *env = getenv("B2_SCSI_TRACE_STOP_AT");
+        stop_at = (env && *env) ? strtoul(env, NULL, 0) : 0;
+        stop_initialized = 1;
+    }
+    if (stop_at && Uae2026ScsiIoSeq >= stop_at) {
+#if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
+        fprintf(stderr,
+            "TIMINGANCHOR io=%lu active=%d cycles=%lld exceptions=%lu "
+            "retire=%lu/%lu/%lu/%lu pc=%08x\n",
+            Uae2026ScsiIoSeq, Uae2026JitBridgeIsActive() ? 1 : 0,
+            (long long)nCyclesMainCounter, jit_exception_serial,
+            jit_retire_obs[0], jit_retire_obs[1], jit_retire_obs[2],
+            jit_retire_obs[3], (unsigned)m68k_getpc());
+#else
+        fprintf(stderr,
+            "TIMINGANCHOR io=%lu active=0 cycles=%lld exceptions=0 "
+            "retire=0/0/0/0 pc=%08x\n",
+            Uae2026ScsiIoSeq, (long long)nCyclesMainCounter,
+            (unsigned)m68k_getpc());
+#endif
+        CycInt_TimingAnchorReport();
+        fflush(stderr);
+        _Exit(0);
+    }
 }
 
 void scsi_write_sector(void) {

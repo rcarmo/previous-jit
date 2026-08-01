@@ -66,5 +66,6 @@ void CycInt_AddRelativeInterruptUsCycles(int64_t us, int64_t usreal, interrupt_i
 void CycInt_RemovePendingInterrupt(interrupt_id Handler);
 bool CycInt_InterruptActive(interrupt_id Handler);
 bool CycInt_SetNewInterruptUs(void);
+void CycInt_TimingAnchorReport(void);
 
 #endif /* ifndef HATARI_CYCINT_H */

@@ -3273,6 +3273,7 @@ void* pushall_call_handler = NULL;
 static void* popall_do_nothing = NULL;
 static void* popall_exec_nostats = NULL;
 static void* popall_execute_normal = NULL;
+static void* popall_mmu_fast_dispatch = NULL;
 static void* popall_cache_miss = NULL;
 static void* popall_recompile_block = NULL;
 static void* popall_check_checksum = NULL;
@@ -3971,6 +3972,19 @@ static inline bool jit_mmu_fast_dispatch_enabled(void)
     if (cached < 0) {
         const char *env = getenv("PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH");
         cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+/* Factoring the identical full-identity predicate out of every short block is
+ * the default only inside the opt-in fast-dispatch mode. Set this to 0 to
+ * restore the accepted 82aa371 inline implementation exactly. */
+static inline bool jit_mmu_fast_dispatch_shared_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH_SHARED");
+        cached = (!env || !*env || strcmp(env, "0") != 0) ? 1 : 0;
     }
     return cached != 0;
 }
@@ -7609,6 +7623,7 @@ void compiler_exit(void)
     popall_do_nothing = NULL;
     popall_exec_nostats = NULL;
     popall_execute_normal = NULL;
+    popall_mmu_fast_dispatch = NULL;
     popall_cache_miss = NULL;
     popall_recompile_block = NULL;
     popall_check_checksum = NULL;
@@ -9037,12 +9052,28 @@ STATIC_INLINE void create_popalls(void)
     raw_pop_preserved_regs();
     compemu_raw_jmp((uintptr)execute_exception);
 
+#if defined(CPU_AARCH64)
+    /* Shared full-identity successor predicate. Every MMU epilogue has already
+       published the canonical host/logical PC tuple, so the thunk reloads pc_p
+       and can use the exact accepted inline body without a caller ABI. It stays
+       inside popallspace, whose combined allocation guarantees B reachability
+       from the complete code cache. */
+    popall_mmu_fast_dispatch = get_target();
+    LDR_xXi(REG_PC_TMP, R_REGSTRUCT,
+        (uintptr)&regs.pc_p - (uintptr)&regs);
+    compemu_raw_mmu_fast_dispatch_body(REG_PC_TMP);
+#endif
+
 #if defined(USE_DATA_BUFFER)
     reset_data_buffer();
 #endif
 
     // no need to further write into popallspace
 #if defined(CPU_AARCH64)
+    if ((uintptr)get_target() > (uintptr)popallspace + (uintptr)POPALLSPACE_SIZE)
+        jit_abort("JIT: popallspace overflow used=%lu cap=%d",
+            (unsigned long)((uintptr)get_target() - (uintptr)popallspace),
+            POPALLSPACE_SIZE);
     // ARM64 has separate I-cache and D-cache: we MUST flush the I-cache
     // after writing code before making it executable, or we'll execute
     // stale/random data from the I-cache.

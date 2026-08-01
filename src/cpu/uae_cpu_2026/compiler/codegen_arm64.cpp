@@ -976,15 +976,8 @@ LENDFUNC(NONE,NONE,2,compemu_raw_endblock_canonical_pc,(RR4 rr_pc, IM32 cycles))
  * The direct arm accepts only the cacheline primary with the complete current
  * execution identity and a finalised one-page-local source footprint. None of
  * these instructions modifies NZCV, which remains guest architectural state. */
-STATIC_INLINE void compemu_raw_mmu_fast_dispatch(RR4 rr_pc)
+STATIC_INLINE void compemu_raw_mmu_fast_dispatch_body(RR4 rr_pc)
 {
-    if (!jit_mmu_fast_dispatch_enabled()) {
-        uae_u32* dispatch_exit = (uae_u32*)get_target();
-        B_i(0);
-        write_jmp_target(dispatch_exit, (uintptr)popall_execute_normal);
-        return;
-    }
-
     uae_u32* slow_branches[16];
     unsigned slow_count = 0;
     auto slow_if_x_nonzero = [&](int reg) {
@@ -1089,6 +1082,23 @@ STATIC_INLINE void compemu_raw_mmu_fast_dispatch(RR4 rr_pc)
     uae_u32* dispatch_exit = (uae_u32*)get_target();
     B_i(0);
     write_jmp_target(dispatch_exit, (uintptr)popall_execute_normal);
+}
+
+STATIC_INLINE void compemu_raw_mmu_fast_dispatch(RR4 rr_pc)
+{
+    if (!jit_mmu_fast_dispatch_enabled()) {
+        uae_u32* dispatch_exit = (uae_u32*)get_target();
+        B_i(0);
+        write_jmp_target(dispatch_exit, (uintptr)popall_execute_normal);
+        return;
+    }
+    if (jit_mmu_fast_dispatch_shared_enabled()) {
+        uae_u32* shared_exit = (uae_u32*)get_target();
+        B_i(0);
+        write_jmp_target(shared_exit, (uintptr)popall_mmu_fast_dispatch);
+        return;
+    }
+    compemu_raw_mmu_fast_dispatch_body(rr_pc);
 }
 
 /* MMU correctness path: publish a translated host PC, preserve the separate

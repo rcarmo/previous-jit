@@ -1,15 +1,21 @@
-# Bounded matched interpreter/JIT benchmark — 2026-07-31
+# Bounded matched interpreter/JIT benchmark — 2026-08-01
 
-## Why this workload
+## Scope
 
 The copied NeXTSTEP system-image fixture currently panics with the same IPC
 `strange rights` failure in both clean `75df2be` controls and the SR tree. It is
-therefore not a valid boot-performance oracle. This benchmark replaces only the
-performance workload; it does **not** turn the failed copied-disk boot into a
-passing full-boot gate.
+not a valid boot-performance oracle. This report therefore measures only a
+bounded, deterministic CPU-loop workload. It does **not** claim that the
+full-boot Workspace/File Viewer acceptance gate passes.
 
-`tools/jit-microbench.sh` runs a deterministic opcode-test program that both
-engines terminate at the same sentinel:
+The superseded schedutil artifact at
+`/workspace/tmp/jit-microbench-77375f8-20260801-002502` is retained as
+pre-final development evidence only. Its timing wrapped process launch, used no
+core/frequency ownership, and its manifest named pre-final `77375f8`.
+
+## Workload and exact denominator
+
+`tools/jit-microbench.sh` uses opcode-test mode:
 
 ```asm
         move.l  #N,d0
@@ -19,65 +25,90 @@ loop:   subq.l  #1,d0
         stop    #$2700             ; appended by opcode-test mode
 ```
 
-The measured workload contains exactly `2*N + 3` guest instructions: the
-initial MOVE, two instructions per loop iteration, the sentinel MOVEA, and the
-STOP trailer. The final register dump is fail-closed: D0 must be zero, A6 must
-contain the sentinel, and PC must be the exact post-STOP address.
+For `N` loop iterations the architectural denominator is exactly `2*N + 3`:
+one initial MOVE, `N` SUBQ/BNE pairs, the sentinel MOVEA, and STOP. The fixed
+final state is `D0=0`, `A6=51a7e11e`, `SR=2700`, `PC=01001014`.
 
-## Method
-
-- one immutable binary and SHA for both engines;
-- identical read-only source image and generated config;
-- five paired trials, alternating engine order to reduce thermal/drift bias;
-- no path observer or diagnostic counters in timing trials;
-- separate shorter instrumented trials for execution-path and dispatcher
-  census, so instrumentation overhead cannot contaminate the speed ratio;
-- interpreter arm must report `active=0`;
-- JIT arm must report `active=1` and non-zero native retirement;
-- every trial must reach the same architectural sentinel state.
-
-The script writes `manifest.env`, `trials.tsv`, `summary.env`, raw logs and
-machine-readable final census files under its output directory.
-
-## Result
-
-Artifact: `/workspace/tmp/jit-microbench-77375f8-20260801-002502`
-
-| Property | Value |
-|---|---:|
-| Source SHA | `77375f89508ea2d6df6ba98f0cbc37fc563e4941` |
-| Binary SHA-256 | `e1ebc7b53bfd4c03c8f6e012a9e4f0917dbce5216d2d60d9180d95e2893bde33` |
-| Source-image SHA-256 | `1e85ffb4b7c464f9a96dd2ded4bb1168f60c30a3c3cd5cc7389ad89c399c9d18` |
-| Host/kernel | Orange Pi 6 Plus; Linux 6.6.89-cix aarch64 |
-| Governor | `schedutil` on all 12 CPUs |
-| Timed guest instructions/trial | 10,000,003 |
-| Paired trials | 5 |
-| Interpreter mean | 1.107932 s |
-| JIT mean | 0.547903 s |
-| Speedup | **2.022132×** |
-| Interpreter range | 1.064803–1.148533 s |
-| JIT range | 0.531129–0.569195 s |
-
-The separately instrumented JIT trial used 100,000 loop iterations and
-reported:
+The observer denominator is reported separately. At `N=100000`:
 
 ```text
-JITHELPERCENSUS tag=final active=1 total=7 inblock=0 trace=7
-  nostats=0 nostats_lim=0 obs=199996/0/7/0 disp=33335 comp=2 cyc=400007
-JITBENCHDIAG dispatch=33335 exec_normal=3 compile=2 fresh=2 recomp=0
-  opt0=0 optgt0=2 nostats=0 cache_miss=0 recompile=0 avg_block=2.500
+interpreter: architectural=200003 observed=200002 stop_unobserved=1 reconciled=1
+JIT:         architectural=200003 observed=200003 stop_unobserved=0 reconciled=1
+             paths=199996/0/7/0 native_ppm=999965 trace_ppm=34
 ```
 
-Thus 199,996 observed retirements were native, seven were first-pass trace
-retirements, and none used compiled interpreter fallback or `exec_nostats`.
-Both engines ended with:
+This is an intentional callback asymmetry, not skipped execution. The
+interpreter loop recognises the synthetic STOP before calling its retirement
+observer. The JIT first-pass tracer observes STOP before invoking the same
+trailer service. The seven JIT trace retirements are exactly one cold trace of
+the five static opcodes plus a second SUBQ/BNE trace; the remaining 199,996
+retirements are native. Compiled fallback and `exec_nostats` are both zero.
 
-```text
-D0=00000000 A6=51a7e11e SR=2700 PC=01001014
-```
+## Accepted host method
 
-The four initial MMU-generation bumps are bridge/ATC setup, not workload
-retranslation: the run compiled two fresh blocks and performed zero recompiles.
+Commit: `31c5d2a3eb3df02fb662dd2bcdf31a06f5b75b8a`
+
+Binary SHA-256:
+`8142bc269bc6638f20afdc0f0c3f271516b6d37f300063e90450f5a36cfa21ac`
+
+Artifact:
+`/workspace/tmp/jit-microbench-final-31c5d2a-20260801-010713`
+
+The harness now fails closed unless all of these hold:
+
+- source tree is clean;
+- no other `Previous` process is active;
+- an exclusive benchmark lock is acquired;
+- the complete emulator process is pinned with `taskset` to CPU 11;
+- CPU 11's cpufreq policy is acquired at governor `performance` and fixed
+  `2600198 kHz`, with readback verification;
+- an EXIT/INT/TERM trap restores and verifies the original governor/min/max;
+- every run reaches the exact architectural sentinel;
+- census totals reconcile to the explicit architectural denominator.
+
+CPU 11 shares `policy0` with CPU 0 on this CIX P1 host. The accepted series used
+CPU 11 only; the script restored `schedutil`, minimum `799865 kHz`, maximum
+`2600198 kHz` after the run.
+
+Timing is split into two explicitly different scopes:
+
+1. **Cold process:** shell monotonic timing from process launch through process
+   exit, including emulator/config/device/JIT startup.
+2. **Warm in-process:** internal `CLOCK_MONOTONIC` timing around only the CPU
+   loop after one unrecorded process-local warm-up. Each recorded sample
+   reapplies complete register/SR/PC state while retaining process, device phase
+   and JIT cache. The benchmark loop is interrupt-masked and does not mutate
+   guest memory. This is deliberately called register-state replay, not a full
+   machine snapshot.
+
+Seven alternating cold pairs and nine warm samples per engine were recorded.
+Timing trials carry no path/census observer. Separate instrumented census arms
+are execution-path evidence, not timing samples.
+
+## Accepted result
+
+Each timing sample executed 10,000,003 guest instructions and charged exactly
+20,000,007 emulated cycles.
+
+| Scope / engine | n | Median | Mean | Range |
+|---|---:|---:|---:|---:|
+| Cold process — interpreter | 7 | 1.095543 s | 1.109478429 s | 1.092023–1.151473 s |
+| Cold process — JIT | 7 | 0.620668 s | 0.618665000 s | 0.611817–0.623614 s |
+| Warm in-process — interpreter | 9 | 0.799963946 s | 0.799931611 s | 0.795572937–0.804346538 s |
+| Warm in-process — JIT | 9 | 0.127305504 s | 0.126424301 s | 0.123272985–0.127348063 s |
+
+Median speedups:
+
+- **cold process:** `1.765103×`;
+- **warm in-process CPU loop:** `6.283813×`.
+
+The two figures answer different questions and must not be merged. The cold
+figure includes fixed process startup; the warm figure isolates repeated CPU
+execution with a warm process and translation cache.
+
+The census arm compiled two fresh optlev-2 blocks, performed zero recompiles,
+and ended at the same `400007` emulated cycles as the interpreter for its
+100,000-iteration workload.
 
 ## Runtime Bcc cycle accuracy
 
@@ -88,8 +119,7 @@ installed exits with the edge observed during one-time tracing.
 
 The JIT now computes each Bcc exit's cumulative retired charge from the runtime
 edge. `B2_JIT_REAL_CYCLES=0` retains the old flat-charge inverse control.
-`tools/jit-cycle-accuracy.sh` forces taken loop edges followed by the opposite
-fall-through edge for byte, word and long forms. The post-fix result is:
+`tools/jit-cycle-accuracy.sh` passes exact interpreter/JIT totals:
 
 | Form | Interpreter cycles | JIT cycles | Native / trace / fallback |
 |---|---:|---:|---:|
@@ -97,28 +127,23 @@ fall-through edge for byte, word and long forms. The post-fix result is:
 | word | 400009 | 400009 | 199996 / 7 / 0 |
 | long | 400009 | 400009 | 199996 / 7 / 0 |
 
-Artifact: `/workspace/tmp/jit-cycle-accuracy-final-20260801-000705`.
-The flat inverse fails the byte case (`400007` versus `400004`), proving the
-oracle detects wrong charging. A 100,000-iteration benchmark-loop comparison
-also moved from the pre-fix one-cycle error (`400007` interpreter versus
-`400008` JIT) to exact `400007/400007`.
+Artifact: `/workspace/tmp/jit-cycle-accuracy-final-20260801-000705`. The flat
+inverse fails the byte case (`400007` versus `400004`), proving sensitivity.
 
-Post-change gates: full opcode/fault 155/155
-(`/workspace/tmp/previous-cycle-full-opcode-20260801-000752`), RAM/MMU 67/67
-(`/workspace/tmp/previous-mmu-fast-smoke-20260801-001836`), targeted branch
-semantics 3/3 (`/workspace/tmp/previous-cycle-opcodes-20260801-000723`), and
-CPU-state 38/38.
+Post-change gates also pass: opcode/fault 155/155
+(`/workspace/tmp/previous-opcode-harness-20260801-005523`) and CPU-state 38/38.
 
 ## Reproduction
 
 ```bash
 cmake --build build-vnc -j$(nproc)
-ITERATIONS=5000000 CENSUS_ITERATIONS=100000 TRIALS=5 \
+ITERATIONS=5000000 CENSUS_ITERATIONS=100000 \
+TRIALS=7 WARM_TRIALS=9 BENCH_CPU=11 \
+OUTDIR=/workspace/tmp/jit-microbench-final-$(git rev-parse --short HEAD)-$(date +%Y%m%d-%H%M%S) \
   ./tools/jit-microbench.sh
 ./tools/jit-cycle-accuracy.sh
 ```
 
-Use `OUTDIR=...` to choose a stable artifact path. Timing claims should not be
-made from the census runs, and full-boot acceptance remains blocked until a
-fresh immutable image/CoW fixture completes the required Workspace/File Viewer
-milestones in both control and candidate configurations.
+Full-boot performance remains deferred until a fresh immutable image/CoW
+fixture completes the required fsck/reboot, WindowServer, loginwindow and
+Workspace/File Viewer milestones in both control and candidate configurations.

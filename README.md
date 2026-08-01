@@ -100,7 +100,7 @@ Right now the project is at the stage where:
 ### Docs
 
 - `docs/sr-native-helper-validation-20260731.md` — native SR/CCR semantic-helper implementation, focused correctness gates, inverse control and current full-boot fixture limitation
-- `docs/bounded-jit-benchmark-20260731.md` — immutable matched benchmark method, final census and 2.02× bounded-loop result
+- `docs/bounded-jit-benchmark-20260731.md` — fixed-frequency bounded benchmark, explicit coverage denominator, and separate cold-process (1.765×) / warm in-process (6.284×) results
 - `docs/uae2026-jit-bringup.md`
 - `docs/uae2026-jit-mmu-strategy.md`
 - `docs/uae2026-compiler-blockers.md`

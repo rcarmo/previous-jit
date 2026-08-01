@@ -1348,20 +1348,48 @@ static bool jit_block_verify_reentrant = false;
  * that range produced 2 armings and then nothing, every later candidate
  * reporting reentrant=1.  The bridge clears it where control resumes after an
  * abnormal exit. */
-extern "C" void Uae2026JitVerifyNestedRunAborted(void);
+extern "C" void Uae2026JitVerifyNestedRunAborted(int exception);
+static inline bool jit_verify_block_target_pc(uae_u32 pc);
 static bool jit_block_verify_compile_active = false;
 static uae_u32 jit_block_verify_compile_pc = 0xffffffffu;
 static bool jit_block_verify_last_mismatch = false;
 static int jit_block_verify_compiled_ops = 0;
 static unsigned long jit_block_verify_log_count = 0;
 static unsigned long jit_block_verify_run_count = 0;
-/* Verifications that actually compared state, and how many disagreed.  The log
-   is capped so a systematic mismatch cannot drown the boot, but a capped log
-   silently turns "no mismatches after the first twenty" into "no mismatches",
-   which is exactly the mistake that hid the observer defect.  Count everything;
-   log a bounded sample. */
+static unsigned long jit_block_verify_arm_count = 0;
+static unsigned long jit_block_verify_arm_snapshot_failed = 0;
+static unsigned long jit_block_verify_arm_abort_longjmp_count = 0;
+/* Every attempted verification has exactly one terminal outcome.  Comparisons
+   are only one subset: IO, inexact spans, no-reach control-flow differences,
+   entry-key misses, allocation failures and bridge longjmps are limitations or
+   findings, never clean comparisons. */
+static unsigned long jit_block_verify_terminal_count = 0;
 static unsigned long jit_block_verify_compare_count = 0;
 static unsigned long jit_block_verify_mismatch_count = 0;
+static unsigned long jit_block_verify_skip_entry_count = 0;
+static unsigned long jit_block_verify_skip_snapshot_count = 0;
+static unsigned long jit_block_verify_skip_span_count = 0;
+static unsigned long jit_block_verify_skip_io_count = 0;
+static unsigned long jit_block_verify_skip_noreach_count = 0;
+static unsigned long jit_block_verify_abort_longjmp_count = 0;
+static unsigned long jit_block_verify_snap_leaked = 0;
+static bool jit_block_verify_run_active = false;
+static uae_u32 jit_block_verify_active_pc = 0xffffffffu;
+
+/* Pending specialty work is deliberately not folded into the ordinary block
+   comparison: the latter clears spcflags/InterruptFlags to ask a different,
+   bounded question.  Observe specialty entries at execute_normal's real seam
+   and publish their own denominator and mutually exclusive outcomes. */
+static bool jit_block_verify_specialty_active = false;
+static uae_u32 jit_block_verify_specialty_pc = 0xffffffffu;
+static uae_u32 jit_block_verify_specialty_spc = 0;
+static uae_u32 jit_block_verify_specialty_irq = 0;
+static unsigned long jit_block_verify_specialty_count = 0;
+static unsigned long jit_block_verify_specialty_irq_count = 0;
+static unsigned long jit_block_verify_specialty_resume_count = 0;
+static unsigned long jit_block_verify_specialty_redirect_count = 0;
+static unsigned long jit_block_verify_specialty_pending_count = 0;
+static unsigned long jit_block_verify_specialty_abort_count = 0;
 
 static unsigned long jit_block_verify_log_limit(void)
 {
@@ -1386,6 +1414,61 @@ static unsigned long jit_block_verify_stats_every(void)
     }
     return every;
 }
+
+enum jit_block_verify_outcome {
+    JIT_VERIFY_COMPARED,
+    JIT_VERIFY_SKIP_ENTRY,
+    JIT_VERIFY_SKIP_SNAPSHOT,
+    JIT_VERIFY_SKIP_SPAN,
+    JIT_VERIFY_SKIP_IO,
+    JIT_VERIFY_SKIP_NOREACH,
+    JIT_VERIFY_ABORT_LONGJMP
+};
+
+static void jit_block_verify_stats_report(void)
+{
+    fprintf(stderr,
+        "JITBLOCKVERIFY stats arms=%lu arm_snapshot_failed=%lu arm_abort_longjmp=%lu attempted=%lu terminal=%lu "
+        "compared=%lu passed=%lu mismatched=%lu skip_entry=%lu skip_snapshot=%lu "
+        "skip_span=%lu skip_io=%lu skip_noreach=%lu abort_longjmp=%lu orphaned=%lu "
+        "specialty=%lu specialty_irq=%lu specialty_resume=%lu specialty_redirect=%lu "
+        "specialty_pending=%lu specialty_abort=%lu\n",
+        jit_block_verify_arm_count, jit_block_verify_arm_snapshot_failed,
+        jit_block_verify_arm_abort_longjmp_count, jit_block_verify_run_count,
+        jit_block_verify_terminal_count,
+        jit_block_verify_compare_count,
+        jit_block_verify_compare_count - jit_block_verify_mismatch_count,
+        jit_block_verify_mismatch_count, jit_block_verify_skip_entry_count,
+        jit_block_verify_skip_snapshot_count, jit_block_verify_skip_span_count,
+        jit_block_verify_skip_io_count, jit_block_verify_skip_noreach_count,
+        jit_block_verify_abort_longjmp_count, jit_block_verify_snap_leaked,
+        jit_block_verify_specialty_count, jit_block_verify_specialty_irq_count,
+        jit_block_verify_specialty_resume_count,
+        jit_block_verify_specialty_redirect_count,
+        jit_block_verify_specialty_pending_count,
+        jit_block_verify_specialty_abort_count);
+    fflush(stderr);
+}
+
+static void jit_block_verify_record_outcome(jit_block_verify_outcome outcome)
+{
+    jit_block_verify_run_active = false;
+    jit_block_verify_active_pc = 0xffffffffu;
+    jit_block_verify_terminal_count++;
+    switch (outcome) {
+    case JIT_VERIFY_COMPARED: break;
+    case JIT_VERIFY_SKIP_ENTRY: jit_block_verify_skip_entry_count++; break;
+    case JIT_VERIFY_SKIP_SNAPSHOT: jit_block_verify_skip_snapshot_count++; break;
+    case JIT_VERIFY_SKIP_SPAN: jit_block_verify_skip_span_count++; break;
+    case JIT_VERIFY_SKIP_IO: jit_block_verify_skip_io_count++; break;
+    case JIT_VERIFY_SKIP_NOREACH: jit_block_verify_skip_noreach_count++; break;
+    case JIT_VERIFY_ABORT_LONGJMP: jit_block_verify_abort_longjmp_count++; break;
+    }
+    const unsigned long every = jit_block_verify_stats_every();
+    if (every && (jit_block_verify_terminal_count % every) == 0)
+        jit_block_verify_stats_report();
+}
+
 static jit_block_verify_snapshot jit_block_verify_entry_state = {};
 static bool jit_block_verify_entry_valid = false;
 static uae_u32 jit_block_verify_entry_pc = 0xffffffffu;
@@ -1402,7 +1485,6 @@ static inline unsigned int get_opcode_cft_map(unsigned int f);
    whose owners no longer exist. */
 #define JIT_VERIFY_SNAP_SLOTS 8
 static uae_u8 *jit_block_verify_snap_live[JIT_VERIFY_SNAP_SLOTS];
-static unsigned long jit_block_verify_snap_leaked = 0;
 
 static void jit_block_verify_snap_track(uae_u8 *p)
 {
@@ -1494,20 +1576,110 @@ static void jit_block_verify_entry_reset(void)
 
 static void jit_block_verify_entry_capture(uae_u32 block_pc)
 {
+    jit_block_verify_arm_count++;
     jit_block_verify_entry_reset();
-    if (!jit_block_verify_snapshot_capture(&jit_block_verify_entry_state))
+    if (!jit_block_verify_snapshot_capture(&jit_block_verify_entry_state)) {
+        jit_block_verify_arm_snapshot_failed++;
+        fprintf(stderr, "JITBLOCKVERIFY block=%08x ARM-SNAPSHOT-FAILED n=%lu/%lu\n",
+            (unsigned)block_pc, jit_block_verify_arm_snapshot_failed,
+            jit_block_verify_arm_count);
         return;
+    }
     jit_block_verify_entry_valid = true;
     jit_block_verify_entry_pc = block_pc;
 }
 
-/* The bridge calls this where control resumes after the nested native run has
-   left abnormally.  Clearing the reentrancy latch is what keeps verification
-   alive (7c0d2f7); releasing the orphaned snapshots is what keeps the process
-   alive. */
-extern "C" void Uae2026JitVerifyNestedRunAborted(void)
+static void jit_block_verify_specialty_begin(uae_u32 pc, uae_u32 spcflags,
+    uae_u32 interrupt_flags)
 {
+    jit_block_verify_specialty_active = jit_verify_block_target_pc(pc);
+    if (!jit_block_verify_specialty_active)
+        return;
+    jit_block_verify_specialty_pc = pc;
+    jit_block_verify_specialty_spc = spcflags;
+    jit_block_verify_specialty_irq = interrupt_flags;
+}
+
+static void jit_block_verify_specialty_end(uae_u32 pc, uae_u32 spcflags,
+    uae_u32 interrupt_flags)
+{
+    if (!jit_block_verify_specialty_active)
+        return;
+    jit_block_verify_specialty_active = false;
+    jit_block_verify_specialty_count++;
+    if (jit_block_verify_specialty_irq)
+        jit_block_verify_specialty_irq_count++;
+    const char *outcome;
+    if ((pc & ~1u) != (jit_block_verify_specialty_pc & ~1u)) {
+        jit_block_verify_specialty_redirect_count++;
+        outcome = "redirect";
+    } else if (spcflags & SPCFLAG_ALL) {
+        jit_block_verify_specialty_pending_count++;
+        outcome = "pending";
+    } else {
+        jit_block_verify_specialty_resume_count++;
+        outcome = "resume";
+    }
+    if (jit_block_verify_specialty_count <= jit_block_verify_log_limit())
+        fprintf(stderr,
+            "JITBLOCKVERIFY specialty=%s n=%lu entry_pc=%08x exit_pc=%08x "
+            "entry_spc=%08x exit_spc=%08x entry_irq=%08x exit_irq=%08x\n",
+            outcome, jit_block_verify_specialty_count,
+            (unsigned)jit_block_verify_specialty_pc, (unsigned)pc,
+            (unsigned)jit_block_verify_specialty_spc, (unsigned)spcflags,
+            (unsigned)jit_block_verify_specialty_irq, (unsigned)interrupt_flags);
+    const unsigned long every = jit_block_verify_stats_every();
+    if (every && ((jit_block_verify_terminal_count +
+        jit_block_verify_specialty_count) % every) == 0)
+        jit_block_verify_stats_report();
+}
+
+/* The bridge calls this where control resumes after a longjmp.  Count verifier
+   and specialty aborts directly at that exception-safe seam; orphan cleanup is
+   memory hygiene, not an outcome proxy. */
+extern "C" void Uae2026JitVerifyNestedRunAborted(int exception)
+{
+    const bool aborted_run = jit_block_verify_run_active;
+    if (aborted_run) {
+        const uae_u32 aborted_pc = jit_block_verify_active_pc;
+        jit_block_verify_record_outcome(JIT_VERIFY_ABORT_LONGJMP);
+        if (jit_block_verify_abort_longjmp_count <= jit_block_verify_log_limit())
+            fprintf(stderr,
+                "JITBLOCKVERIFY block=%08x ABORT-LONGJMP exception=%d n=%lu/%lu\n",
+                (unsigned)aborted_pc, exception,
+                jit_block_verify_abort_longjmp_count,
+                jit_block_verify_run_count);
+    } else if (jit_block_verify_entry_valid) {
+        /* The first-pass trace itself can fault after arming but before
+           jit_block_verify_run() starts. Keep that outside the attempted-run
+           denominator, but close the arm ledger explicitly. */
+        jit_block_verify_arm_abort_longjmp_count++;
+        if (jit_block_verify_arm_abort_longjmp_count <=
+            jit_block_verify_log_limit())
+            fprintf(stderr,
+                "JITBLOCKVERIFY block=%08x ARM-ABORT-LONGJMP exception=%d n=%lu/%lu\n",
+                (unsigned)jit_block_verify_entry_pc, exception,
+                jit_block_verify_arm_abort_longjmp_count,
+                jit_block_verify_arm_count);
+        jit_block_verify_entry_reset();
+    }
+    if (jit_block_verify_specialty_active) {
+        jit_block_verify_specialty_active = false;
+        jit_block_verify_specialty_count++;
+        jit_block_verify_specialty_abort_count++;
+        if (jit_block_verify_specialty_irq)
+            jit_block_verify_specialty_irq_count++;
+        if (jit_block_verify_specialty_count <= jit_block_verify_log_limit())
+            fprintf(stderr,
+                "JITBLOCKVERIFY specialty=abort n=%lu entry_pc=%08x "
+                "entry_spc=%08x entry_irq=%08x exception=%d\n",
+                jit_block_verify_specialty_count,
+                (unsigned)jit_block_verify_specialty_pc,
+                (unsigned)jit_block_verify_specialty_spc,
+                (unsigned)jit_block_verify_specialty_irq, exception);
+    }
     jit_block_verify_reentrant = false;
+    jit_block_verify_active_pc = 0xffffffffu;
     for (int i = 0; i < JIT_VERIFY_SNAP_SLOTS; i++) {
         uae_u8 *p = jit_block_verify_snap_live[i];
         if (!p)
@@ -1518,6 +1690,11 @@ extern "C" void Uae2026JitVerifyNestedRunAborted(void)
         jit_block_verify_snap_leaked++;
         free(p);
     }
+    /* A longjmp discarded the run that owned this entry snapshot. Leaving it
+       valid can make a later unrelated bridge fault look like an arm-stage
+       abort and retains a full RAM image until another matching arm occurs. */
+    if (aborted_run)
+        jit_block_verify_entry_reset();
 }
 
 static inline uae_u32 jit_block_verify_arch_spcflags(uae_u32 spcflags)
@@ -1614,15 +1791,7 @@ static void jit_block_verify_compare(const jit_block_verify_snapshot *expected, 
     jit_block_verify_compare_count++;
     if (mismatch)
         jit_block_verify_mismatch_count++;
-    {
-        const unsigned long every = jit_block_verify_stats_every();
-        if (every && (jit_block_verify_compare_count % every) == 0) {
-            fprintf(stderr, "JITBLOCKVERIFY stats compared=%lu mismatched=%lu orphaned=%lu\n",
-                jit_block_verify_compare_count, jit_block_verify_mismatch_count,
-                jit_block_verify_snap_leaked);
-            fflush(stderr);
-        }
-    }
+    jit_block_verify_record_outcome(JIT_VERIFY_COMPARED);
     if (!mismatch) {
         if (jit_block_verify_run_count <= jit_block_verify_log_limit())
             fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d mismatch=0\n", (unsigned)block_pc, blocklen);
@@ -1727,6 +1896,8 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
         jit_strict_verify_references++;
     jit_block_verify_snapshot resume = {}, interp = {}, native = {};
     jit_block_verify_run_count++;
+    jit_block_verify_run_active = true;
+    jit_block_verify_active_pc = block_pc;
     if (!jit_block_verify_entry_valid || jit_block_verify_entry_pc != block_pc) {
         /* Arming keys on m68k_getpc() in execute_normal(); this run keys on
            pc_hist[0].guest_pc.  When they disagree the verification is dropped
@@ -1737,10 +1908,17 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
             fprintf(stderr, "JITVERIFYSKIP n=%lu entry_valid=%d entry_pc=%08x block_pc=%08x\n",
                 skipped, (int)jit_block_verify_entry_valid,
                 (unsigned)jit_block_verify_entry_pc, (unsigned)block_pc);
+        jit_block_verify_record_outcome(JIT_VERIFY_SKIP_ENTRY);
+        jit_block_verify_entry_reset();
+        jit_block_verify_active_pc = 0xffffffffu;
         return;
     }
     if (!jit_block_verify_snapshot_capture(&resume)) {
+        fprintf(stderr, "JITBLOCKVERIFY block=%08x SKIP-SNAPSHOT stage=resume\n",
+            (unsigned)block_pc);
+        jit_block_verify_record_outcome(JIT_VERIFY_SKIP_SNAPSHOT);
         jit_block_verify_entry_reset();
+        jit_block_verify_active_pc = 0xffffffffu;
         return;
     }
 
@@ -1849,12 +2027,16 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     jit_native_retired_cpu_cycles = retired_before;
 
     if (!jit_block_verify_snapshot_capture(&native)) {
+        fprintf(stderr, "JITBLOCKVERIFY block=%08x SKIP-SNAPSHOT stage=native\n",
+            (unsigned)block_pc);
+        jit_block_verify_record_outcome(JIT_VERIFY_SKIP_SNAPSHOT);
 #if defined(CPU_AARCH64)
         tick_inhibit = saved_tick_inhibit;
 #endif
         jit_block_verify_snapshot_restore(&resume);
         jit_block_verify_snapshot_free(&resume);
         jit_block_verify_entry_reset();
+        jit_block_verify_active_pc = 0xffffffffu;
         return;
     }
     /* native_stop_pc must be the LOGICAL (architectural) PC. regs still holds
@@ -1927,6 +2109,9 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     const unsigned long io_interp = Uae2026IoAccessCount - io_before_interp;
     const bool io_tainted = (io_native != 0) || (io_interp != 0);
     if (!jit_block_verify_snapshot_capture(&interp)) {
+        fprintf(stderr, "JITBLOCKVERIFY block=%08x SKIP-SNAPSHOT stage=interp\n",
+            (unsigned)block_pc);
+        jit_block_verify_record_outcome(JIT_VERIFY_SKIP_SNAPSHOT);
 #if defined(CPU_AARCH64)
         tick_inhibit = saved_tick_inhibit;
 #endif
@@ -1934,6 +2119,7 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
         jit_block_verify_snapshot_free(&resume);
         jit_block_verify_snapshot_free(&native);
         jit_block_verify_entry_reset();
+        jit_block_verify_active_pc = 0xffffffffu;
         return;
     }
 
@@ -1955,12 +2141,14 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
         fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d SKIP-SPAN native_cycles=%u replay_ops=%d replay_cycles=%u\n",
             (unsigned)block_pc, blocklen, (unsigned)retired_delta, replay_ops,
             (unsigned)replay_cycles_total);
+        jit_block_verify_record_outcome(JIT_VERIFY_SKIP_SPAN);
     } else if (interp_reached_stop && io_tainted) {
         /* The block read or wrote a device register.  Executing it twice from
            one entry state is not a valid comparison, so this is neither a pass
            nor a mismatch -- it is a question the instrument cannot ask. */
         fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d SKIP-IO io_native=%lu io_interp=%lu\n",
             (unsigned)block_pc, blocklen, io_native, io_interp);
+        jit_block_verify_record_outcome(JIT_VERIFY_SKIP_IO);
     } else if (interp_reached_stop) {
         fprintf(stderr, "JITBLOCKVERIFY block=%08x len=%d native_ops=%d replay_ops=%d REACHED%s native_stop_pc=%08x interp_stop_pc=%08x\n",
             (unsigned)block_pc, blocklen, reference_ops, replay_ops,
@@ -1989,6 +2177,7 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
             span_exact ? 1 : 0, bound_by_cycles ? 1 : 0);
         fprintf(stderr, "  noreach exc=%lu spc=%08x cd=%d\n",
             exc_native, (unsigned)spc_native, (int)countdown);
+        jit_block_verify_record_outcome(JIT_VERIFY_SKIP_NOREACH);
         /* A no-reach is as much a finding as a mismatch -- the two engines
            disagreed about where the block ends -- so it has to name the
            instructions too. */
@@ -2009,6 +2198,7 @@ static void jit_block_verify_run(cpu_history *pc_hist, int blocklen, int total_c
     jit_block_verify_snapshot_free(&resume);
     jit_block_verify_snapshot_free(&interp);
     jit_block_verify_entry_reset();
+    jit_block_verify_active_pc = 0xffffffffu;
 }
 
 struct jit_flush_delta_snapshot {
@@ -4407,8 +4597,60 @@ static inline void block_need_recompile(blockinfo* bi)
  * entered.
  *
  * The cursor is an index rather than a pointer: the active list is rebuilt by
- * cache flushes between sweeps, and a retained blockinfo* would dangle.  A
- * recency table keeps a generation from re-checking the same block. */
+ * cache flushes between sweeps, and a retained blockinfo* would dangle.  An
+ * exact open-addressed set keeps a bounded generation from re-checking the
+ * same guest PC without suppressing colliding PCs. */
+enum {
+    JIT_VERIFY_SWEEP_SEEN_SLOTS = 16384,
+    JIT_VERIFY_SWEEP_SEEN_MAX = 8192,
+    JIT_VERIFY_SWEEP_SCAN = 4096
+};
+static uae_u32 jit_verify_sweep_seen[JIT_VERIFY_SWEEP_SEEN_SLOTS];
+static unsigned long jit_verify_sweep_seen_count = 0;
+static unsigned long jit_verify_sweep_eligible_count = 0;
+static unsigned long jit_verify_sweep_selected_count = 0;
+static unsigned long jit_verify_sweep_duplicate_count = 0;
+static unsigned long jit_verify_sweep_probe_count = 0;
+
+static void jit_verify_sweep_seen_reset(void)
+{
+    memset(jit_verify_sweep_seen, 0, sizeof(jit_verify_sweep_seen));
+    jit_verify_sweep_seen_count = 0;
+}
+
+/* An open-addressed exact set: unlike the former direct-mapped table, two PCs
+   that hash to the same home slot coexist and neither suppresses the other.
+   Reset only at a deliberate bounded-generation boundary. */
+static bool jit_verify_sweep_seen_or_insert(uae_u32 pc)
+{
+    if (jit_verify_sweep_seen_count >= JIT_VERIFY_SWEEP_SEEN_MAX)
+        jit_verify_sweep_seen_reset();
+    unsigned slot = (unsigned)((pc * 2654435761u) &
+        (JIT_VERIFY_SWEEP_SEEN_SLOTS - 1));
+    for (unsigned probes = 0; probes < JIT_VERIFY_SWEEP_SEEN_SLOTS; probes++) {
+        const uae_u32 seen = jit_verify_sweep_seen[slot];
+        if (seen == pc) {
+            jit_verify_sweep_duplicate_count++;
+            jit_verify_sweep_probe_count += probes;
+            return true;
+        }
+        if (!seen) {
+            jit_verify_sweep_seen[slot] = pc;
+            jit_verify_sweep_seen_count++;
+            jit_verify_sweep_probe_count += probes;
+            return false;
+        }
+        slot = (slot + 1) & (JIT_VERIFY_SWEEP_SEEN_SLOTS - 1);
+    }
+    /* The load factor is capped at 50%, so this is defensive rather than an
+       expected path. Reset and retain the candidate instead of suppressing it. */
+    jit_verify_sweep_seen_reset();
+    jit_verify_sweep_seen[(pc * 2654435761u) &
+        (JIT_VERIFY_SWEEP_SEEN_SLOTS - 1)] = pc;
+    jit_verify_sweep_seen_count = 1;
+    return false;
+}
+
 static inline void jit_verify_sweep_tick(void)
 {
     const unsigned long every = jit_verify_sweep_every();
@@ -4442,8 +4684,6 @@ static inline void jit_verify_sweep_tick(void)
     static unsigned long n = 0;
     if (++n % every)
         return;
-    enum { JIT_VERIFY_SWEEP_SLOTS = 8192, JIT_VERIFY_SWEEP_SCAN = 4096 };
-    static uae_u32 swept_pc[JIT_VERIFY_SWEEP_SLOTS];
     static unsigned long cursor = 0;
     /* The active list is rebuilt by cache flushes, so reaching its end is
        routine and must NOT clear the recency table -- doing that re-swept the
@@ -4457,7 +4697,7 @@ static inline void jit_verify_sweep_tick(void)
     if (!bi) {
         cursor = 0;
         if (++fruitless >= 2) {
-            memset(swept_pc, 0, sizeof(swept_pc));
+            jit_verify_sweep_seen_reset();
             fruitless = 0;
         }
         return;
@@ -4499,21 +4739,29 @@ static inline void jit_verify_sweep_tick(void)
            rest of the boot is wasted coverage. */
         if (!jit_verify_pc_in_ranges(pc, &have_ranges) && have_ranges)
             continue;
-        const unsigned slot =
-            (unsigned)((pc >> 1) & (JIT_VERIFY_SWEEP_SLOTS - 1));
-        if (swept_pc[slot] == pc)
+        jit_verify_sweep_eligible_count++;
+        if (jit_verify_sweep_seen_or_insert(pc))
             continue;
-        swept_pc[slot] = pc;
         jit_verify_sweep_pc = pc;
         block_need_recompile(bi);
         cursor++;
         fruitless = 0;
+        jit_verify_sweep_selected_count++;
+        if (jit_verify_sweep_selected_count <= 5 ||
+            (jit_verify_sweep_selected_count % 1000) == 0) {
+            fprintf(stderr,
+                "JITSWEEPSTATS eligible=%lu selected=%lu generation_distinct=%lu duplicates=%lu probes=%lu pc=%08x\n",
+                jit_verify_sweep_eligible_count, jit_verify_sweep_selected_count,
+                jit_verify_sweep_seen_count,
+                jit_verify_sweep_duplicate_count, jit_verify_sweep_probe_count,
+                (unsigned)pc);
+        }
         return;
     }
     if (!bi) {
         cursor = 0;
         if (++fruitless >= 2) {
-            memset(swept_pc, 0, sizeof(swept_pc));
+            jit_verify_sweep_seen_reset();
             fruitless = 0;
         }
     }

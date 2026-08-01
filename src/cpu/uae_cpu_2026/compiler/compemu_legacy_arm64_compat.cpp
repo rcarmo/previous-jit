@@ -1276,10 +1276,22 @@ void execute_normal(void)
 	   execute random memory past the test code boundary. */
 	if (quit_program > 0)
 		return;
-	/* Handle pending interrupts on every execute_normal entry. */
-	if (__atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE) & SPCFLAG_ALL) {
-		MakeSR();
-		m68k_do_specialties();
+	/* Handle pending interrupts on every execute_normal entry.  The ordinary
+	   block verifier clears this state to obtain a bounded semantic replay, so
+	   account for the real specialty seam separately rather than silently
+	   treating these entries as ordinary clean comparisons. */
+	{
+		const uae_u32 entry_spc =
+			__atomic_load_n(&regs.spcflags, __ATOMIC_ACQUIRE);
+		if (entry_spc & SPCFLAG_ALL) {
+			const uae_u32 entry_pc = (uae_u32)m68k_getpc();
+			jit_block_verify_specialty_begin(entry_pc, entry_spc,
+				(uae_u32)InterruptFlags);
+			MakeSR();
+			m68k_do_specialties();
+			jit_block_verify_specialty_end((uae_u32)m68k_getpc(),
+				(uae_u32)regs.spcflags, (uae_u32)InterruptFlags);
+		}
 	}
 
 	/* Previous code PCs are virtual under the 68040 MMU. Publish precise fault

@@ -135,10 +135,14 @@ EMU_PID=""
 echo "=== fg-verify-window range=$RANGE boot=${BOOT_SECONDS}s log=$LOG ==="
 echo "total JITBLOCKVERIFY lines: $(grep -c JITBLOCKVERIFY "$LOG" || true)"
 echo "mismatch=1 lines: $(grep -c 'mismatch=1' "$LOG" || true)"
-echo "skipped=trace_barrier lines: $(grep -c 'skipped=trace_barrier' "$LOG" || true)"
+echo "skip lines: $(grep -Ec 'SKIP-(ENTRY|SNAPSHOT|SPAN|IO|NOREACH)' "$LOG" || true)"
+echo "longjmp abort lines: $(grep -Ec '(ARM-)?ABORT-LONGJMP' "$LOG" || true)"
+echo "specialty outcome lines: $(grep -c 'JITBLOCKVERIFY specialty=' "$LOG" || true)"
+echo "--- final denominator report ---"
+grep 'JITBLOCKVERIFY stats' "$LOG" | tail -1 || true
 echo "--- mismatch=1 detail (first 40) ---"
 grep 'mismatch=1' "$LOG" | head -40 || true
-echo "--- window block PCs seen (0409ec*) ---"
-grep -oE 'block=0409ec[0-9a-f]+' "$LOG" | sort | uniq -c | head -40 || true
+echo "--- distinct verified block PCs (first 40) ---"
+grep -oE 'block=[0-9a-f]{8}' "$LOG" | sort | uniq -c | head -40 || true
 [[ -n "${SAVE_LOG:-}" ]] && cp "$LOG" "$SAVE_LOG" && echo "saved log -> $SAVE_LOG"
 exit 0

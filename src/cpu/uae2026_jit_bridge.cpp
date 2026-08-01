@@ -1947,8 +1947,8 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
     if (prb != 0) {
         /* Abnormal resume: anything bracketed across the jump has been
          * skipped, including the block verifier's re-entrancy guard. */
-        extern void Uae2026JitVerifyNestedRunAborted(void);
-        Uae2026JitVerifyNestedRunAborted();
+        extern void Uae2026JitVerifyNestedRunAborted(int exception);
+        Uae2026JitVerifyNestedRunAborted(prb);
     }
     if (prb == 0) {
         __exvalue = 0;
@@ -2189,8 +2189,8 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
         bridge_trace_lowpc_resume("PRE", prb);
         int prb2 = setjmp(__exbuf);
         if (prb2 != 0) {
-            extern void Uae2026JitVerifyNestedRunAborted(void);
-            Uae2026JitVerifyNestedRunAborted();
+            extern void Uae2026JitVerifyNestedRunAborted(int exception);
+            Uae2026JitVerifyNestedRunAborted(prb2);
         }
         if (prb2 == 0) {
             __exvalue = 0;

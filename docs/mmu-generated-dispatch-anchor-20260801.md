@@ -68,7 +68,26 @@ Dispatch census:
 | C `execute_normal` calls | 40,907,268 | 18,086,831 |
 | C cache hits | 40,905,587 | 18,085,150 |
 
-The generated path therefore removes 22.82 million C lookup round trips at this anchor while preserving every architectural/timing gate. The larger generated code footprint is visible in average block code (`2338.515 B` inverse vs `2770.629 B` candidate) and peak cache (`3,931,044 B` vs `4,657,428 B`); this tranche is accepted for semantic correctness and dispatch elimination, not yet as a wall-time speed claim.
+The generated path therefore removes 22.82 million C lookup round trips at this anchor while preserving every architectural/timing gate. The larger inline generated code footprint is visible in average block code (`2338.515 B` inverse vs `2770.629 B` candidate) and peak cache (`3,931,044 B` vs `4,657,428 B`); this tranche is accepted for semantic correctness and dispatch elimination, not yet as a wall-time speed claim.
+
+## Shared-dispatch follow-up (`cb30ff3`)
+
+The safe short-block follow-up factors the same accepted full-identity predicate into one popall-space thunk. `PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH_SHARED=0` preserves the inline implementation as the exact inverse; unset/`1` selects the shared thunk whenever fast dispatch is enabled.
+
+At the same 256-I/O anchor:
+
+- direct hits remain exactly `22,820,437` and safe C fallbacks `18,085,706`;
+- SCSI/CycInt hashes, 194 exceptions, handler counts and cycle/retirement totals remain identical;
+- average generated block falls `2770.629 B → 2338.515 B` (`−432.114 B`, `−15.60%`);
+- peak cache falls `4,657,428 B → 3,931,044 B` (`−726,384 B`, `−15.60%`);
+- deferred per-block branch flushes fall `55,095 → 18,285`.
+
+Artifacts:
+
+- inline inverse: `/workspace/tmp/mmu-dispatch-shared-anchor-inline-cb30ff3-20260801-085353`
+- shared candidate: `/workspace/tmp/mmu-dispatch-shared-anchor-candidate-cb30ff3-20260801-085425`
+
+No block-formation policy changed. Constant-jump MMU fetch/span protection and the existing flush-before-`raise_in_cl_list()` publication boundary remain intact.
 
 ## Reproduction
 
@@ -81,6 +100,15 @@ OUTDIR=/workspace/tmp/mmu-generated-dispatch-control-$(git rev-parse --short HEA
 PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH=1 \
 OUTDIR=/workspace/tmp/mmu-generated-dispatch-candidate-$(git rev-parse --short HEAD)-$(date +%Y%m%d-%H%M%S) \
   ./tools/jit-timing-anchor.sh
-```
 
-Next: reduce short-block/code-publication overhead without weakening constant-jump MMU fetch protection or moving icache maintenance past handler publication.
+# Same fast predicate, inline inverse versus shared thunk.
+PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH=1 \
+PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH_SHARED=0 \
+OUTDIR=/workspace/tmp/mmu-dispatch-shared-inline-$(git rev-parse --short HEAD)-$(date +%Y%m%d-%H%M%S) \
+  ./tools/jit-timing-anchor.sh
+
+PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH=1 \
+PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH_SHARED=1 \
+OUTDIR=/workspace/tmp/mmu-dispatch-shared-candidate-$(git rev-parse --short HEAD)-$(date +%Y%m%d-%H%M%S) \
+  ./tools/jit-timing-anchor.sh
+```

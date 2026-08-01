@@ -130,7 +130,10 @@ Current validation flow:
 ./tools/headless-jit-bootstrap-probe.sh
 ./tools/headless-jit-bridge-smoke.sh
 ./tools/uae2026-opcode-harness.sh
+./tools/uae2026-mmu-fast-smoke.sh
+./tools/fg-verify-window.sh 0x01000000-0x0100ffff 45
 ./tools/jit-microbench.sh
+./tools/jit-timing-anchor.sh
 ./tools/uae2026-compiler-syntax-probe.sh
 ./tools/uae2026-compiler-object-probe.sh
 ```
@@ -142,6 +145,8 @@ Notes:
 - `PREVIOUS_UAE2026_JIT=0` gives an interpreter baseline for harness comparison
 - `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch path; native RAM mode now stays in translated execution unless the explicit oracle handoff is requested
 - `PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH=1` opts into the accepted generated full-identity MMU dispatcher; unset/`0` retains the exact C-dispatch inverse while this remains experimental
+- with fast dispatch enabled, the shared popall predicate is the default; `PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH_SHARED=0` retains the accepted inline inverse for exact A/B runs
+- block-verifier reports use an explicit `attempted`/`terminal` denominator and separate compare, skip, longjmp and specialty outcomes; see `docs/verifier-coverage-accounting-20260801.md`
 - `B2_JIT_RTE_FAULT_HANDOFF=1` requests the conservative RTE/page-fault interpreter handoff oracle; leaving it unset (or setting `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`) preserves the remaining native-resume bug for diagnosis
 - `B2_JIT_LOW_VIRTUAL_SINGLESTEP=1`, `B2_JIT_LOW_VIRTUAL_PREFETCH_GUARD=1`, `B2_JIT_EXACT_EXEC_PCS`, `B2_JIT_PCTRACE_WORDS`, and opt-in `B2_JIT_PCTRACE_LIVE=1` are diagnostics for low-user-virtual MMU/code-fetch and state-divergence analysis; they are not default-on fixes
 - RAM/MMU code paths must keep data-space and code-space translations separate: the private bank `xlateaddr` is for data effective addresses, while branch/return/dispatch PC materialization uses the dedicated code-space host translator

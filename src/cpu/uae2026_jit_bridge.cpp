@@ -362,6 +362,35 @@ extern "C" void Uae2026JitBenchmarkReport(void)
     if (!(env && *env && strcmp(env, "0")))
         return;
     bridge_helper_census_dump("final");
+    {
+        extern unsigned long jit_retire_obs[4];
+        const char *expected_env = getenv("B2_JIT_BENCH_EXPECTED_INSNS");
+        const unsigned long long expected = (expected_env && *expected_env)
+            ? strtoull(expected_env, NULL, 0) : 0;
+        const unsigned long long observed =
+            (unsigned long long)jit_retire_obs[0] + jit_retire_obs[1] +
+            jit_retire_obs[2] + jit_retire_obs[3];
+        const bool active = Uae2026JitBridgeIsActive();
+        /* The interpreter loop recognizes the synthetic STOP before invoking
+         * its retirement observer.  The JIT first-pass tracer observes STOP,
+         * then invokes the same trailer service.  Reconcile that intentional
+         * callback asymmetry explicitly instead of calling it skipped work. */
+        const unsigned long long stop_unobserved =
+            (!active && expected == observed + 1) ? 1 : 0;
+        const bool reconciled = expected != 0 &&
+            observed + stop_unobserved == expected;
+        const unsigned long long native_ppm = observed && active
+            ? ((unsigned long long)jit_retire_obs[0] * 1000000ULL) / observed : 0;
+        const unsigned long long trace_ppm = observed && active
+            ? ((unsigned long long)jit_retire_obs[2] * 1000000ULL) / observed : 0;
+        fprintf(stderr,
+            "JITBENCHCOVERAGE active=%d architectural=%llu observed=%llu "
+            "stop_unobserved=%llu reconciled=%d paths=%lu/%lu/%lu/%lu "
+            "native_ppm=%llu trace_ppm=%llu\n",
+            active ? 1 : 0, expected, observed, stop_unobserved,
+            reconciled ? 1 : 0, jit_retire_obs[0], jit_retire_obs[1],
+            jit_retire_obs[2], jit_retire_obs[3], native_ppm, trace_ppm);
+    }
     Uae2026JitDiagnosticReport();
 }
 

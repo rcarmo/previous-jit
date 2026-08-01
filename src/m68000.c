@@ -26,6 +26,7 @@ const char M68000_fileid[] = "Hatari m68000.c : " __DATE__ " " __TIME__;
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
 extern void Uae2026JitSyncRamRangeToShadow(uae_u32 addr, uae_u32 bytes);
@@ -157,6 +158,8 @@ void M68000_Init(void)
 
 static int pendingInterrupts = 0;
 static bool opcode_test_mode_active = false;
+static uaecptr opcode_test_start_addr = 0;
+static uaecptr opcode_test_stop_end_addr = 0;
 
 static bool opcode_test_dump_enabled(void)
 {
@@ -216,20 +219,55 @@ static bool opcode_test_parse_longs(const char *hex, Uint32 *out_longs, size_t m
 	return n > 0;
 }
 
+static bool opcode_test_apply_register_state(uaecptr stack_addr)
+{
+	const char *init = getenv("B2_TEST_INIT");
+	Uint32 init_words[17];
+	size_t init_count = 0;
+	int i;
+
+	for (i = 0; i < 8; i++) {
+		m68k_dreg(regs, i) = 0;
+		m68k_areg(regs, i) = 0;
+	}
+	m68k_areg(regs, 7) = stack_addr;
+	regs.usp = stack_addr;
+	regs.isp = stack_addr;
+	regs.msp = stack_addr;
+	regs.sr = 0x2700;
+	MakeFromSR();
+
+	if (init && *init) {
+		if (!opcode_test_parse_longs(init, init_words, sizeof(init_words) / sizeof(init_words[0]), &init_count) ||
+			(init_count != 16 && init_count != 17)) {
+			fprintf(stderr, "B2_TEST_INIT parse failed (need 16 or 17 hex words)\n");
+			return false;
+		}
+		for (i = 0; i < 8; i++)
+			m68k_dreg(regs, i) = init_words[i];
+		for (i = 0; i < 8; i++)
+			m68k_areg(regs, i) = init_words[8 + i];
+		if (init_count == 17)
+			regs.sr = (uae_u16)(init_words[16] & 0xffff);
+		regs.usp = m68k_areg(regs, 7);
+		regs.isp = m68k_areg(regs, 7);
+		regs.msp = m68k_areg(regs, 7);
+		MakeFromSR();
+	}
+	return true;
+}
+
 bool Uae2026OpcodeTestModeSetup(void)
 {
 	const char *hex = getenv("B2_TEST_HEX");
-	const char *init = getenv("B2_TEST_INIT");
 	const char *mem_longs = getenv("B2_TEST_MEM_LONGS");
 	const char *test_addr_env = getenv("B2_TEST_ADDR");
 	const uaecptr test_addr = (test_addr_env && *test_addr_env) ? (uaecptr)strtoul(test_addr_env, NULL, 0) : 0x01001000;
 	const uaecptr stack_addr = 0x04010000;
 	const Uint32 rom_offset = test_addr & 0x0001ffff;
 	Uint16 words[1024];
-	Uint32 init_words[17];
 	Uint32 mem_words[512];
 	size_t n_words = 0;
-	size_t init_count = 0;
 	size_t mem_count = 0;
 	int i;
 
@@ -265,34 +303,8 @@ bool Uae2026OpcodeTestModeSetup(void)
 		Uae2026JitBridgeSyncOpcodeTestShadow();
 	}
 
-	for (i = 0; i < 8; i++) {
-		m68k_dreg(regs, i) = 0;
-		m68k_areg(regs, i) = 0;
-	}
-	m68k_areg(regs, 7) = stack_addr;
-	regs.usp = stack_addr;
-	regs.isp = stack_addr;
-	regs.msp = stack_addr;
-	regs.sr = 0x2700;
-	MakeFromSR();
-
-	if (init && *init) {
-		if (!opcode_test_parse_longs(init, init_words, sizeof(init_words) / sizeof(init_words[0]), &init_count) ||
-			(init_count != 16 && init_count != 17)) {
-			fprintf(stderr, "B2_TEST_INIT parse failed (need 16 or 17 hex words)\n");
-			return false;
-		}
-		for (i = 0; i < 8; i++)
-			m68k_dreg(regs, i) = init_words[i];
-		for (i = 0; i < 8; i++)
-			m68k_areg(regs, i) = init_words[8 + i];
-		if (init_count == 17)
-			regs.sr = (uae_u16)(init_words[16] & 0xffff);
-		regs.usp = m68k_areg(regs, 7);
-		regs.isp = m68k_areg(regs, 7);
-		regs.msp = m68k_areg(regs, 7);
-		MakeFromSR();
-	}
+	if (!opcode_test_apply_register_state(stack_addr))
+		return false;
 
 	if (mem_longs && *mem_longs) {
 		if (!opcode_test_parse_longs(mem_longs, mem_words, sizeof(mem_words) / sizeof(mem_words[0]), &mem_count) ||
@@ -307,6 +319,8 @@ bool Uae2026OpcodeTestModeSetup(void)
 	regs.stopped = 0;
 	unset_special(SPCFLAG_STOP | SPCFLAG_BRK | SPCFLAG_DOTRACE | SPCFLAG_TRACE | SPCFLAG_DEBUGGER);
 	m68k_setpc(test_addr);
+	opcode_test_start_addr = test_addr;
+	opcode_test_stop_end_addr = test_addr + (uaecptr)(n_words * 2) + 4;
 	opcode_test_mode_active = true;
 	return true;
 }
@@ -318,7 +332,8 @@ bool Uae2026OpcodeTestModeActive(void)
 
 bool Uae2026OpcodeTestModeHandleStopTrailerAt(uint32_t logical_pc)
 {
-	if (!opcode_test_mode_active || get_word(logical_pc) != 0x4e72)
+	if (!opcode_test_mode_active || logical_pc != opcode_test_stop_end_addr - 4 ||
+		get_word(logical_pc) != 0x4e72 || get_word(logical_pc + 2) != 0x2700)
 		return false;
 	regs.sr = get_word(logical_pc + 2);
 	MakeFromSR();
@@ -579,22 +594,26 @@ void Uae2026JitCpuCheckTicks(int cycles)
 	}
 }
 
+static void opcode_test_complete_pending_trailer(void)
+{
+	/* The experimental JIT can hand control back to m68k_go at a clean
+	 * compiled-block boundary before the harness sentinel/STOP trailer has
+	 * executed. Complete only the exact final MOVEA.L + synthetic STOP pair. */
+	const uaecptr pc = m68k_getpc();
+	if (pc == opcode_test_stop_end_addr - 10 && get_word(pc) == 0x2c7c &&
+		get_word(pc + 6) == 0x4e72) {
+		m68k_areg(regs, 6) = get_long(pc + 2);
+		m68k_setpc(pc + 6);
+		Uae2026OpcodeTestModeHandleStopTrailer();
+	}
+}
+
 void Uae2026OpcodeTestModeFinish(void)
 {
 	if (!opcode_test_mode_active)
 		return;
 
-	/* The experimental JIT can hand control back to m68k_go at a clean
-	 * compiled-block boundary before the harness sentinel/STOP trailer has
-	 * executed.  If we are exactly at the harness' MOVEA.L #sentinel,A6
-	 * trailer, complete that trailer before dumping so the opcode result is
-	 * compared after the same architectural stop point as the interpreter. */
-	if (get_word(m68k_getpc()) == 0x2c7c) {
-		uaecptr pc = m68k_getpc();
-		m68k_areg(regs, 6) = get_long(pc + 2);
-		m68k_setpc(pc + 6);
-		Uae2026OpcodeTestModeHandleStopTrailer();
-	}
+	opcode_test_complete_pending_trailer();
 
 	opcode_test_mode_active = false;
 	Uae2026JitBenchmarkReport();
@@ -706,7 +725,54 @@ static bool opcode_test_reenter_pass2(void)
 void M68000_Start(void)
 {
 	if (Uae2026OpcodeTestModeSetup()) {
-		m68k_go(true);				/* pass 1: compile the block */
+		const char *warm_env = getenv("B2_TEST_BENCH_REPEATS");
+		unsigned long warm_repeats = (warm_env && *warm_env) ? strtoul(warm_env, NULL, 0) : 0;
+		if (warm_repeats > 1000)
+			warm_repeats = 1000;
+		m68k_go(true);				/* pass 1: compile/warm the block */
+		if (warm_repeats) {
+			if (getenv("B2_TEST_MEM_LONGS")) {
+				fprintf(stderr, "B2_TEST_BENCH_REPEATS does not support mutable seeded memory\n");
+				_Exit(2);
+			}
+			const char *sentinel_env = getenv("B2_TEST_BENCH_SENTINEL");
+			const uae_u32 expected_sentinel = (sentinel_env && *sentinel_env)
+				? (uae_u32)strtoul(sentinel_env, NULL, 16) : 0;
+			if (!expected_sentinel) {
+				fprintf(stderr, "B2_TEST_BENCH_REPEATS requires B2_TEST_BENCH_SENTINEL\n");
+				_Exit(2);
+			}
+			for (unsigned long sample = 1; sample <= warm_repeats; sample++) {
+				struct timespec before, after;
+				const int64_t cycles_before = nCyclesMainCounter;
+				if (!opcode_test_apply_register_state(0x04010000))
+					_Exit(2);
+				regs.stopped = 0;
+				unset_special(SPCFLAG_STOP | SPCFLAG_BRK | SPCFLAG_DOTRACE | SPCFLAG_TRACE | SPCFLAG_DEBUGGER);
+				m68k_setpc(opcode_test_start_addr);
+				clock_gettime(CLOCK_MONOTONIC, &before);
+				m68k_go(true);
+				opcode_test_complete_pending_trailer();
+				clock_gettime(CLOCK_MONOTONIC, &after);
+				const unsigned long long elapsed_ns = (unsigned long long)(
+					(long long)(after.tv_sec - before.tv_sec) * 1000000000LL +
+					(long long)after.tv_nsec - (long long)before.tv_nsec);
+				MakeSR();
+				const bool valid = regs.stopped && m68k_getpc() == opcode_test_stop_end_addr &&
+					m68k_dreg(regs, 0) == 0 && m68k_areg(regs, 6) == expected_sentinel &&
+					regs.sr == 0x2700;
+				fprintf(stderr,
+					"JITBENCHWARM sample=%lu active=%d elapsed_ns=%llu cycles=%lld valid=%d "
+					"d0=%08x a6=%08x pc=%08x\n",
+					sample, Uae2026JitBridgeIsActive() ? 1 : 0, elapsed_ns,
+					(long long)(nCyclesMainCounter - cycles_before), valid ? 1 : 0,
+					(unsigned)m68k_dreg(regs, 0), (unsigned)m68k_areg(regs, 6),
+					(unsigned)m68k_getpc());
+				fflush(stderr);
+				if (!valid)
+					_Exit(3);
+			}
+		}
 		if (opcode_test_reenter_pass2()) {
 #if defined(ENABLE_EXPERIMENTAL_UAE2026_JIT)
 			/* pass 2: direct JIT dispatcher re-entry (NOT the m68k_go loop);

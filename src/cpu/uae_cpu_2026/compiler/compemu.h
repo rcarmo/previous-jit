@@ -619,6 +619,10 @@ typedef struct blockinfo_t {
     uae_u32 mmu_generation;
     uae_u8 mmu_supervisor;
     uae_u8 mmu_identity_valid;
+    /* Set only when the complete translated source footprint is confined to
+       the entry 4 KiB page. Generated MMU dispatch still checks every dynamic
+       identity field before using this as its final page-boundary gate. */
+    uae_u8 mmu_fast_dispatch_safe;
 
     uae_u32 c1;
     uae_u32 c2;

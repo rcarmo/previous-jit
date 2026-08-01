@@ -321,9 +321,11 @@ static void bridge_helper_census_dump(const char *tag)
         extern unsigned long jit_shadow_sync_hits, jit_shadow_sync_copies;
         extern unsigned long jit_ident_exempt_1page_csumfail;
         extern unsigned long jit_need_check_revalidated, jit_need_check_discarded;
+        extern unsigned long jit_mmu_fast_dispatch_hit, jit_mmu_fast_dispatch_miss;
         fprintf(stderr, "JITIDENT ok=%lu rej_ident=%lu rej_gen=%lu gen1p8k=%lu "
             "gen1p4k=%lu exempt1p=%lu gen=%u bumps=%lu icdefer=%lu icflush=%lu "
-            "shhit=%lu shcopy=%lu csfail=%lu reval=%lu revdisc=%lu",
+            "shhit=%lu shcopy=%lu csfail=%lu reval=%lu revdisc=%lu "
+            "fast_hit=%lu fast_miss=%lu",
             jit_ident_ok, jit_ident_rej_ident, jit_ident_rej_gen,
             jit_ident_rej_gen_1page, jit_ident_rej_gen_1page4k,
             jit_ident_exempt_1page,
@@ -331,7 +333,8 @@ static void bridge_helper_census_dump(const char *tag)
             jit_icache_flush_deferred, jit_icache_flush_immediate,
             jit_shadow_sync_hits, jit_shadow_sync_copies,
             jit_ident_exempt_1page_csumfail,
-            jit_need_check_revalidated, jit_need_check_discarded);
+            jit_need_check_revalidated, jit_need_check_discarded,
+            jit_mmu_fast_dispatch_hit, jit_mmu_fast_dispatch_miss);
         for (int i = 0; i < MMU_CHANGE_SOURCES; i++)
             if (mmu_change_by_source[i].count)
                 fprintf(stderr, " %08x=%lu", mmu_change_by_source[i].source,
@@ -441,6 +444,11 @@ extern "C" void Uae2026JitHelperBegin(uae_u32 op_pc, uae_u32 descriptor)
 extern "C" uae_u32 Uae2026JitMmuGeneration(void)
 {
     return mmu_translation_generation;
+}
+
+extern "C" uintptr_t Uae2026JitMmuGenerationAddress(void)
+{
+    return (uintptr_t)&mmu_translation_generation;
 }
 
 extern "C" void Uae2026JitPrepareContinuationWrite(uae_u32 post_pc)

@@ -59,6 +59,8 @@ void Uae2026JitHelperClear(void);
 void Uae2026JitPrepareContinuationWrite(uint32_t post_pc);
 uintptr_t Uae2026JitPrepareMmuDispatchTarget(uint32_t logical_pc);
 uint32_t Uae2026JitMmuGeneration(void);
+/* Read-only storage address for generated full-identity dispatch checks. */
+uintptr_t Uae2026JitMmuGenerationAddress(void);
 void Uae2026JitMmuTranslationChanged(uint32_t source);
 void Uae2026JitMmuTxnBeginCallPushTarget(uint32_t pc, uint32_t target_pc);
 void Uae2026JitMmuTxnBeginCallPushCurrentA7ForOpcode(uint32_t pc, uint32_t opcode);
@@ -98,6 +100,7 @@ static inline uintptr_t Uae2026JitPrepareMmuDispatchTarget(uint32_t logical_pc) 
     (void)logical_pc; return 0;
 }
 static inline uint32_t Uae2026JitMmuGeneration(void) { return 0; }
+static inline uintptr_t Uae2026JitMmuGenerationAddress(void) { return 0; }
 static inline void Uae2026JitMmuTranslationChanged(uint32_t source) { (void)source; }
 static inline void Uae2026JitMmuTxnBeginCallPushTarget(uint32_t pc, uint32_t target_pc) {
     (void)pc; (void)target_pc;

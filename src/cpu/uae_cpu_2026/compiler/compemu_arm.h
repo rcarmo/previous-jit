@@ -439,6 +439,8 @@ typedef struct blockinfo_t {
   uae_u32 mmu_generation;
   uae_u8 mmu_supervisor;
   uae_u8 mmu_identity_valid;
+  /* Complete translated source footprint is local to the entry 4 KiB page. */
+  uae_u8 mmu_fast_dispatch_safe;
 
   uae_u32 c1;
   uae_u32 c2;

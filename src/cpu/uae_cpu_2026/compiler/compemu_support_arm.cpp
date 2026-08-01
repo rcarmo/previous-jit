@@ -3962,6 +3962,20 @@ unsigned long jit_ident_rej_gen = 0;
 unsigned long jit_ident_rej_gen_1page = 0;
 unsigned long jit_ident_rej_gen_1page4k = 0;
 unsigned long jit_ident_exempt_1page = 0;
+/* Generated MMU dispatch is opt-in until its deterministic parity series is
+ * accepted. The emitter reads this once per process, so unset/0 produces the
+ * byte-for-byte legacy C-dispatch epilogue. */
+static inline bool jit_mmu_fast_dispatch_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH");
+        cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+unsigned long jit_mmu_fast_dispatch_hit = 0;
+unsigned long jit_mmu_fast_dispatch_miss = 0;
 
 /* Default ON: measured, 165 s to the NeXTSTEP desktop without it and 120 s
  * with it, on the same binary and the same harness (qa21/qb22, 2026-07-30).
@@ -4286,6 +4300,7 @@ void invalidate_block(blockinfo* bi)
     bi->direct_handler = NULL;
     set_dhtu(bi, bi->direct_pen);
     bi->needed_flags = 0xff;
+    bi->mmu_fast_dispatch_safe = 0;
     bi->status = BI_INVALID;
     for (i = 0; i < 2; i++) {
         bi->dep[i].jmp_off = NULL;
@@ -4781,6 +4796,7 @@ static inline blockinfo* get_blockinfo_addr_new(void* addr, uae_u32 guest_pc)
                 bi->mmu_generation = Uae2026JitMmuGeneration();
                 bi->mmu_supervisor = supervisor;
                 bi->mmu_identity_valid = (uae_u8)(jit_allow_ram_dispatch_env() && regs.mmu_enabled);
+                bi->mmu_fast_dispatch_safe = 0;
                 invalidate_block(bi);
                 add_to_active(bi);
                 add_to_cl_list(bi);
@@ -9093,6 +9109,7 @@ static void prepare_block(blockinfo* bi)
         bi->stable_edge_pc[i] = 0;
     }
     bi->stable_edge_mask = 0;
+    bi->mmu_fast_dispatch_safe = 0;
     bi->status = BI_INVALID;
     bi->needed_flags = FLAG_ALL;
 }
@@ -9878,6 +9895,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
         bi->mmu_generation = Uae2026JitMmuGeneration();
         bi->mmu_supervisor = (uae_u8)(regs.s != 0);
         bi->mmu_identity_valid = (uae_u8)(jit_allow_ram_dispatch_env() && regs.mmu_enabled);
+        bi->mmu_fast_dispatch_safe = 0;
         bi2 = get_blockinfo(cl);
         const bool bi_was_invalid = (bi->status == BI_INVALID);
 
@@ -11265,6 +11283,14 @@ endblock_done:
                     (uae_u32)csi_pg->length);
         }
 
+#if defined(CPU_AARCH64)
+        /* The inline dispatcher is intentionally narrower than the C identity
+           predicate: only one checksum span wholly inside the entry 4 KiB page
+           may transfer directly. Multi-span and boundary-crossing blocks keep
+           the generation-aware C path. */
+        bi->mmu_fast_dispatch_safe = (uae_u8)
+            (bi->mmu_identity_valid && jit_block_code_single_page(bi, 0x0fffu));
+#endif
         bi->status = BI_ACTIVE;
 #if defined(CPU_AARCH64)
         /* RAM blocks compiled from zeroed source: keep as BI_NEED_CHECK.

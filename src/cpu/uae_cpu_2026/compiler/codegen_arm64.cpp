@@ -971,9 +971,128 @@ LOWFUNC(NONE,NONE,2,compemu_raw_endblock_canonical_pc,(RR4 rr_pc, IM32 cycles))
 }
 LENDFUNC(NONE,NONE,2,compemu_raw_endblock_canonical_pc,(RR4 rr_pc, IM32 cycles))
 
+/* Opt-in steady-state MMU dispatcher. Every branch to `slow` preserves the
+ * established C predicate and its generation-promotion/collision behaviour.
+ * The direct arm accepts only the cacheline primary with the complete current
+ * execution identity and a finalised one-page-local source footprint. None of
+ * these instructions modifies NZCV, which remains guest architectural state. */
+STATIC_INLINE void compemu_raw_mmu_fast_dispatch(RR4 rr_pc)
+{
+    if (!jit_mmu_fast_dispatch_enabled()) {
+        uae_u32* dispatch_exit = (uae_u32*)get_target();
+        B_i(0);
+        write_jmp_target(dispatch_exit, (uintptr)popall_execute_normal);
+        return;
+    }
+
+    uae_u32* slow_branches[16];
+    unsigned slow_count = 0;
+    auto slow_if_x_nonzero = [&](int reg) {
+        slow_branches[slow_count++] = (uae_u32*)get_target();
+        CBNZ_xi(reg, 0);
+    };
+    auto slow_if_w_nonzero = [&](int reg) {
+        slow_branches[slow_count++] = (uae_u32*)get_target();
+        CBNZ_wi(reg, 0);
+    };
+
+    /* execute_normal previously owned both gates. Preserve their ordering
+       after the block-boundary tick and countdown charge, before any direct
+       successor transfer. */
+    LOAD_U64(REG_WORK4, (uintptr)&countdown);
+    LDR_wXi(REG_WORK1, REG_WORK4, 0);
+    slow_branches[slow_count++] = (uae_u32*)get_target();
+    TBNZ_wii(REG_WORK1, 31, 0);
+    LDR_wXi(REG_WORK1, R_REGSTRUCT,
+        (uintptr)&regs.spcflags - (uintptr)&regs);
+    slow_if_w_nonzero(REG_WORK1);
+
+    LDR_wXi(REG_WORK1, R_REGSTRUCT,
+        (uintptr)&regs.mmu_enabled - (uintptr)&regs);
+    slow_branches[slow_count++] = (uae_u32*)get_target();
+    CBZ_wi(REG_WORK1, 0);
+
+    /* Derive the even cacheline index from the translated host PC. */
+    MOV_xx(REG_WORK2, rr_pc);
+    UBFM_xxii(REG_WORK2, REG_WORK2, 1, 17);
+    LSL_xxi(REG_WORK2, REG_WORK2, 1);
+    const uintptr cache_tags_off = (uintptr)&regs.cache_tags - (uintptr)&regs;
+    LDR_xXi(REG_WORK1, R_REGSTRUCT, cache_tags_off);
+    /* Keep the installed handler in WORK3 and the primary block in WORK2. */
+    LDR_xXxLSLi(REG_WORK3, REG_WORK1, REG_WORK2, 3);
+    ADD_xxi(REG_WORK2, REG_WORK2, 1);
+    LDR_xXxLSLi(REG_WORK2, REG_WORK1, REG_WORK2, 3);
+    slow_branches[slow_count++] = (uae_u32*)get_target();
+    CBZ_xi(REG_WORK2, 0); /* null primary */
+
+    LDR_xXi(REG_WORK1, REG_WORK2, offsetof(blockinfo, pc_p));
+    EOR_xxx(REG_WORK1, REG_WORK1, rr_pc);
+    slow_if_x_nonzero(REG_WORK1);
+
+    LDR_wXi(REG_WORK1, REG_WORK2, offsetof(blockinfo, guest_pc));
+    LDR_wXi(REG_WORK4, R_REGSTRUCT, (uintptr)&regs.pc - (uintptr)&regs);
+    EOR_www(REG_WORK1, REG_WORK1, REG_WORK4);
+    slow_if_w_nonzero(REG_WORK1);
+
+    LDRB_wXi(REG_WORK1, REG_WORK2, offsetof(blockinfo, mmu_supervisor));
+    LDRB_wXi(REG_WORK4, R_REGSTRUCT, (uintptr)&regs.s - (uintptr)&regs);
+    EOR_www(REG_WORK1, REG_WORK1, REG_WORK4);
+    slow_if_w_nonzero(REG_WORK1);
+
+    LDRB_wXi(REG_WORK1, REG_WORK2, offsetof(blockinfo, mmu_identity_valid));
+    slow_branches[slow_count++] = (uae_u32*)get_target();
+    CBZ_wi(REG_WORK1, 0);
+    LDRB_wXi(REG_WORK1, REG_WORK2, offsetof(blockinfo, mmu_fast_dispatch_safe));
+    slow_branches[slow_count++] = (uae_u32*)get_target();
+    CBZ_wi(REG_WORK1, 0);
+
+    LDR_wXi(REG_WORK1, REG_WORK2, offsetof(blockinfo, mmu_generation));
+    LOAD_U64(REG_WORK4, Uae2026JitMmuGenerationAddress());
+    LDR_wXi(REG_WORK4, REG_WORK4, 0);
+    EOR_www(REG_WORK1, REG_WORK1, REG_WORK4);
+    slow_if_w_nonzero(REG_WORK1);
+
+    LDRB_wXi(REG_WORK1, REG_WORK2, offsetof(blockinfo, status));
+    LOAD_U32(REG_WORK4, BI_ACTIVE);
+    EOR_www(REG_WORK1, REG_WORK1, REG_WORK4);
+    slow_if_w_nonzero(REG_WORK1);
+
+    LDR_xXi(REG_WORK1, REG_WORK2, offsetof(blockinfo, handler_to_use));
+    EOR_xxx(REG_WORK4, REG_WORK1, REG_WORK3);
+    slow_if_x_nonzero(REG_WORK4);
+    LOAD_U64(REG_WORK4, (uintptr)popall_execute_normal);
+    EOR_xxx(REG_WORK4, REG_WORK1, REG_WORK4);
+    slow_branches[slow_count++] = (uae_u32*)get_target();
+    CBZ_xi(REG_WORK4, 0);
+    LOAD_U64(REG_WORK4, (uintptr)popall_recompile_block);
+    EOR_xxx(REG_WORK4, REG_WORK1, REG_WORK4);
+    slow_branches[slow_count++] = (uae_u32*)get_target();
+    CBZ_xi(REG_WORK4, 0);
+    LOAD_U64(REG_WORK4, (uintptr)popall_check_checksum);
+    EOR_xxx(REG_WORK4, REG_WORK1, REG_WORK4);
+    slow_branches[slow_count++] = (uae_u32*)get_target();
+    CBZ_xi(REG_WORK4, 0);
+
+    LOAD_U64(REG_WORK4, (uintptr)&jit_mmu_fast_dispatch_hit);
+    LDR_xXi(REG_WORK1, REG_WORK4, 0);
+    ADD_xxi(REG_WORK1, REG_WORK1, 1);
+    STR_xXi(REG_WORK1, REG_WORK4, 0);
+    BR_x(REG_WORK3);
+
+    const uintptr slow_target = (uintptr)get_target();
+    for (unsigned i = 0; i < slow_count; ++i)
+        write_jmp_target(slow_branches[i], slow_target);
+    LOAD_U64(REG_WORK4, (uintptr)&jit_mmu_fast_dispatch_miss);
+    LDR_xXi(REG_WORK1, REG_WORK4, 0);
+    ADD_xxi(REG_WORK1, REG_WORK1, 1);
+    STR_xXi(REG_WORK1, REG_WORK4, 0);
+    uae_u32* dispatch_exit = (uae_u32*)get_target();
+    B_i(0);
+    write_jmp_target(dispatch_exit, (uintptr)popall_execute_normal);
+}
+
 /* MMU correctness path: publish a translated host PC, preserve the separate
- * logical regs.pc, and leave through execute_normal instead of the physical-
- * pointer cache tag.  execute_normal retraces/selects using the logical key. */
+ * logical regs.pc, and leave through the full-identity dispatcher above. */
 LOWFUNC(NONE,NONE,2,compemu_raw_endblock_mmu_dispatch,(RR4 rr_pc, IM32 cycles))
 {
     /* scaled_cycles is expressed in CYCLE_UNIT fractions. Publish whole CPU
@@ -1027,9 +1146,7 @@ LOWFUNC(NONE,NONE,2,compemu_raw_endblock_mmu_dispatch,(RR4 rr_pc, IM32 cycles))
     STR_xXi(rr_pc, REG_WORK3, 0);
     LOAD_U64(REG_WORK3, (uintptr)&regs.pc_oldp);
     STR_xXi(rr_pc, REG_WORK3, 0);
-    uae_u32* dispatch_exit = (uae_u32*)get_target();
-    B_i(0);
-    write_jmp_target(dispatch_exit, (uintptr)popall_execute_normal);
+    compemu_raw_mmu_fast_dispatch(rr_pc);
 }
 LENDFUNC(NONE,NONE,2,compemu_raw_endblock_mmu_dispatch,(RR4 rr_pc, IM32 cycles))
 

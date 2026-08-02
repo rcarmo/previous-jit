@@ -114,6 +114,17 @@ class VNCClient:
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         return txt_path.read_text(errors="replace") if txt_path.exists() else ""
 
+    def pointer(self, x: int, y: int, button_mask: int = 0) -> None:
+        sock = self._ensure_sock()
+        sock.sendall(struct.pack(">BBHH", 5, button_mask, x, y))
+
+    def click(self, x: int, y: int, delay: float = 0.15) -> None:
+        self.pointer(x, y)
+        self.pointer(x, y, 1)
+        time.sleep(delay)
+        self.pointer(x, y)
+        time.sleep(delay)
+
     def press(self, keysym: int, delay: float = 0.05) -> None:
         sock = self._ensure_sock()
         sock.sendall(struct.pack(">BBHI", 4, 1, 0, keysym))
@@ -133,6 +144,12 @@ class VNCClient:
 
 DESKTOP_RE = re.compile(r"Workspace|File Viewer", re.IGNORECASE)
 INSTALL_RE = re.compile(r"Install\s+NEXTSTEP|Restart", re.IGNORECASE)
+FIRST_BOOT_CONFIRM_RE = re.compile(
+    r"English language|USA keyboard|correct selections|Welcome|"
+    r"Select your language[\s\S]{0,500}Select your keyboard|"
+    r"Francais[\s\S]{0,300}espanol",
+    re.IGNORECASE,
+)
 
 
 def write_result(outdir: Path, values: dict[str, str]) -> None:
@@ -155,6 +172,8 @@ def main() -> int:
     parser.add_argument("--desktop-poll", type=int, default=30)
     parser.add_argument("--stable-wait", type=int, default=0,
                         help="seconds to keep the desktop running after first detection before a final capture")
+    parser.add_argument("--normal-boot", action="store_true",
+                        help="do not enter single-user or run fsck; poll an already-configured fixture directly")
     args = parser.parse_args()
 
     outdir = Path(args.outdir)
@@ -167,23 +186,26 @@ def main() -> int:
         "desktop_reached": "0",
         "stable_reached": "0",
         "install_activated": "0",
+        "first_boot_confirmed": "0",
         "final_tag": "",
         "stable_tag": "",
     }
 
     time.sleep(args.boot_wait)
     client.capture("boot_prompt")
-    client.command("")
-    time.sleep(args.shell_wait)
-    client.capture("shell_prompt")
-    client.command("fsck -y /dev/rsd0a")
-    time.sleep(args.fsck_wait)
-    client.capture("after_fsck")
-    client.command("exit")
+    if not args.normal_boot:
+        client.command("")
+        time.sleep(args.shell_wait)
+        client.capture("shell_prompt")
+        client.command("fsck -y /dev/rsd0a")
+        time.sleep(args.fsck_wait)
+        client.capture("after_fsck")
+        client.command("exit")
 
     elapsed = 0
     poll_index = 0
     install_activated = False
+    first_boot_confirmed = False
     while elapsed < args.desktop_timeout:
         time.sleep(args.desktop_poll)
         elapsed += args.desktop_poll
@@ -206,7 +228,14 @@ def main() -> int:
                 print(f"METRIC stable_tag={stable_tag}")
             write_result(outdir, status)
             return 0 if status["stable_reached"] == "1" or args.stable_wait <= 0 else 3
-        if INSTALL_RE.search(text) and not install_activated:
+        if FIRST_BOOT_CONFIRM_RE.search(text) and not first_boot_confirmed:
+            # A newly completed NEXTSTEP installation presents an English/USA
+            # confirmation alert before Workspace.  The asserted selections
+            # are already correct and OK is the default button.
+            client.command("")
+            first_boot_confirmed = True
+            status["first_boot_confirmed"] = "1"
+        elif INSTALL_RE.search(text) and not install_activated:
             client.command("")
             install_activated = True
             status["install_activated"] = "1"

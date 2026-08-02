@@ -2633,7 +2633,7 @@ static uae_u32 jit_disp_ea_020(uae_u32 base, int offset, int *consumed)
 
 static inline void jit_emit_runtime_helper_barrier(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2);
 static inline void jit_emit_runtime_helper_barrier_arch_pc(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2);
-static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2, uae_u32 helper_kind, bool architectural_pc);
+static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2, uae_u32 helper_kind, bool architectural_pc, bool fallback_completion = false);
 
 static inline bool jit_force_optlev1_opcode(uae_u16 op)
 {
@@ -2719,14 +2719,64 @@ static inline bool jit_force_exact_exec_nostats_pc(uae_u32 pc)
 	return false;
 }
 
+static inline bool jit_env_truthy_cached(const char *name, int *cached)
+{
+    if (*cached < 0) {
+        const char *env = getenv(name);
+        *cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    return *cached != 0;
+}
+
+/* The compiled full-SR wrappers remain useful as a bounded inverse, but the
+ * immutable NeXTSTEP boot A/B shows that neither wrapper family is safe as a
+ * product default: native MVSR2 reaches the IPC "strange rights" panic, while
+ * native MV2SR.W prevents WindowServer startup. */
+static inline bool jit_native_full_sr_env(void)
+{
+    static int cached = -1;
+    return jit_env_truthy_cached("B2_JIT_NATIVE_FULL_SR", &cached);
+}
+
 static inline bool jit_keep_sr_exact_env(void)
 {
     static int cached = -1;
-    if (cached < 0) {
-        const char *env = getenv("B2_JIT_KEEP_SR_EXACT");
-        cached = (env && *env && strcmp(env, "0") != 0) ? 1 : 0;
-    }
-    return cached != 0;
+    return jit_env_truthy_cached("B2_JIT_KEEP_SR_EXACT", &cached);
+}
+
+static inline bool jit_keep_mvsr2_exact_env(void)
+{
+    static int cached = -1;
+    return jit_env_truthy_cached("B2_JIT_KEEP_MVSR2_EXACT", &cached);
+}
+
+static inline bool jit_keep_mv2sr_exact_env(void)
+{
+    static int cached = -1;
+    return jit_env_truthy_cached("B2_JIT_KEEP_MV2SR_EXACT", &cached);
+}
+
+/* Diagnostic discriminator: keep the translated runtime-helper/barrier exit,
+ * but let Previous's generated 68040 handler own the SR opcode semantics.  If
+ * this clears a boot failure, the duplicated native helper body is at fault;
+ * if it does not, the common helper boundary is.  Default-off so the existing
+ * native-vs-exact controls retain their meaning. */
+static inline bool jit_sr_authoritative_handler_env(void)
+{
+    static int cached = -1;
+    return jit_env_truthy_cached("B2_JIT_SR_AUTHORITATIVE_HANDLER", &cached);
+}
+
+/* Completion-only discriminator for either SR semantic body.  It keeps the
+ * compiled SR wrapper and helper/MMU longjmp boundary, but on successful
+ * return uses the ordinary exact-fallback retirement contract: clear the
+ * helper transaction, import Previous's flags, and dispatch from logical
+ * regs.pc.  This remains default-off while the duplicated native body and the
+ * authoritative generated body are tested independently. */
+static inline bool jit_sr_fallback_completion_env(void)
+{
+    static int cached = -1;
+    return jit_env_truthy_cached("B2_JIT_SR_FALLBACK_COMPLETION", &cached);
 }
 
 static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op, uae_u32 pc)
@@ -2737,13 +2787,18 @@ static inline bool jit_force_interpreter_barrier_opcode(uae_u16 op, uae_u32 pc)
 	   MOVEM uses readlong/writelong in gencomp.c.
 	   PC_P uses 64-bit eviction/reload in tomem/do_load_reg. */
 
-    /* The dedicated full-SR helpers materialise flags across the JIT/Previous
-       ABI, call the authoritative MakeSR/MakeFromSR implementation, preserve
-       68040 restart ordering, and terminate at their runtime PC.  Keep the old
-       exact-interpreter path as an inverse control for boot and verifier A/B. */
-    if (jit_keep_sr_exact_env() &&
-        ((table68k[op].mnemo == i_MV2SR && table68k[op].size == sz_word) ||
-         table68k[op].mnemo == i_MVSR2))
+    /* The exact generated 68040 handlers are the accepted product path for
+       MOVE SR/CCR,<ea> and MOVE <ea>,SR.  A valid immutable-fixture A/B showed
+       distinct failures with either compiled family left enabled.  Keep both
+       exact by default; B2_JIT_NATIVE_FULL_SR=1 is the explicit inverse, and
+       the family/SR-wide exact controls remain stronger overrides. */
+    const bool is_mv2sr_word = table68k[op].mnemo == i_MV2SR &&
+                               table68k[op].size == sz_word;
+    const bool is_mvsr2 = table68k[op].mnemo == i_MVSR2;
+    if ((!jit_native_full_sr_env() && (is_mv2sr_word || is_mvsr2)) ||
+        (jit_keep_sr_exact_env() && (is_mv2sr_word || is_mvsr2)) ||
+        (jit_keep_mv2sr_exact_env() && is_mv2sr_word) ||
+        (jit_keep_mvsr2_exact_env() && is_mvsr2))
         return true;
 
 	/* Environment-gated barriers for debugging (B2_JIT_RESTORE_BARRIERS).
@@ -3438,6 +3493,7 @@ static int     branch_cc;
 static int redo_current_block;
 static bool jit_force_runtime_pc_endblock = false;
 static bool jit_force_runtime_pc_preserve_logical = false;
+static bool jit_force_fallback_logical_pc_endblock = false;
 
 #ifdef UAE
 int segvcount = 0;
@@ -6433,6 +6489,28 @@ static inline void jit_runtime_fullsr_end(void)
     Uae2026InterpreterFlagsToJit();
 }
 
+static inline bool jit_runtime_fullsr_authoritative(uae_u32 opcode)
+{
+    if (!jit_sr_authoritative_handler_env())
+        return false;
+
+    /* The wrapper already established Uae2026JitHelperBegin(), so this call
+       runs under the same bridge/MMU longjmp boundary as the duplicated helper.
+       Convert flags exactly as the ordinary fallback/tracer seams do, execute
+       the selected 68040 handler, and leave PC/restart/EA ordering to generated
+       cpuemu_31 semantics.  The wrapper's normal post-call commit still owns
+       target translation and compiled-block termination. */
+    jit_runtime_fullsr_begin();
+    const uae_u32 mapped_opcode = (uae_u32)cft_map(opcode);
+    /* Match the ordinary generated-handler ABI: both the table index and the
+       handler argument use the cft-mapped opcode.  Passing the raw fetched
+       word here made this diagnostic differ from the accepted fallback on
+       hosts/builds where cft_map is not the identity. */
+    cpufunctbl[mapped_opcode](mapped_opcode);
+    jit_runtime_fullsr_end();
+    return true;
+}
+
 static inline void jit_trace_fullsr_helper(const char *kind, uae_u32 opcode)
 {
     static int enabled = -1;
@@ -6496,6 +6574,8 @@ static void jit_runtime_eorsr_word(uae_u32 src)
 static void jit_runtime_mvsr2_full(uae_u32 opcode)
 {
     jit_trace_fullsr_helper("mvsr2", opcode);
+    if (jit_runtime_fullsr_authoritative(opcode))
+        return;
     const uae_u32 real_opcode = opcode;
     const uae_u32 dstreg = real_opcode & 7;
     const bool ccr_only = (real_opcode & 0x0200) != 0;
@@ -6568,6 +6648,8 @@ static void jit_runtime_mvsr2_full(uae_u32 opcode)
 static void jit_runtime_mv2sr_word_full(uae_u32 opcode)
 {
     jit_trace_fullsr_helper("mv2sr", opcode);
+    if (jit_runtime_fullsr_authoritative(opcode))
+        return;
     jit_runtime_fullsr_begin();
     if (!regs.s) {
         Exception(8, 0);
@@ -7560,7 +7642,7 @@ static void op_illegal_trap_comp_ff(uae_u32 opcode)
         (uintptr)(comp_pc_p + m68k_pc_offset_thisinst), opcode, 0, false);
 }
 
-static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2, uae_u32 helper_kind, bool architectural_pc)
+static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr pc, uae_u32 arg1, uae_u32 arg2, bool has_arg2, uae_u32 helper_kind, bool architectural_pc, bool fallback_completion)
 {
     if (!pc)
         jit_abort("runtime semantic helper: missing exact opcode PC");
@@ -7584,9 +7666,18 @@ static inline void jit_emit_runtime_helper_barrier_kind(uintptr helper, uintptr 
         compemu_raw_mov_l_ri(REG_PAR2, arg2);
     compemu_raw_call(helper);
     prepare_for_call_2();
-    compemu_raw_call(architectural_pc
-        ? (uintptr)Uae2026JitHelperCommitArchitecturalPc
-        : (uintptr)Uae2026JitHelperCommitCurrentPc);
+    if (fallback_completion) {
+        /* Match the successful generated-handler fallback seam exactly.  The
+           handler has published logical regs.pc and Previous's regflags; do
+           not reconstruct or eagerly translate that successor here. */
+        compemu_raw_call((uintptr)Uae2026JitHelperClear);
+        compemu_raw_call((uintptr)Uae2026InterpreterFlagsToJit);
+        jit_force_fallback_logical_pc_endblock = true;
+    } else {
+        compemu_raw_call(architectural_pc
+            ? (uintptr)Uae2026JitHelperCommitArchitecturalPc
+            : (uintptr)Uae2026JitHelperCommitCurrentPc);
+    }
     live.state[PC_P].realreg = -1;
     live.state[PC_P].val = 0;
     set_status(PC_P, INMEM);
@@ -7683,7 +7774,8 @@ static void op_fullsr_mvsr2_comp_ff(uae_u32 opcode)
        its runtime PC rather than continuing from compile-time PC facts. */
     jit_emit_runtime_helper_barrier_kind((uintptr)jit_runtime_mvsr2_full,
         jit_compile_current_op_host_pc, opcode, 0, false,
-        UAE2026_JIT_HELPER_EXACT_OPCODE, false);
+        UAE2026_JIT_HELPER_EXACT_OPCODE, false,
+        jit_sr_fallback_completion_env());
 }
 
 static void op_fullsr_mv2sr_w_comp_ff(uae_u32 opcode)
@@ -7692,7 +7784,8 @@ static void op_fullsr_mv2sr_w_comp_ff(uae_u32 opcode)
        Re-enter through the helper-published logical PC under the new mode. */
     jit_emit_runtime_helper_barrier_kind((uintptr)jit_runtime_mv2sr_word_full,
         jit_compile_current_op_host_pc, opcode, 0, false,
-        UAE2026_JIT_HELPER_EXACT_OPCODE, false);
+        UAE2026_JIT_HELPER_EXACT_OPCODE, false,
+        jit_sr_fallback_completion_env());
 }
 
 #if defined(CPU_AARCH64) 
@@ -10444,6 +10537,7 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
             branch_cc = 0; // Only to be initialized. Will be set together with next_pc_p
             jit_force_runtime_pc_endblock = false;
             jit_force_runtime_pc_preserve_logical = false;
+            jit_force_fallback_logical_pc_endblock = false;
             bool forced_interpreter_barrier = false;
 
             comp_pc_p = (uae_u8*)pc_hist[0].location;
@@ -10719,12 +10813,16 @@ void compile_block(cpu_history* pc_hist, int blocklen, int totcycles)
                         data_check_end(12, 64);
 #endif
                         compemu_raw_maybe_do_nothing(retired_cycles);
-                        compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
-                        if (jit_mmu_execution_key_active() ||
-                            jit_force_runtime_pc_preserve_logical)
-                            compemu_raw_endblock_mmu_dispatch(REG_PC_TMP, retired_cycles);
-                        else
-                            jit_endblock_runtime_pc(REG_PC_TMP, retired_cycles);
+                        if (jit_force_fallback_logical_pc_endblock) {
+                            jit_endblock_fallback_logical_pc(retired_cycles);
+                        } else {
+                            compemu_raw_mov_l_rm(REG_PC_TMP, (uintptr)&regs.pc_p);
+                            if (jit_mmu_execution_key_active() ||
+                                jit_force_runtime_pc_preserve_logical)
+                                compemu_raw_endblock_mmu_dispatch(REG_PC_TMP, retired_cycles);
+                            else
+                                jit_endblock_runtime_pc(REG_PC_TMP, retired_cycles);
+                        }
                         forced_interpreter_barrier = true;
                         break;
                     }

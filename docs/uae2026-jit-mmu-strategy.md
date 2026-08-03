@@ -9,7 +9,8 @@ The top-down correctness contract is maintained separately in
 contract to judge whether a proposed JIT/MMU/timer fix is valid before treating a moved
 boot frontier as progress.  The contract now also contains the expanded missing-case
 audit matrix; every new RAM/MMU change should identify which row it advances and which
-≤120s discriminator or static proof applies.
+≤120s discriminator or static proof applies. Current product policy and acceptance
+status are consolidated in [`current-jit-status.md`](current-jit-status.md).
 
 ## Problem statement
 
@@ -260,15 +261,31 @@ from per-PC frontier chasing to replacing or proving the remaining shims:
    publication, code/data split, exact MOVES/SFC/DFC, Aipi/Apdi barriers, MOVEC
    block boundaries, exact MMUOP, and zero-PC-as-symptom while MMU is enabled.
 
-## Current frontier after the low-user JSR transaction checkpoint
+## Historical frontier after the low-user JSR transaction checkpoint
 
-- Committed fix: `e7d280b jit: rollback BSR target-fetch faults`. The proven historical seam still logs `JIT_CALL_TARGET_ROLLBACK fault_pc=00003372 op_pc=00003374 op=61ff addr=00012b04`, not `JIT_CALL_TARGET_ROLLBACK_TXN`, so the bridge scan remains the active compatibility shim for that exact case.
-- Follow-up transaction coverage adds explicit `call_push` metadata producers for generated BSR, generic fallback BSR, compiled-block fallback BSR, and AArch64 legacy-loop BSR paths. As of `9441c84`, fallback BSR paths pass producer-side decoded targets into the bridge rather than asking the bridge to re-read extension words from `regs.pc_p`. The low-user `00008334: JSR (A1) -> 00007f72` seam now also publishes a generated/fallback JSR call-push transaction in RAM/MMU mode. Return-family fallback paths now publish return-pop transactions for `RTS`/`RTR` target-fetch faults.
+This checkpoint explains why the implementation still retained bounded legacy
+BSR and auto-EA compatibility guards. Present-tense product status is tracked
+in [`current-jit-status.md`](current-jit-status.md).
+
+- Committed checkpoint fix: `e7d280b jit: rollback BSR target-fetch faults`.
+  The proven historical seam still logs `JIT_CALL_TARGET_ROLLBACK`
+  `fault_pc=00003372 op_pc=00003374 op=61ff addr=00012b04`, not
+  `JIT_CALL_TARGET_ROLLBACK_TXN`, so the bridge scan remained the
+  compatibility shim for that exact case.
+- Follow-up transaction coverage at this checkpoint added explicit `call_push`
+  metadata producers for generated BSR, generic fallback BSR, compiled-block
+  fallback BSR, and AArch64 legacy-loop BSR paths. As of `9441c84`, fallback
+  BSR paths pass producer-side decoded targets into the bridge rather than
+  asking the bridge to re-read extension words from `regs.pc_p`. The low-user
+  `00008334: JSR (A1) -> 00007f72` seam then also published a
+  generated/fallback JSR call-push transaction in RAM/MMU mode.
+  Return-family fallback paths now publish return-pop transactions for
+  `RTS`/`RTR` target-fetch faults.
 - Bridge gating keeps auto-EA rollback limited to restartable cases that need it and prevents the legacy BSR scan from treating stack-push/absolute-control extension words as BSR opcodes. This keeps the old `00003964/A2=00000002` regression away while matching the interpreter's non-restartable `MOVE.L D0,-(SP)` fault at `0000c53c`.  The guard-invariant proof also found that AArch64 MOVES gapfill is helper-backed through normal data helpers, so RAM/MMU dispatch now treats all `i_MOVES` opcodes as exact interpreter barriers to preserve SFC/DFC and MOVES-specific SSW semantics.
 - The generated/native `jit_op_rte()` helper routes through the exact interpreter RTE implementation, avoiding a duplicate hand-coded frame decoder.
 - Zero-PC vector recovery is disabled while the 040 MMU is enabled; in that mode, zero PC is treated as a symptom to diagnose rather than recovered by jumping to vector 2.
 - RAM/MMU mode no longer hands bridge-caught RTE/page-fault seams to the interpreter by default. Validation: `/workspace/tmp/previous-jit-no-auto-handoff-ram-20260522-091833` kept JIT active with `jit_ram_dispatch_seen=1` and no `RTE fault handoff to interpreter` / `JIT_FALLBACK` log entries; it does not yet reach the desktop.
-- The explicit oracle path remains available with `B2_JIT_RTE_FAULT_HANDOFF=1`; historical long runs reached and held the desktop with `desktop_reached=1`, `stable_reached=1`, and `jit_ram_dispatch_seen=1`. These long desktop oracles are historical artifacts under the current 120s validation rule.
+- The explicit oracle path remains available with `B2_JIT_RTE_FAULT_HANDOFF=1`. Historical long runs reached and held the desktop, and the later immutable exact-by-default acceptance arm reached Workspace/File Viewer on its first poll and remained stable for the deliberate 120-second stability hold. This does not confer acceptance on native no-handoff.
 - The native resume path remains unfixed. After code-shadow, low-user call transaction fixes, MOVEM continuation-EA preservation, fallback BSR metadata alignment, and the generated/fallback `00008334` JSR transaction, historical no-handoff runs got past the previous `00007f72/00008a60` stack divergence and OCR reached `root on sd@`, then timed out before desktop around the later `040674d0/040674f6/040674fa/04067500` kernel loop. Current acceptance is the bounded opcode/MMU/fault baseline plus a focused discriminator before broad native-resume changes. `B2_JIT_TRACE_LOWPC_RESUME=1` remains the default-off bridge diagnostic for this seam; it logs pre/post-`Exception(2)` low-PC state without changing resume behavior.
 - Follow-up non-mutating diagnostics mapped the `040674d0..04067500` loop in `/workspace/tmp/previous-jit-pcwords-040674-nohandoff-20260527-122700`: `040674d0` loads the scheduler/run-queue table at `040b6d1c`, masks the selected entry with `-8`, and branches into `040674f6..04067504`, which polls longwords at `A4=040c32f8`, `D6=040b7410`, and `D5=040c32e8` until one becomes nonzero. The sampled state (`D3=0`, `D5=040c32e8`, `D6=040b7410`, `A4=040c32f8`, `SR=2004`) makes this high-kernel loop look like an idle/wakeup symptom, not the local root cause.
 - The same diagnostic run shows the key oracle split clearly: explicit handoff (`/workspace/tmp/previous-jit-jsr8334-native-ram-handoff-20260527-012754`) has only the first nine bridge-caught MMU exceptions and then boots via the interpreter; native no-handoff keeps JIT active after the first `04001ae6 -> 00003334` RTE fault and accumulates later user/code faults, with repeated hot fault PCs such as `0000aef4`, `0000b04e`, `0500b6b0`, `050171be`, and `05017336`. The next actionable comparison should target those post-root user faults or the transaction/restart state that allows them, not the kernel idle loop itself.

@@ -1,5 +1,9 @@
 # Plan: migrate `compemu` away from giant generated C bodies toward inline ARM64 emission
 
+Present-tense product policy and acceptance evidence are consolidated in
+[`current-jit-status.md`](current-jit-status.md). This file retains the
+migration plan plus dated RAM/MMU checkpoint lessons.
+
 ## Problem
 
 `src/cpu/uae_cpu_2026/compiler/compemu.cpp` is currently a transplanted, generated compiler body.
@@ -150,7 +154,46 @@ That order gives the fastest path from “crashes on first JIT entry” to “op
 
 ## 2026-05-24 Previous RAM/MMU checkpoint
 
-The opcode harness remains a reliable green gate for the current curated vector set: the refreshed default baseline passes when split into bounded chunks under the 120s rule (`/workspace/tmp/previous-opcode-harness-20260601-124403`, `/workspace/tmp/previous-opcode-harness-20260601-124502`, `/workspace/tmp/previous-opcode-harness-20260601-124558`; combined `pass=75 fail=0 score=100`), while the unfiltered default run hit the cap at `/workspace/tmp/previous-opcode-harness-20260601-124112` and is not counted. The refreshed RAM-code MMU fast-smoke vector set also remains clean from `0x04008000` when split into bounded chunks (`/workspace/tmp/previous-opcode-harness-20260601-125250`, `/workspace/tmp/previous-opcode-harness-20260601-125405`; combined `pass=32 fail=0 score=100`), while the unchunked wrapper hit the cap at `/workspace/tmp/previous-mmu-fast-smoke-20260601-125024` and is not counted. Default/ROM JIT bootstrap is refreshed and clean (`/workspace/tmp/previous-jit-bootstrap-20260601-130216`, `bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`, `aslr_active=1`); the longer desktop smoke remains the historical `/workspace/tmp/previous-jit-bsr-metadata-default-20260526-132634` and was not rerun under the 120s rule.  Follow-up bounded RAM gates after the forced-fault oracle work are also clean: focused fault tuples (`/workspace/tmp/previous-opcode-harness-20260531-090328`, `pass=11 fail=0 score=100`) and non-fault seam/call vectors (`/workspace/tmp/previous-opcode-harness-20260531-090739`, `pass=12 fail=0 score=100`); a broader unfiltered non-fault RAM run hit the 120s cap at `/workspace/tmp/previous-opcode-harness-20260531-090522` and is not counted. RAM-requested mode now preserves native translated execution unless the explicit conservative oracle `B2_JIT_RTE_FAULT_HANDOFF=1` is requested; that oracle boots to a stable desktop in the latest long/no-DC run (`/workspace/tmp/previous-jit-bsr-metadata-ram-handoff-long-20260526-133132`). The current blocker is therefore narrower than generic opcode bring-up: native JIT resume after the RTE/page-fault seam. Commit `9441c84` aligned fallback BSR call-push transaction metadata, but native no-handoff still times out after RTE/low-PC churn.
+This checkpoint text is historical provenance. The later accepted gates are
+155/155 opcode+fault, 67/67 RAM/MMU, 38/38 CPU state, 11/11 focused
+exact-default and native-inverse SR/fault matrices, plus the immutable
+exact-by-default Workspace/File Viewer boot recorded in
+[`current-jit-status.md`](current-jit-status.md).
+
+At the 2026-06-01 bounded refresh, the opcode harness remained a reliable gate
+for the then-current curated vector set: the refreshed default baseline passed
+when split into bounded chunks under the 120s rule
+(`pass=75 fail=0 score=100` across
+`/workspace/tmp/previous-opcode-harness-20260601-124403`,
+`/workspace/tmp/previous-opcode-harness-20260601-124502`, and
+`/workspace/tmp/previous-opcode-harness-20260601-124558`), while the
+unfiltered default run hit the cap at
+`/workspace/tmp/previous-opcode-harness-20260601-124112` and is not counted.
+The refreshed RAM-code MMU fast-smoke vector set also remained clean from
+`0x04008000` when split into bounded chunks (`pass=32 fail=0 score=100` across
+`/workspace/tmp/previous-opcode-harness-20260601-125250` and
+`/workspace/tmp/previous-opcode-harness-20260601-125405`), while the unchunked
+wrapper hit the cap at `/workspace/tmp/previous-mmu-fast-smoke-20260601-125024`
+and is not counted. Default/ROM JIT bootstrap was refreshed and clean
+(`bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`,
+`aslr_active=1`; `/workspace/tmp/previous-jit-bootstrap-20260601-130216`);
+the longer desktop smoke was the historical
+`/workspace/tmp/previous-jit-bsr-metadata-default-20260526-132634` and was not
+rerun under the 120s rule. Follow-up bounded RAM gates after the forced-fault
+oracle work were also clean: focused fault tuples
+(`/workspace/tmp/previous-opcode-harness-20260531-090328`,
+`pass=11 fail=0 score=100`) and non-fault seam/call vectors
+(`/workspace/tmp/previous-opcode-harness-20260531-090739`,
+`pass=12 fail=0 score=100`); a broader unfiltered non-fault RAM run hit the
+120s cap at `/workspace/tmp/previous-opcode-harness-20260531-090522` and is
+not counted. RAM-requested mode preserved native translated execution unless
+`B2_JIT_RTE_FAULT_HANDOFF=1` was requested; at that checkpoint the explicit
+oracle booted to a stable desktop in the long/no-DC run
+(`/workspace/tmp/previous-jit-bsr-metadata-ram-handoff-long-20260526-133132`).
+The blocker at that stage was therefore narrower than generic opcode bring-up:
+native JIT resume after the RTE/page-fault seam. Commit `9441c84` aligned
+fallback BSR call-push transaction metadata, but native no-handoff still timed
+out after RTE/low-PC churn.
 
 Current RAM-mode lessons for the migration plan:
 

@@ -4,8 +4,10 @@
 
 This is a deterministic census of the existing single-page MMU generation-key
 exemption against its blanket-key inverse. It is not a desktop benchmark: both
-arms terminate after exactly 256 guest-driven SCSI transactions, before the
-known-invalid copied-disk fixture reaches its later IPC-rights panic.
+arms terminate after exactly 256 guest-driven SCSI transactions. The copied
+fixture used at this checkpoint later reached an IPC-rights panic; a different,
+immutable post-logout fixture subsequently passed exact-by-default full-boot
+acceptance. See [`current-jit-status.md`](current-jit-status.md).
 
 Checkpoint: `9a2d29fb1035d01e6270f855b2ff196bce1e7d84`
 

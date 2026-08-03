@@ -12,10 +12,16 @@ If you're starting a new session here, read this file end-to-end before
 touching the JIT or the VNC server.  The JIT bridge is full of subtle
 exception-frame conventions that are easy to break.
 
+Current policy and acceptance evidence are consolidated in
+`docs/current-jit-status.md`. Dated failure/frontier sections in this guide are
+historical provenance when they conflict with that page.
+
 ## TL;DR — workflows
 
-* **Boot the emulator headless on `:5901` with the canonical JIT+handoff recipe:**
-  `make headless-jit`
+* **Run the legacy detached headless launcher on `:5901`:**
+  `make headless-jit` (despite the target name, `tools/headless-launch.sh`
+  currently defaults this mode to interpreter unless
+  `PREVIOUS_UAE2026_JIT=1 PREVIOUS_UAE2026_JIT_RAM=1` is supplied).
 * **Stop a detached headless run:**
   `make headless-stop`
 * **Rebuild after a code change:**
@@ -83,43 +89,37 @@ These are read in `snapshot_bridge_prefs` (search for `env_truthy` /
 | `B2_JIT_RTE_FAULT_HANDOFF_RESUME_INSNS`        | 0       | **One-shot handoff** — disable JIT for only N interpreter instructions, then call `Uae2026JitBridgeResumeFromHandoff` and let JIT take over again. 0 keeps the historical permanent handoff. |
 | `B2_JIT_TRACE_*`                               | off     | Various diagnostic tracers.  Search `uae2026_jit_bridge.cpp` for the full list. |
 
-### The canonical headless boot recipe
+### Accepted headless boot configuration
+
+The accepted JIT configuration is:
 
 ```bash
 PREVIOUS_UAE2026_JIT=1
 PREVIOUS_UAE2026_JIT_RAM=1
 B2_JIT_RTE_FAULT_HANDOFF=1
-PREVIOUS_RTC_UNIX_TIME=0x2ec46472
+# B2_JIT_NATIVE_FULL_SR unset: exact generated full-SR handling is default
 ```
 
-This is encoded in `tools/headless-launch.sh`'s `jit` mode and surfaced as
-`make headless-jit`.  With these settings NeXTSTEP 3.3 reaches the File
-Viewer in ~3-4 minutes on the Orange Pi 6 host.
+The immutable acceptance run used
+`tools/headless-nextstep-harness.sh` with a per-run writable copy of the
+post-logout `0444` source fixture. It reached Workspace/File Viewer at the
+first poll and remained stable for 120 seconds. See
+`docs/current-jit-status.md` and
+`docs/sr-native-helper-validation-20260731.md`.
 
-### The cmd-185 stall
+`make headless-jit` is not currently an exact encoding of that acceptance arm:
+`tools/headless-launch.sh` defaults its `jit` mode to interpreter unless the two
+JIT variables are explicitly forced. Do not cite an unqualified
+`make headless-jit` run as JIT acceptance.
 
-**Partially resolved.**  The Compiler-correctness ratchet below cleared
-several major bugs (notably the `cpu_model=68000` silent no-op and the
-`VREGS=22` scratch overflow), but pure JIT with `PREVIOUS_UAE2026_JIT_RAM=1`
-still hits a non-deterministic codegen-correctness crash at PC=0x01002c70 in
-Previous's ROM init: `[NextBus] Bus error lput at FFFFFFFC` followed by a
-fatal double MMU exception 2 while pushing an exception frame to `sp=0`.
-The canonical `make headless-jit` recipe therefore stays on the
-interpreter (`PREVIOUS_UAE2026_JIT=0`) with `B2_JIT_RTE_FAULT_HANDOFF=1`
-as a belt-and-braces fallback if anyone explicitly turns the JIT back on.
-This matches the behaviour the recipe had in practice for this entire
-iteration of work.
+### Historical cmd-185 stall
 
-The `B2_JIT_RTE_FAULT_HANDOFF_*` knobs and the audit at
-`/workspace/notes/macemu-jit-cmd185-audit.md` are kept for reference; the
-recipe escape hatch is:
-
-```
-PREVIOUS_UAE2026_JIT=1 PREVIOUS_UAE2026_JIT_RAM=1 make headless-jit ...
-```
-
-to force-enable the real JIT for an experiment.  Use
-`make headless-oneshot` for per-event handoff testing instead.
+The earlier `0x01002c70`/cmd-185 failure and its compiler-correctness ratchet
+are retained below as provenance. They are not the current product frontier.
+Subsequent work reached full translated boot, closed timing/MMU/verifier gates,
+and selected exact generated handling for unsafe full-SR wrappers. The open
+boundary is now native RAM/MMU no-handoff; `B2_JIT_RTE_FAULT_HANDOFF=1` remains
+the conservative desktop oracle.
 
 ### Compiler-correctness ratchet
 
@@ -162,10 +162,11 @@ old silent path masked.  The fixes so far:
      (all 14 DBcc + all 14 Bcc handlers) bulk-rewritten to use
      `arm_ADD_l_ri` to match `compemu_arm.cpp`.
 
-Open items:
+Historical open items at this checkpoint (later superseded by the current
+status page):
 
 * **Stack-pop + return continuation after ROM exception probes**.  The
-  earlier CRC-loop blockers are now cleared far enough to reach the next
+  earlier CRC-loop blockers were cleared far enough to reach the next
   concrete failure:
 
   * `9256730` fixed the `op_1219` fallback-call bug (`move.b (a1)+,d1`
@@ -179,8 +180,8 @@ Open items:
   * `be3d961` accepts the low ROM mirror in ARM64 bad-PC guards, removing
     the `bad_pc_p` / `flush_icache_hard(n=7)` loop at `0x0000ff02`.
 
-  Current blocker: pure-JIT boot now reaches later kernel/SCSI work.  The
-  active failure is in a kernel exception handler around `PC=0x04001e48`:
+  The blocker at that checkpoint was in a kernel exception handler around
+  `PC=0x04001e48`:
   `op=0828` (`BTST.B #4,(A0,...)`) faults because `A0` has become
   `0x4e71f4d8` before the bit test.  Focused trace shows the handler enters
   near `0x04001e1e` with `A0=0x040003f8`, then by `0x04001e48` A0 is the
@@ -199,9 +200,9 @@ Open items:
   structure and/or the MOVEM/predecrement handler that sets up the exception
   frame before this path.
 
-### Why the JIT looks slow today
+### Historical throughput checkpoint
 
-**Fixed.**  Two compounding bugs:
+Two compounding bugs were fixed:
 
 1. Commit `2779c47` — the global `PrefsFindInt32` stub returned 0 for
    the "cpu" key, so the JIT compiler thought `cpu_model = 68000` and
@@ -213,22 +214,15 @@ Open items:
    `set_status invalid vreg N` in compile_block, killing the JIT every
    time it tried to compile DBcc, BTST, BCHG, etc.
 
-With both fixed, on `tools/jit-microbench.sh` (40 M m68k-insn tight loop):
+Those raw development throughput numbers are historical and used an earlier
+workload/method. The accepted fixed-frequency benchmark is now the bounded
+report in `docs/bounded-jit-benchmark-20260731.md`: median 1.765103× for a cold
+process and 6.283813× for the warm in-process CPU loop. The scopes must not be
+merged.
 
-| Configuration               | Throughput            |
-|----------------------------|----------------------:|
-| Interpreter                | 11.59 M m68k-insn/s   |
-| JIT (post-fix)             | 99.75 M m68k-insn/s   |
-
-At 200 M m68k insns the JIT settles at **473.93 M m68k-insn/s** (38.6×
-faster than the interpreter).
-
-**Pure JIT now drives the full NeXTSTEP boot to the File Viewer
-desktop**, with no `B2_JIT_RTE_FAULT_HANDOFF` and no
-`RESUME_INSNS`.  Bridge handoff machinery (`51a7f8a`) and the
-silent-no-op safety fallback in `headless-launch.sh` are no longer
-needed for the canonical recipe, though they remain available for
-bisecting any new JIT regressions.
+Do not claim native RAM/MMU no-handoff desktop acceptance. The immutable final
+boot used the conservative RTE/page-fault handoff oracle and exact-by-default
+full-SR policy. Native no-handoff still has no current desktop-reaching proof.
 
 **Build caveat**: cmake's incremental build does not always pick up
 header changes inside the unity-compiled JIT translation unit

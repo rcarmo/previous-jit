@@ -2,11 +2,16 @@
 
 ## Scope
 
-The copied NeXTSTEP system-image fixture currently panics with the same IPC
-`strange rights` failure in both clean `75df2be` controls and the SR tree. It is
-not a valid boot-performance oracle. This report therefore measures only a
-bounded, deterministic CPU-loop workload. It does **not** claim that the
-full-boot Workspace/File Viewer acceptance gate passes.
+At this report's 2026-08-01 checkpoint, the copied NeXTSTEP system-image
+fixture panicked with the same IPC `strange rights` failure in both clean
+`75df2be` controls and the SR tree. It was not a valid boot-performance oracle,
+so this report measures only a bounded, deterministic CPU-loop workload and
+makes no full-boot claim from that fixture.
+
+The later immutable post-logout fixture did pass exact-by-default
+Workspace/File Viewer acceptance on 2026-08-02. That closes product correctness
+acceptance, not the paired full-boot performance comparison measured here. See
+[`current-jit-status.md`](current-jit-status.md).
 
 The superseded schedutil artifact at
 `/workspace/tmp/jit-microbench-77375f8-20260801-002502` is retained as
@@ -144,6 +149,9 @@ OUTDIR=/workspace/tmp/jit-microbench-final-$(git rev-parse --short HEAD)-$(date 
 ./tools/jit-cycle-accuracy.sh
 ```
 
-Full-boot performance remains deferred until a fresh immutable image/CoW
-fixture completes the required fsck/reboot, WindowServer, loginwindow and
-Workspace/File Viewer milestones in both control and candidate configurations.
+A paired full-boot performance result remains unmeasured. The immutable fixture
+has completed the required boot milestones for interpreter, exact controls and
+the final exact-by-default JIT acceptance arm, but those runs were correctness
+and stability gates rather than controlled timing samples. The accepted
+performance figures remain the bounded cold-process and warm in-process values
+above.

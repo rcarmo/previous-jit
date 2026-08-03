@@ -3,6 +3,10 @@
 This file tracks the incremental transplant of the BasiliskII `uae_cpu_2026` work into `Previous`.
 Update it as code lands so the repository always explains the current experimental state.
 
+For present-tense policy and acceptance evidence, read
+[`current-jit-status.md`](current-jit-status.md) first. The dated milestone and
+frontier detail below is retained as implementation provenance.
+
 ## Goals
 
 1. Keep interpreter-mode `Previous` booting reliably.
@@ -22,7 +26,10 @@ Update it as code lands so the repository always explains the current experiment
 - The bridge now performs a **runtime-disabled bootstrap allocation probe**: it allocates and clears an executable cache buffer when the experimental JIT is requested and the safety checks pass, but still does not hand execution to translated code.
 - `tools/headless-jit-bootstrap-probe.sh` verifies the bridge/bootstrap path without waiting for a full desktop boot.
 - `tools/headless-jit-bridge-smoke.sh` rebuilds the experimental binary and proves bridge logging, ASLR active, bootstrap allocation active, and desktop reachability with default/ROM translated execution enabled.
-- `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch mode. RAM mode no longer auto-drops to the interpreter at the RTE/page-fault seam; the conservative desktop-boot oracle is explicit via `B2_JIT_RTE_FAULT_HANDOFF=1`. The native 100%-JIT path still has no desktop-reaching no-handoff proof. Current bounded work keeps the opcode/MMU/forced-fault gates green while preserving historical bridge shims such as the BSR scan until producer metadata covers them.
+- `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch mode. The conservative desktop oracle is explicit via `B2_JIT_RTE_FAULT_HANDOFF=1`; native no-handoff still has no desktop-reaching proof.
+- Exact generated handling is now the default for `MVSR2` and word-sized `MV2SR`. `B2_JIT_NATIVE_FULL_SR=1` enables the compiled wrappers only as a diagnostic inverse.
+- The immutable exact-by-default arm reached Workspace/File Viewer on its first poll and remained stable for 120 seconds with zero mismatch/panic/helper matches (`/workspace/tmp/previous-postlogout-normal-sr-default-20260802-115440`).
+- Current bounded gates are 155/155 opcode+fault, 67/67 RAM/MMU, 38/38 CPU state, and 11/11 for both exact-default and native-inverse focused SR/fault routing.
 - `tools/uae2026-compiler-syntax-probe.sh` records the current compile-time blocker set for direct vendored compiler integration.
 - `tools/uae2026-compiler-object-probe.sh` compiles the vendored ARM64 compiler core to an object file under the probe prelude.
 - Current blocker inventory lives in `docs/uae2026-compiler-blockers.md`.
@@ -214,7 +221,8 @@ This injects short M68K opcode vectors into the ROM mirror, runs one interpreter
 and compares the resulting `REGDUMP:` state instead of waiting for a full NeXT boot.
 See `docs/uae2026-opcode-harness.md` for the current vector set and latest results.
 
-Latest translated-execution debug checkpoint:
+Historical 2026-06-01 translated-execution checkpoint (superseded as the
+current summary by [`current-jit-status.md`](current-jit-status.md)):
 - refreshed default opcode vector-set baseline passes when split into bounded chunks under the 120s rule: combined `total=75`, `jit_ok=75`, `pass=75`, `fail=0`, `infra_fail=0`, `score=100` across `/workspace/tmp/previous-opcode-harness-20260601-124403`, `/workspace/tmp/previous-opcode-harness-20260601-124502`, and `/workspace/tmp/previous-opcode-harness-20260601-124558`.  The unfiltered default opcode harness exceeded the cap at `/workspace/tmp/previous-opcode-harness-20260601-124112` and is not counted.
 - refreshed RAM-code MMU fast-smoke vector-set baseline passes when split into bounded chunks under the 120s rule: combined `total=32`, `jit_ok=32`, `pass=32`, `fail=0`, `infra_fail=0`, `score=100` across `/workspace/tmp/previous-opcode-harness-20260601-125250` and `/workspace/tmp/previous-opcode-harness-20260601-125405`.  The unchunked `uae2026-mmu-fast-smoke.sh` wrapper exceeded the cap at `/workspace/tmp/previous-mmu-fast-smoke-20260601-125024` and is not counted.
 - follow-up bounded RAM gates after the forced-fault oracle work pass on 2026-05-31: focused forced-fault tuple gate `total=11`, `pass=11`, `fail=0` (`/workspace/tmp/previous-opcode-harness-20260531-090328`) and non-fault RAM seam/call gate `total=12`, `pass=12`, `fail=0` (`/workspace/tmp/previous-opcode-harness-20260531-090739`).  The unfiltered non-fault RAM opcode harness exceeded the 120s cap at `/workspace/tmp/previous-opcode-harness-20260531-090522` and is not counted as validation.
@@ -252,12 +260,11 @@ Latest bounded probe refresh (2026-06-01):
 
 ## Next steps
 
-1. Keep `./tools/uae2026-opcode-harness.sh` green before and after every RAM/MMU change.
-2. Preserve the default/ROM JIT desktop smoke (`desktop_reached=1`, preferably with `PREVIOUS_STABLE_WAIT=60`) while debugging RAM mode.
-3. Continue implementing the transaction-based RAM/MMU restart model described in `docs/uae2026-jit-mmu-strategy.md`; keep the current BSR target-fetch rollback as the proven compatibility shim until generated/native metadata covers that exact shifted-PC seam.
-4. Add minimal targeted regressions for the confirmed RAM/MMU patterns: BSR target-fetch fault after return push, `RTS`/`RTR` target fetch after return pop, RTE return-code fetch after SR/A7 switch, MOVEM continuation-mode effective-address preservation, and the current later no-handoff low-PC/RTE churn.
-5. Audit RTE/page-fault native resume without conflating `fault_pc`/`instruction_pc`, `mmu_fault_addr`, and the 68040 frame effective address; RAM/MMU helper calls now force a full live-state flush before helper-delivered `Exception(2)`, and MOVEM `MMU_SSW_CM` frames must keep their continuation EA intact.
-6. Once native RAM/MMU resume reaches desktop without the conservative RTE handoff, capture the final RAM-mode screenshot and update this log with metrics.
+1. Keep the 155/155 opcode+fault, 67/67 RAM/MMU and 38/38 CPU-state gates green before and after semantic changes.
+2. Preserve exact-by-default immutable boot acceptance; compiled full-SR wrappers remain diagnostic until a new split A/B and final unforced boot pass.
+3. Keep native RAM/MMU no-handoff work separate from accepted handoff-oracle boot status. Use focused, at-most-120-second RTE/page-fault discriminators before broad policy changes.
+4. Preserve code/data translation separation, logical-PC ownership, explicit transaction metadata and exact fallback barriers recorded in the MMU implementation and correctness-contract documents.
+5. If native no-handoff reaches Workspace/File Viewer, capture an immutable-source, first-poll and 120-second-stability artifact before changing its acceptance status.
 
 ## Guardrails
 

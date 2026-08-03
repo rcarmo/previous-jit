@@ -3,6 +3,14 @@
 This records the implementation of the 2026-07-19 JIT/MMU runbook on
 `main`, starting from `531e533`.
 
+> **Closure overlay (2026-08-02):** the implementation and focused MMU evidence
+> below remain valid, but the final-gate list and fixture/frontier language are
+> historical. Subsequent timing, generation-key, generated-dispatch, verifier
+> and immutable full-boot gates completed through `eb7e7dd`. Exact generated
+> full-SR handling is now the product default; native RAM/MMU no-handoff still
+> has no desktop-reaching proof. See
+> [`current-jit-status.md`](current-jit-status.md).
+
 ## Implemented contracts
 
 ### Explicit semantic-helper outcome
@@ -336,7 +344,9 @@ reproduced the `3b33cc9` result: 162 ESP selects, 282 SCSI commands, then
 Commit-range audit narrowed the regression from the clean dispatch-poll run at
 `6b4bde1` to `3b33cc9`, which first wrapped every exact path in helper begin.
 Those new `exec_nostats*` callers exposed the partial-PC rewrite described
-above. A final long gate after removing that rewrite remains required.
+above. At this checkpoint a final long gate after removing that rewrite was
+still required; later bounded and immutable acceptance results supersede that
+pending statement as described in the closure overlay above.
 
 ## Specialty-boundary flag authority
 
@@ -373,9 +383,10 @@ Focused evidence:
   It remains at the next frontier after `root on sd0`, repeatedly handling
   zero-address access errors; desktop was not reached.
 
-## Final gates still required
+## Historical final-gate checklist
 
-Before push, run serially on an idle host:
+At this 2026-07-20 checkpoint the following gates were still required before
+that implementation push:
 
 1. final build;
 2. complete MMU CPU-state harness;
@@ -384,4 +395,8 @@ Before push, run serially on an idle host:
 5. RAM/MMU no-handoff boot discriminator;
 6. generated reproducibility and clean-tree checks.
 
-Record the exact final artifacts and results here or in the final delivery note.
+The build, CPU-state, opcode/fault, reproducibility and accepted
+exact-by-default boot gates subsequently passed. The no-handoff item remains a
+separate open limitation: native RAM/MMU no-handoff still has no
+desktop-reaching proof. Current artifacts and policy are indexed in
+[`current-jit-status.md`](current-jit-status.md).

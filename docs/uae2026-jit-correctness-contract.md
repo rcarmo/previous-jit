@@ -13,9 +13,16 @@ to prove that the bridge and generated code preserve the architectural state tha
 > replaced physical-only block identity, split MOVEC ownership, host-derived
 > logical-PC exits, and the call/return opcode-window recovery described in older
 > sections below. See [the implementation record](uae2026-jit-mmu-implementation-20260720.md)
-> for current contracts and focused evidence. Historical audit sections are kept
+> for the implemented contracts and focused MMU evidence, and
+> [the current status page](current-jit-status.md) for present-tense product
+> policy and acceptance. Historical audit sections are kept
 > as provenance; statements that the BSR scan, fixed-PC JSR exception, or
 > `0500b6ae`/`0500bc98` compatibility cases remain are superseded.
+>
+> **Current SR policy:** `MVSR2` and word-sized `MV2SR` use exact generated
+> 68040 handling by default. `B2_JIT_NATIVE_FULL_SR=1` is diagnostic-only; the
+> immutable exact-by-default handoff-oracle boot passed Workspace/File Viewer
+> acceptance. Native RAM/MMU no-handoff remains unaccepted.
 >
 > **Default-boot scope:** `PREVIOUS_UAE2026_JIT_RAM=0` product execution retains
 > the accepted exact-interpreter ROM policy. The replacement compiler lacks the
@@ -660,10 +667,12 @@ Status vocabulary:
     the 120s limit and did not reach `00003372`, `00003374`, `00012b04`, or any
     call-target rollback line; it is recorded only as an inconclusive capped
     attempt, not as coverage.
-- Conclusion: the historical BSR seam is **not proven transaction-covered**.
-  Keep the legacy BSR scan as a compatibility shim.  Do not remove it until a
-  bounded trace or synthetic target-fetch-fault discriminator shows
-  `JIT_CALL_TARGET_ROLLBACK_TXN` for the `00003372/00003374 -> 00012b04` shape.
+- Historical conclusion: this checkpoint did **not** prove the old BSR seam
+  transaction-covered. The implementation therefore retained the legacy BSR
+  compatibility scan. Any future removal still needs a bounded trace or
+  synthetic target-fetch-fault discriminator that shows
+  `JIT_CALL_TARGET_ROLLBACK_TXN` for the
+  `00003372/00003374 -> 00012b04` shape.
 
 ### Discriminator: JSR target-fetch fault beyond the allowlist
 
@@ -778,7 +787,7 @@ Status vocabulary:
     used for these paths.
   - On MMU longjmp, the bridge first restores published flags/PC for restartable
     faults and applies `mmufixup[]`; then it applies JIT transactions and the
-    known auto-EA/write shims.
+    remaining auto-EA/write-side-effect guards in the implementation.
   - For a bridge-caught RTE fault, if `RTE` has already loaded user `SR` and the
     cached pre-op `SR` was supervisor, the bridge restores the cached
     pre-instruction supervisor `SR/A7` before `Exception(2)` so the exception is
@@ -1138,23 +1147,26 @@ Status vocabulary:
     default-off fault oracles (`total=11`, `interp_ok=11`, `jit_ok=11`,
     `pass=11`, `fail=0`, `infra_fail=0`).  This does not change broader MOVEM
     policy: other MOVEM masks/modes still require matching continuation oracles.
-- Call-target decision:
-  - Do **not** remove the legacy BSR scan.  The historical proof already showed
-    `00003372/00003374 -> 00012b04` is not transaction-covered.  The synthetic
-    BSR target-fetch oracle now reaches the correct target-fetch tuple but still
-    has the same pre-`Exception(2)` `SR`/`SPC` dump-state delta as JSR/RTS, so it
-    is not permission to remove the historical compatibility scan.
-  - Do **not** broaden JSR call-push rollback beyond the existing allowlist.  The
-    `fault_jsr_target_fetch` discriminator now passes for its covered compare
-    tuple, but it is not proof for unlisted native JSR producer paths.
+- Historical call-target decision at this checkpoint:
+  - This checkpoint did **not** justify removing the legacy BSR scan. The
+    historical proof already showed `00003372/00003374 -> 00012b04` is not
+    transaction-covered. The synthetic BSR target-fetch oracle now reaches the
+    correct target-fetch tuple but still has the same pre-`Exception(2)`
+    `SR`/`SPC` dump-state delta as JSR/RTS, so it is not permission to remove
+    the historical compatibility scan.
+  - This checkpoint did **not** justify broadening JSR call-push rollback
+    beyond the existing allowlist. The `fault_jsr_target_fetch` discriminator
+    now passes for its covered compare tuple, but it is not proof for unlisted
+    native JSR producer paths.
   - Keep return-pop transaction metadata for RTS/RTR producer paths, but do not
     use the covered forced-fault tuples as permission for native return-family
     lowering; return-family opcodes remain exact barriers in RAM/MMU mode.
-- Auto-EA decision:
-  - Do **not** replace `bridge_restore_autoea_fault_side_effects()` yet.  The
-    function remains a conservative bridge compatibility shim for helper/fallback
-    escapes: exact postincrement `fault_addr+inc` restoration, restartable-only
-    predecrement restoration, and MOVES signatures.
+- Historical auto-EA decision at this checkpoint:
+  - This checkpoint did **not** justify replacing
+    `bridge_restore_autoea_fault_side_effects()`. The function remained a
+    conservative bridge compatibility shim for helper/fallback escapes: exact
+    postincrement `fault_addr+inc` restoration, restartable-only predecrement
+    restoration, and MOVES signatures.
   - RAM/MMU dispatch continues to barrier all `Aipi`/`Apdi` opcodes, so there is
     no approved native auto-EA producer path to convert until explicit autoinc /
     predec transaction metadata and passing forced-fault oracles exist.

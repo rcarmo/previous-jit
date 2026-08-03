@@ -6,6 +6,11 @@ seeds the CPU register file, runs one interpreter/JIT pass, and dumps register s
 `REGDUMP:`.  Default-off fault-oracle vectors can instead stop at the first expected access
 error and dump `FAULTDUMP:`.
 
+The 75/32/11 baselines below are dated provenance. The later accepted gates are
+155/155 for the full opcode+fault suite, 67/67 for RAM/MMU fast smoke, 38/38 for
+CPU state, and 11/11 for both exact-default and native-inverse focused SR/fault
+routing. See [`current-jit-status.md`](current-jit-status.md).
+
 ## Files
 
 - `tools/uae2026-opcode-harness.sh` — build + run the harness and compare interpreter vs JIT
@@ -101,7 +106,7 @@ A broader unfiltered non-fault RAM run hit the 120s cap at
 `/workspace/tmp/previous-opcode-harness-20260531-090522` before writing
 `result.env`; it is not counted as validation.
 
-## Latest default vector-set baseline (2026-06-01)
+## Historical default vector-set baseline (2026-06-01)
 
 The unfiltered default harness command exceeded the 120s cap on the current
 Orange Pi host (`/workspace/tmp/previous-opcode-harness-20260601-124112`, no
@@ -127,7 +132,7 @@ Observed default vector-set metrics across the three chunks:
 - combined default non-fault baseline: `total=75`, `interp_ok=75`, `jit_ok=75`,
   `pass=75`, `fail=0`, `infra_fail=0`, `score=100`
 
-Latest RAM-code MMU fast-smoke vector-set baseline (2026-06-01):
+Historical RAM-code MMU fast-smoke vector-set baseline (2026-06-01):
 
 The unchunked `uae2026-mmu-fast-smoke.sh` wrapper exceeded the 120s cap at
 `/workspace/tmp/previous-mmu-fast-smoke-20260601-125024` before writing
@@ -146,7 +151,7 @@ Interpretation:
 - the default opcode vector set remains a passing regression gate when run as bounded chunks
 - `uae2026-mmu-fast-smoke.sh` remains the required first gate for RAM/MMU changes before heavier boot smokes; it injects the MMU-sensitive vectors, including relocated seam call-chain vectors, at RAM address `0x04008000` and reports `jit_ram_requested=1` / `rte_handoff_disabled=1`
 - RAM-mode boot failures are therefore being debugged as MMU/exception/restart state bugs rather than broad opcode-harness regressions
-- new RAM/MMU fixes should keep the fast MMU smoke at `pass=32 fail=0 score=100` and the default opcode vector set at `pass=75 fail=0 score=100` before heavier boot smokes are trusted
+- these 2026-06-01 results remain provenance; current changes must preserve the expanded 155/155 opcode+fault, 67/67 RAM/MMU and 38/38 CPU-state gates before heavier boot evidence is trusted
 
 ## Why this matters
 

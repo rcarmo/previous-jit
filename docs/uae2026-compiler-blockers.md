@@ -3,8 +3,11 @@
 This note tracks the first hard blockers for compiling the vendored
 `uae_cpu_2026/compiler/compemu_support_arm.cpp` directly inside `Previous`.
 
-The goal is to convert the current bridge/bootstrap probe into a real vendored
-compiler bootstrap while still keeping translated dispatch disabled.
+The original goal was to convert the bridge/bootstrap probe into a real
+vendored compiler bootstrap. That integration is now complete under the
+experimental build gate; the old blocker classes below are retained as risk
+categories. See [`current-jit-status.md`](current-jit-status.md) for current
+runtime policy and acceptance evidence.
 
 ## Current probes
 
@@ -33,11 +36,31 @@ prelude, without linking it into `Previous` yet.
 - syntax probe: **passing** (`/workspace/tmp/previous-uae2026-syntax-20260601-125758`, `rc=0`; blocker counters for instruction PC, memory globals, flag NZCV, opcode cflow, and icache conflicts are all zero)
 - object compile probe: **passing** (`/workspace/tmp/previous-uae2026-object-20260601-125759`, `rc=0`, `object_size=441168`)
 - emulator/runtime integration of vendored compiler entry points: **wired under `ENABLE_EXPERIMENTAL_UAE2026_JIT`**
-- default/ROM bootstrap probe is refreshed and clean (`/workspace/tmp/previous-jit-bootstrap-20260601-130216`, `bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`, `aslr_active=1`); default/ROM translated execution reaches the NEXTSTEP desktop in the historical smoke check (`/workspace/tmp/previous-jit-bsr-metadata-default-20260526-132634`, `desktop_reached=1`), which was not rerun under the 120s rule
-- refreshed default opcode vector-set baseline remains clean when split into bounded chunks under the 120s rule (`/workspace/tmp/previous-opcode-harness-20260601-124403`, `/workspace/tmp/previous-opcode-harness-20260601-124502`, `/workspace/tmp/previous-opcode-harness-20260601-124558`; combined `pass=75 fail=0 score=100`).  The unfiltered default opcode harness hit the cap at `/workspace/tmp/previous-opcode-harness-20260601-124112` and is not counted.
-- refreshed RAM-code MMU fast-smoke vector set remains clean from RAM execution at `0x04008000` when split into bounded chunks (`/workspace/tmp/previous-opcode-harness-20260601-125250`, `/workspace/tmp/previous-opcode-harness-20260601-125405`; combined `pass=32 fail=0 score=100`).  The unchunked wrapper hit the cap at `/workspace/tmp/previous-mmu-fast-smoke-20260601-125024` and is not counted.
-- latest bounded RAM/JIT gates after the forced-fault oracle tranche are clean: focused forced-fault tuple gate `/workspace/tmp/previous-opcode-harness-20260531-090328` (`pass=11 fail=0 score=100`) and non-fault seam/call gate `/workspace/tmp/previous-opcode-harness-20260531-090739` (`pass=12 fail=0 score=100`); the broader unfiltered non-fault RAM run hit the 120s cap and is not counted (`/workspace/tmp/previous-opcode-harness-20260531-090522`).
-- RAM/MMU dispatch mode is still experimental. The explicit conservative oracle `B2_JIT_RTE_FAULT_HANDOFF=1` has a historical stable desktop artifact (`/workspace/tmp/previous-jit-bsr-metadata-ram-handoff-long-20260526-133132`, `desktop_reached=1`, `stable_reached=1`) but was not rerun under the current 120s cap. Native no-handoff still has no desktop-reaching proof; current progress is measured by the bounded opcode/MMU/fault gates above.
+- default/ROM bootstrap probe is clean (`/workspace/tmp/previous-jit-bootstrap-20260601-130216`, `bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`, `aslr_active=1`)
+- the later immutable exact-by-default RAM/JIT arm reached Workspace/File Viewer on its first poll and remained stable for 120 seconds with zero mismatch/panic/helper matches (`/workspace/tmp/previous-postlogout-normal-sr-default-20260802-115440`)
+- historical 2026-06-01 default opcode vector-set baseline remains available as
+  provenance when split into bounded chunks under the 120s rule
+  (`/workspace/tmp/previous-opcode-harness-20260601-124403`,
+  `/workspace/tmp/previous-opcode-harness-20260601-124502`,
+  `/workspace/tmp/previous-opcode-harness-20260601-124558`; combined
+  `pass=75 fail=0 score=100`). The unfiltered default opcode harness hit the
+  cap at `/workspace/tmp/previous-opcode-harness-20260601-124112` and is not
+  counted.
+- historical 2026-06-01 RAM-code MMU fast-smoke baseline remains available as
+  provenance from RAM execution at `0x04008000` when split into bounded chunks
+  (`/workspace/tmp/previous-opcode-harness-20260601-125250`,
+  `/workspace/tmp/previous-opcode-harness-20260601-125405`; combined
+  `pass=32 fail=0 score=100`). The unchunked wrapper hit the cap at
+  `/workspace/tmp/previous-mmu-fast-smoke-20260601-125024` and is not counted.
+- historical 2026-05-31 follow-up bounded RAM/JIT gates after the forced-fault
+  oracle tranche are clean: focused forced-fault tuple gate
+  `/workspace/tmp/previous-opcode-harness-20260531-090328`
+  (`pass=11 fail=0 score=100`) and non-fault seam/call gate
+  `/workspace/tmp/previous-opcode-harness-20260531-090739`
+  (`pass=12 fail=0 score=100`); the broader unfiltered non-fault RAM run hit
+  the 120s cap and is not counted
+  (`/workspace/tmp/previous-opcode-harness-20260531-090522`).
+- RAM/MMU dispatch mode is still experimental. The explicit conservative oracle `B2_JIT_RTE_FAULT_HANDOFF=1` is the accepted desktop path; native no-handoff still has no desktop-reaching proof. Current acceptance is the 155/155 opcode+fault, 67/67 RAM/MMU, 38/38 CPU-state and immutable exact-by-default boot evidence indexed in `current-jit-status.md`.
 - latest diagnostic audit keeps default `B2_JIT_PCTRACE_WORDS` non-invasive by logging only `PCTOPS` plus executable-shadow `PCTSHADOW`; live addrbank reads are opt-in via `B2_JIT_PCTRACE_LIVE=1` because they can have side effects or fault.
 
 ## Historical compile-blocker classes

@@ -13,7 +13,12 @@ Code checkpoint: `6ff7872fd03fc85ff9f53a501c384b01657438c6`
 
 Final binary SHA-256: `cf7de9a13592c25b56fabcd3f311b1bbfb549a71ea35a4e89bcb6c22f9b63457`
 
-This is instrumentation evidence. It is not a complete-Workspace boot acceptance claim; the copied NeXTSTEP fixture remains invalid for that purpose.
+This report is instrumentation evidence and makes no boot-acceptance claim for
+its 2026-08-01 copied fixture. That checkpoint-specific limitation was later
+superseded: the immutable post-logout fixture passed exact-by-default
+Workspace/File Viewer acceptance on 2026-08-02. See
+[`current-jit-status.md`](current-jit-status.md) and
+[`sr-native-helper-validation-20260731.md`](sr-native-helper-validation-20260731.md).
 
 ## Outcome contract
 

@@ -3,8 +3,11 @@
 ## Scope
 
 This gate validates timing and interrupt semantics at a bounded, guest-driven
-coordinate. It does not use the copied disk's eventual desktop outcome as an
-oracle and makes no full-boot acceptance claim.
+coordinate. It does not use the checkpoint fixture's eventual desktop outcome
+as an oracle and makes no full-boot claim. A different, immutable post-logout
+fixture later passed exact-by-default full-boot acceptance; that does not alter
+this timing gate's bounded scope. See
+[`current-jit-status.md`](current-jit-status.md).
 
 Commit: `5fa984f1c1105418d19fddebdd915a89c38ab28d`
 

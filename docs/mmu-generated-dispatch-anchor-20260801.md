@@ -2,7 +2,12 @@
 
 ## Scope
 
-This validates the first generated MMU-dispatch tranche against its exact C-dispatch inverse. It is a deterministic correctness/census A/B, not a desktop benchmark or a claim about the invalid copied-disk boot fixture.
+This validates the first generated MMU-dispatch tranche against its exact
+C-dispatch inverse. It is a deterministic correctness/census A/B, not a
+desktop benchmark or a boot claim from the copied fixture used at this
+checkpoint. A different, immutable post-logout fixture later passed
+exact-by-default full-boot acceptance; see
+[`current-jit-status.md`](current-jit-status.md).
 
 Code checkpoint: `82aa3715075ebe53ec1a57290039cd26900150ee`
 

@@ -14,68 +14,54 @@ codebase recognizable.
 
 ## Current status
 
-This is still **experimental bring-up work**, not a finished high-performance JIT release.
+This remains an experimental AArch64 JIT fork, but the transplanted compiler,
+RAM/MMU bridge, timing path, verifier and bounded validation stack are integrated.
+[`docs/current-jit-status.md`](docs/current-jit-status.md) is the precedence point
+for current status; dated reports retain their checkpoint evidence.
 
-The **pure-JIT, zero-interpreter-fallback** path is the harder ongoing goal. Its current
-frontier — and a complete, probe-confirmed diagnosis of the boot-critical recompile churn
-(plus the selected fix) — is documented in
-[`docs/boot-frontier-scsi-hang.md`](docs/boot-frontier-scsi-hang.md) (see the 2026-06-22
-section). A pure-interpreter boot is confirmed to reach the kernel handoff region
-(`0x050542A0`), so the goal is empirically reachable; the JIT path stalls earlier on a
-stale chain-target trampoline, whose fix (a self-resolving chain thunk) is specified there.
+The accepted product policy at `eb7e7dd` is:
 
-As it stands today, headless NeXTSTEP boots cleanly to the Workspace desktop on AArch64 under the conservative RTE-fault interpreter handoff oracle:
+- `MVSR2` (`MOVE SR/CCR,<ea>`) and word-sized `MV2SR` (`MOVE <ea>,SR`) use the
+  exact generated 68040 handler by default;
+- `B2_JIT_NATIVE_FULL_SR=1` enables both compiled full-SR wrappers only as a
+  diagnostic inverse;
+- `PREVIOUS_UAE2026_JIT_RAM=1` remains experimental, with
+  `B2_JIT_RTE_FAULT_HANDOFF=1` as the conservative desktop-acceptance oracle;
+- native RAM/MMU no-handoff still has no current desktop-reaching proof.
+
+The final exact-by-default boot used an immutable post-logout source image
+(mode `0444`, SHA-256
+`1d0a76447fec28d0a2737cf42021bef9136ca43c188f22aee25a3c7fa1252c8d`).
+It reached Workspace/File Viewer on the first poll, remained stable for 120
+seconds, and emitted zero verifier mismatch, panic, fatal, `strange rights`,
+abort or SR-helper matches. Artifact:
+`/workspace/tmp/previous-postlogout-normal-sr-default-20260802-115440`.
 
 ![NeXTSTEP Workspace desktop reached headlessly on AArch64](docs/desktop-headless-boot.png)
 
-Reproducible via `tools/headless-nextstep-harness.sh` with:
+The compiled full-SR wrappers remain diagnostic because the immutable split A/B
+found no boot-safe subset: compiled `MV2SR.W` caused a permanent WindowServer
+startup loop, while compiled `MVSR2` reproduced
+`ipc_right_copyin_header: strange rights`. See
+[`docs/sr-native-helper-validation-20260731.md`](docs/sr-native-helper-validation-20260731.md).
 
-```bash
-PREVIOUS_UAE2026_JIT=1 \
-PREVIOUS_UAE2026_JIT_RAM=1 \
-B2_JIT_RTE_FAULT_HANDOFF=1 \
-PREVIOUS_RTC_CHIP=MCCS1850 \
-PREVIOUS_DESKTOP_TIMEOUT=300 \
-PREVIOUS_STABLE_WAIT=60 \
-PREVIOUS_SHOW_STATUSBAR=FALSE \
-PREVIOUS_SHOW_DRIVE_LED=FALSE \
-./tools/headless-nextstep-harness.sh
-```
+Current bounded evidence includes:
 
-The harness reports `desktop_reached=1` and `stable_reached=1`, and OCR confirms `Workspace` plus `File Viewer` on the captured screen.
+- full opcode plus forced-fault suite: 155/155;
+- RAM/MMU fast smoke: 67/67;
+- CPU-state harness: 38/38;
+- exact-by-default and native-inverse focused SR/fault matrices: 11/11 each;
+- block-verifier ledger: 67/67 RAM/MMU and clean targeted 2/2, with explicit
+  compare/skip/longjmp/specialty denominators;
+- exact timing at 256 SCSI transactions, 400 CycInt pairs and 194 exceptions,
+  with 6 ppm cycle and 8 ppm retirement offsets;
+- bounded median speedups of 1.765103× cold-process and 6.283813× warm
+  in-process CPU-loop execution.
 
-What is rather more delicate:
-
-* the fully native RAM/MMU dispatch path with the interpreter handoff *disabled* (`B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`) still stalls partway through boot. Investigation is documented at length in the audit notes; the bisection localises the failure to the 7th JIT-handled RTE-target-fetch fault, and the symptom is the kernel re-entering a magneto-optical probe path that the interpreter side correctly skips.
-* a broader opcode-family parity sweep with the BasiliskII/macemu JIT work is still outstanding.
-* a small focused regression for the remaining native RTE-resume failure has not yet been distilled into the opcode harness.
-
-In short: with the handoff oracle on, the fork is perfectly serviceable for booting NeXTSTEP under JIT; without it, the native path is still being chased. The diagnostic and bisection tooling needed to continue that chase is in tree (`B2_JIT_RTE_FAULT_HANDOFF_SKIP_N`, `B2_TRACE_REQUEST_WRITES`, `B2_TRACE_CDB_WRITES`).
-
-What is already in tree:
-
-- vendored `uae_cpu_2026` JIT/compiler subtree under `src/cpu/uae_cpu_2026/`
-- bridge/runtime scaffolding to let Previous initialize the transplanted compiler
-- bootstrap probe and headless smoke harnesses
-- opcode-equivalence harness for short injected M68K vectors
-- docs describing blockers, bridge layout, and migration strategy
-
-What is **not** finished yet:
-
-- fully native RAM/MMU dispatch after the RTE/page-fault seam without conservative interpreter handoff
-- complete opcode-family parity with the BasiliskII/macemu JIT work
-- a targeted regression for the remaining native RTE-resume failure
-
-Right now the project is at the stage where:
-
-- interpreter-backed validation works
-- JIT bootstrap/plumbing works
-- the opcode-equivalence harness is clean when run as bounded chunks under the current 120s rule (`pass=75 fail=0 score=100`; `/workspace/tmp/previous-opcode-harness-20260601-124403`, `/workspace/tmp/previous-opcode-harness-20260601-124502`, `/workspace/tmp/previous-opcode-harness-20260601-124558`)
-- the RAM-code MMU fast-smoke vector set runs the relocation-safe seam vectors from RAM and is clean when run as bounded chunks (`pass=32 fail=0 score=100`; `/workspace/tmp/previous-opcode-harness-20260601-125250`, `/workspace/tmp/previous-opcode-harness-20260601-125405`)
-- the focused forced-fault tuple gate is clean (`pass=11 fail=0 score=100`; `/workspace/tmp/previous-opcode-harness-20260531-090328`)
-- default/ROM JIT bootstrap is freshly validated under the 120s rule (`/workspace/tmp/previous-jit-bootstrap-20260601-130216`, `bridge_compiled=1`, `bootstrap_ready=1`, `bootstrap_active=1`, `aslr_active=1`); the longer desktop smoke remains a historical passing artifact (`/workspace/tmp/previous-jit-bsr-metadata-default-20260526-132634`, `desktop_reached=1`) and was not rerun under the current cap
-- RAM-requested mode (`PREVIOUS_UAE2026_JIT_RAM=1`) no longer auto-drops to the interpreter at the RTE/page-fault seam. The conservative desktop-boot oracle is explicit via `B2_JIT_RTE_FAULT_HANDOFF=1`; historical long oracle runs reached a stable desktop, but current acceptance starts with bounded opcode/MMU/fault discriminators.
-- The remaining native-resume bug is preserved by leaving that handoff unset (or forcing `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`). Native no-handoff still has no desktop-reaching proof. Broad native-resume/rollback changes require focused ≤120s discriminators and producer metadata rather than a moved long-run boot frontier.
+The remaining high-risk boundary is native RAM/MMU resume with the conservative
+RTE/page-fault handoff disabled. New policy changes there require focused
+at-most-120-second opcode/MMU/fault discriminators and explicit producer
+metadata before any longer boot-frontier evidence.
 
 ## Project layout
 
@@ -100,7 +86,8 @@ Right now the project is at the stage where:
 
 ### Docs
 
-- `docs/sr-native-helper-validation-20260731.md` — native SR/CCR semantic-helper implementation, focused correctness gates, inverse control and current full-boot fixture limitation
+- `docs/current-jit-status.md` — current policy, accepted evidence, immutable boot closure and open boundaries
+- `docs/sr-native-helper-validation-20260731.md` — native SR/CCR helper audit, exact-default policy, inverse control and immutable full-boot closure
 - `docs/bounded-jit-benchmark-20260731.md` — fixed-frequency bounded benchmark, explicit coverage denominator, and separate cold-process (1.765×) / warm in-process (6.284×) results
 - `docs/timing-anchor-validation-20260801.md` — exact SCSI/CycInt/exception cadence comparison at a bounded guest-work coordinate
 - `docs/mmu-generation-churn-anchor-20260801.md` — bounded default-vs-blanket generation-key census and the measured cross-page safety boundary
@@ -140,14 +127,15 @@ Current validation flow:
 
 Notes:
 
-- automated boot harnesses use a **fresh copied disk image per run**
+- automated boot harnesses use a **fresh writable copy per run**; the accepted source fixture is immutable and hash-pinned
 - Linux startup disables host ASLR by default for deterministic JIT mappings
 - `PREVIOUS_UAE2026_JIT=0` gives an interpreter baseline for harness comparison
 - `PREVIOUS_UAE2026_JIT_RAM=1` enables the experimental RAM/MMU dispatch path; native RAM mode now stays in translated execution unless the explicit oracle handoff is requested
 - `PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH=1` opts into the accepted generated full-identity MMU dispatcher; unset/`0` retains the exact C-dispatch inverse while this remains experimental
 - with fast dispatch enabled, the shared popall predicate is the default; `PREVIOUS_UAE2026_JIT_MMU_FAST_DISPATCH_SHARED=0` retains the accepted inline inverse for exact A/B runs
 - block-verifier reports use an explicit `attempted`/`terminal` denominator and separate compare, skip, longjmp and specialty outcomes; see `docs/verifier-coverage-accounting-20260801.md`
-- `B2_JIT_RTE_FAULT_HANDOFF=1` requests the conservative RTE/page-fault interpreter handoff oracle; leaving it unset (or setting `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`) preserves the remaining native-resume bug for diagnosis
+- `B2_JIT_RTE_FAULT_HANDOFF=1` requests the conservative RTE/page-fault interpreter handoff oracle; leaving it unset (or setting `B2_JIT_RTE_FAULT_HANDOFF_DISABLE=1`) preserves the unaccepted native no-handoff path for diagnosis
+- `B2_JIT_NATIVE_FULL_SR=1` enables the compiled full-SR wrappers as a diagnostic inverse; exact generated handling is the product default
 - `B2_JIT_LOW_VIRTUAL_SINGLESTEP=1`, `B2_JIT_LOW_VIRTUAL_PREFETCH_GUARD=1`, `B2_JIT_EXACT_EXEC_PCS`, `B2_JIT_PCTRACE_WORDS`, and opt-in `B2_JIT_PCTRACE_LIVE=1` are diagnostics for low-user-virtual MMU/code-fetch and state-divergence analysis; they are not default-on fixes
 - RAM/MMU code paths must keep data-space and code-space translations separate: the private bank `xlateaddr` is for data effective addresses, while branch/return/dispatch PC materialization uses the dedicated code-space host translator
 - the vendored compiler unity build keeps its Basilisk/UAE prefs symbols renamed away from Previous's native `currprefs`/`changed_prefs`; do not reintroduce same-name globals with incompatible struct layouts

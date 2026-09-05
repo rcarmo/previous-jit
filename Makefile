@@ -197,3 +197,16 @@ jit-microbench: build ## Tight-loop JIT vs interpreter throughput (default ITERA
 
 jit-oracle-bisect: build ## Diff JIT vs interp REGDUMP for a hex blob: make jit-oracle-bisect HEX="e388 e214"
 	@./tools/jit-oracle-bisect.sh "$(HEX)"
+
+.PHONY: jit-cpustate jit-opcode-regression jit-constfold-regression jit-mmu-regression
+jit-mmu-regression: build ## Run RAM/MMU-sensitive opcode subset
+	./tools/uae2026-mmu-fast-smoke.sh
+
+jit-constfold-regression: ## Test ARM64 constant-fold bodies with UBSan
+	bun ./tools/uae2026-constfold-regression.ts
+
+jit-cpustate: build ## Native-execution-gated CPU-state regression suite
+	@./tools/uae2026-cpustate-harness.sh
+
+jit-opcode-regression: build ## Opcode/fault parity (PREVIOUS_OPCODE_FILTER selects bounded subsets)
+	@./tools/uae2026-opcode-harness.sh

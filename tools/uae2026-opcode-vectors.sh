@@ -26,6 +26,7 @@ declare -a TEST_ORDER=(
 )
 
 declare -a FAULT_TEST_ORDER=(
+  fault_initial_code_fetch
   fault_move_sr_user_privilege fault_move_to_sr_user_privilege fault_move_to_sr_read fault_move_sr_write fault_move_to_sr_trace
   fault_bsr_target_fetch fault_jsr_target_fetch fault_rts_target_fetch fault_rtr_target_fetch fault_rte_return_fetch fault_rte_user_write_long
   fault_restart_flags_after_exact fault_trap_frame_write fault_write_byte_d2 fault_write_byte_postinc moves_dfc_write_fault moves_dfc_byte_postinc_fault moves_dfc_long_postinc_fault
@@ -136,6 +137,18 @@ TESTS[move_to_sr_native_repeat]="7002 46FC 2715 51C8 FFFA 4E71"
 INIT_REGS[move_to_sr_native_repeat]="0 0 0 0 0 0 0 0 0 0 0400A000 0 0 0 0 04010000 2700"
 MEM_LONGS[move_to_sr_native_repeat]="0400A000 11223344 0400A400 55667788"
 
+# The initial dispatcher fetch must be protected by the bridge MMU catch,
+# before any opcode has executed or published a previous restart snapshot.
+TESTS[fault_initial_code_fetch]="4E71"
+INIT_REGS[fault_initial_code_fetch]="12345678 0 0 0 0 0 0 0 0 0 0 0 0 0 0 04010000 2700"
+EXPECT_EXCEPTION[fault_initial_code_fetch]=2
+CODE_FAULT_ADDR[fault_initial_code_fetch]="TEST"
+TESTS[fault_initial_code_fetch_ccr]="4E71"
+INIT_REGS[fault_initial_code_fetch_ccr]="12345678 0 0 0 0 0 0 0 0 0 0 0 0 0 0 04010000 271F"
+EXPECT_EXCEPTION[fault_initial_code_fetch_ccr]=2
+CODE_FAULT_ADDR[fault_initial_code_fetch_ccr]="TEST"
+FAULT_TEST_ORDER+=(fault_initial_code_fetch_ccr)
+
 # Privilege, restartable read, continuation write and trace side-effect oracles.
 TESTS[fault_move_sr_user_privilege]="40C0"
 INIT_REGS[fault_move_sr_user_privilege]="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0400E000 0000"
@@ -148,6 +161,17 @@ INIT_REGS[fault_move_to_sr_read]="0 0 0 0 0 0 0 0 0400A000 0 0 0 0 0 0 04010000 
 EXPECT_EXCEPTION[fault_move_to_sr_read]=2
 DATA_FAULT_ADDR[fault_move_to_sr_read]="0400A000"
 DATA_FAULT_SIZE[fault_move_to_sr_read]=W
+# Exact-handler restart state must not be overwritten by RAM/low-PC heuristics.
+for name in fault_move_to_sr_read_ram fault_move_to_sr_read_low; do
+  TESTS[$name]="${TESTS[fault_move_to_sr_read]}"
+  INIT_REGS[$name]="${INIT_REGS[fault_move_to_sr_read]}"
+  EXPECT_EXCEPTION[$name]=2
+  DATA_FAULT_ADDR[$name]="0400A000"
+  DATA_FAULT_SIZE[$name]=W
+  FAULT_TEST_ORDER+=("$name")
+done
+TEST_ADDRS[fault_move_to_sr_read_ram]="0x04008000"
+TEST_ADDRS[fault_move_to_sr_read_low]="0x00008000"
 TESTS[fault_move_sr_write]="40D8"
 INIT_REGS[fault_move_sr_write]="0 0 0 0 0 0 0 0 0400A000 0 0 0 0 0 0 04010000 2715"
 EXPECT_EXCEPTION[fault_move_sr_write]=2
@@ -510,3 +534,16 @@ TEST_ORDER+=(scc_hi_carry_set scc_ls_carry_set scc_cc_carry_set scc_cs_carry_set
 # stale host NZCV incorrectly leaves D2=1.
 TESTS[bcc_carry_fallthrough_restore]="203C 0004 0000 223C 0003 0000 B280 6706 6508 7401 6006 7403 6002 7402"
 TEST_ORDER+=(bcc_carry_fallthrough_restore)
+
+# Shift/rotate integration checks with installed-native reuse. Current policy
+# selects full-flags handlers here; jit-constfold-regression tests the no-flags
+# constant paths directly without weakening that policy.
+TESTS[fold_lsl_byte_reuse]="203C 1122 3280 E308 E088 51CF FFF4"
+TESTS[fold_lsl_word_reuse]="203C 1122 8000 E348 E088 51CF FFF4"
+TESTS[fold_lsl_long_reuse]="203C 8000 0000 E388 E288 51CF FFF4"
+TESTS[fold_rol_long_reuse]="203C 8000 0000 E398 E288 51CF FFF4"
+TESTS[fold_ror_long_reuse]="203C 0000 0080 E298 E288 51CF FFF4"
+for name in fold_lsl_byte_reuse fold_lsl_word_reuse fold_lsl_long_reuse fold_rol_long_reuse fold_ror_long_reuse; do
+  INIT_REGS[$name]="0 0 0 0 0 0 0 00000003 0 0 0 0 0 0 0 04010000 2700"
+  TEST_ORDER+=("$name")
+done

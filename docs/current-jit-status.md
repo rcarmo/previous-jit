@@ -1,6 +1,8 @@
 # Current UAE2026 JIT status
 
-Status at `eb7e7ddc435961f5e5582eab0a1b4a507d6b4437` (2026-08-02).
+Updated 2026-09-05 with bounded implementation regressions; immutable full-boot
+acceptance remains pinned to `eb7e7ddc435961f5e5582eab0a1b4a507d6b4437`
+(2026-08-02) and its recorded binary.
 
 This page is the precedence point for present-tense project status. Dated audit,
 bring-up and benchmark reports retain the evidence available at their named
@@ -61,7 +63,18 @@ The split boot A/B explains the exact-default decision:
 Full evidence and reproduction controls are in
 [`sr-native-helper-validation-20260731.md`](sr-native-helper-validation-20260731.md).
 
-## Current bounded evidence
+## September implementation review
+
+Dispatcher fetch-fault protection, interpreter rollback-snapshot lifetime,
+exact-handler fault-tuple ownership and ARM64 no-flags shift/rotate constant
+widths were corrected with reproducing regressions. Final gates: **164/164**
+opcode+fault, **88/88** expanded RAM/MMU, **38/38** native CPU-state (zero skips),
+and **7,488/7,488** direct helper/UBSan checks. The expanded suites have different
+denominators from the August gates below. No new desktop or performance claim.
+
+See [implementation review and reproduction](jit-implementation-review-20260905.md).
+
+## August bounded acceptance evidence
 
 | Area | Accepted result | Source |
 |---|---|---|

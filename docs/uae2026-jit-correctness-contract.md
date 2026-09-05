@@ -71,6 +71,14 @@ Rationale: exception-frame construction must describe the instruction that
 faulted, not the partially mutated state after native code has already advanced
 PC, stack, flags, or address registers.
 
+This includes the initial dispatcher code-host lookup: publish entry state and
+install the active exception catch before translating or promoting a target.
+Automatic interpreter snapshots changed after `setjmp` and read after `longjmp`
+must be volatile (or stored outside automatic local state). Exact generated
+handlers own their fault tuple; native low-PC/RAM repair heuristics must not
+replace their `mmu_effective_addr`. See the
+[2026-09-05 regressions](jit-implementation-review-20260905.md).
+
 ### 2. Code, data, and CPU-space translations are distinct
 
 The JIT must not use one translation path for all memory:

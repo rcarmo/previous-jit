@@ -260,6 +260,9 @@ run_case() {
   if [[ "$use_jit" == "jit" ]]; then
     wait_sec="$JIT_WAIT_SEC"
     env_vars+=(PREVIOUS_UAE2026_JIT=1 B2_JIT_FORCE_TRANSLATE=1)
+    if [[ "$name" == fold_*_reuse ]]; then
+      env_vars+=(B2_NATIVE_ASSERT_PC="$test_addr")
+    fi
     # Per-vector: force every store through the special-memory bank-write path
     # (writemem_special -> Uae2026JitBankWriteByOffset). Exercises the bank
     # size-selector + 3-arg call path that the normal writemem_real tests miss.
@@ -307,6 +310,11 @@ run_case() {
   fi
   if [[ "$dump_count" -ne 1 ]]; then
     echo multi_regdump > "$reason_file"
+    return 1
+  fi
+
+  if [[ "$use_jit" == jit && "$name" == fold_*_reuse ]] && ! grep -q '^NATEXEC ' "$log"; then
+    echo no_native_reuse > "$reason_file"
     return 1
   fi
 
@@ -373,7 +381,9 @@ for name in "${TEST_ORDER[@]}"; do
 
   interp_cmp="$interp_out"
   jit_cmp="$jit_out"
-  if [[ -n "${EXPECT_EXCEPTION[$name]:-}" ]]; then
+  # Initial-entry fetch faults have no opcode/continuation bookkeeping to
+  # normalize: compare the complete raw tuple, including all CCR bits.
+  if [[ -n "${EXPECT_EXCEPTION[$name]:-}" && "$name" != fault_initial_code_fetch* ]]; then
     interp_cmp="$OUTDIR/${name}.interp.compare"
     jit_cmp="$OUTDIR/${name}.jit.compare"
     normalize_faultdump_for_compare "$interp_out" "$interp_cmp"

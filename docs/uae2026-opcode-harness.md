@@ -6,19 +6,26 @@ seeds the CPU register file, runs one interpreter/JIT pass, and dumps register s
 `REGDUMP:`.  Default-off fault-oracle vectors can instead stop at the first expected access
 error and dump `FAULTDUMP:`.
 
-The 75/32/11 baselines below are dated provenance. The later accepted gates are
-155/155 for the full opcode+fault suite, 67/67 for RAM/MMU fast smoke, 38/38 for
-CPU state, and 11/11 for both exact-default and native-inverse focused SR/fault
-routing. See [`current-jit-status.md`](current-jit-status.md).
+The 75/32/11 baselines below are dated provenance. August acceptance recorded
+155/155 full opcode+fault, 67/67 RAM/MMU, 38/38 CPU state and 11/11 focused
+SR/fault routing. The [September review](jit-implementation-review-20260905.md)
+expanded coverage to 164/164 opcode+fault and 88/88 RAM/MMU, with 38/38 native
+CPU-state and 7,488 direct no-flags helper checks. See
+[`current-jit-status.md`](current-jit-status.md).
 
 ## Files
 
 - `tools/uae2026-opcode-harness.sh` — build + run the harness and compare interpreter vs JIT
 - `tools/uae2026-mmu-fast-smoke.sh` — filtered fast smoke for MMU-sensitive vectors before full boot smokes
 - `tools/uae2026-opcode-vectors.sh` — curated vectors for currently missing / risky opcode families
+- `tools/uae2026-constfold-regression.ts` — direct actual-body ARM64 no-flags constant-fold tests with UBSan; run `make jit-constfold-regression`
+
 - `src/m68000.c` — opcode test-mode setup and `REGDUMP` emission
 - `src/cpu/newcpu.c` — one-pass escape hatch for opcode test mode
 - `src/cpu/uae2026_jit_bridge.cpp` — respects `PREVIOUS_UAE2026_JIT=0` for interpreter baselines
+
+Make wrappers: `jit-opcode-regression`, `jit-mmu-regression`, `jit-cpustate`.
+Full-flags opcode reuse vectors do not establish no-flags helper coverage.
 
 ## Protocol
 
@@ -66,7 +73,9 @@ raw `FAULTDUMP:` tuple.
 
 For comparisons only, the harness normalizes forced-fault `FAULTDUMP:` lines for fields that are
 known opcode-test catch-path state rather than part of the 68040 access-error tuple under test:
-`SPC` is replaced with a placeholder and the X bit is cleared from `SR`.  The raw
+`SPC` and internal `FAULT_PC` are replaced with placeholders and the X bit is
+cleared from `SR`. Initial-entry instruction-fetch vectors are stricter: their
+complete raw tuples, including all CCR bits, must match. The raw
 `*.interp.regdump` / `*.jit.regdump` files are kept unchanged; normalized copies are written as
 `*.compare` when `B2_TEST_EXPECT_EXCEPTION` is active.  Promote a fault vector only after the raw
 semantic tuple has been reviewed and any normalization is documented.

@@ -1932,15 +1932,15 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
      * and prevents pass-2/native re-entry from witnessing the compiled block. */
     const uae_u32 dispatch_pc = regs.pc & ~1u;
     regs.fault_pc = dispatch_pc;
+    regs.instruction_pc = dispatch_pc;
+    regs.mmu_effective_addr = 0;
     Uae2026JitLastInstructionPc = dispatch_pc;
+    Uae2026JitLastSr = bridge_sr_with_jit_flags(regs.sr);
+    Uae2026JitLastA7 = m68k_areg(regs, 7);
+    Uae2026JitLastFlags.cznv = jit_regflags.nzcv;
+    Uae2026JitLastFlags.x = jit_regflags.x;
     mmu_restart = true;
     mmu_opcode = 0xffff;
-    regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(dispatch_pc);
-    regs.pc_oldp = regs.pc_p;
-    /* The generated entry stub indexes cache_tags by translated host pointer.
-     * Promote only the block matching the full logical/context key; otherwise
-     * force execute_normal() to trace/compile that exact alias. */
-    Uae2026CompilerPrepareMmuDispatch();
 
     bool handled_mmu_exception = false;
     int prb = setjmp(__exbuf);
@@ -1953,6 +1953,14 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
     if (prb == 0) {
         __exvalue = 0;
         __pushtry(&__exbuf);
+        /* Even the dispatcher lookup can fault. It must use this live catch
+         * frame and the entry snapshot, not a previous opcode's restart state
+         * or a stale setjmp target left by an earlier bridge invocation. */
+        regs.pc_p = (uae_u8 *)Uae2026JitMmuXlateCodeHost(dispatch_pc);
+        regs.pc_oldp = regs.pc_p;
+        /* Promote only the block matching the full logical/context key before
+         * the generated entry stub indexes cache_tags by code-host pointer. */
+        Uae2026CompilerPrepareMmuDispatch();
         m68k_do_compile_execute();
         __poptry();
     } else {
@@ -2097,14 +2105,19 @@ extern "C" void Uae2026JitBridgeCompileExecute(void)
          * must be built from the faulting instruction PC.  Keep this narrow to
          * kernel RAM text; low-virtual call faults can publish extension-word
          * PCs and are handled by explicit call/return transactions above. */
-        if (prb == 2 && !bridge_rte_fault && regs.fault_pc != 0 && regs.fault_pc < 0x00020000u &&
+        /* Exact generated handlers already own the fault tuple. In particular
+         * their restartable read faults keep mmu_effective_addr clear; the old
+         * address-based native-helper repair must not overwrite that value. */
+        const bool exact_opcode_fault = bridge_helper_state.active &&
+            bridge_helper_state.kind == UAE2026_JIT_HELPER_EXACT_OPCODE;
+        if (prb == 2 && !exact_opcode_fault && !bridge_rte_fault && regs.fault_pc != 0 && regs.fault_pc < 0x00020000u &&
             regs.mmu_fault_addr != regs.fault_pc) {
             const uae_u16 fc = regs.mmu_ssw & 0x0007u; /* 68040 SSW TM/function-code bits */
             /* MMU_SSW_CM: preserve the 68040 MOVEM continuation EA. */
             if (fc != 2 && fc != 6 && !(regs.mmu_ssw & 0x1000u))
                 regs.mmu_effective_addr = regs.mmu_fault_addr;
         }
-        if (prb == 2 && !bridge_rte_fault && regs.fault_pc >= 0x04000000u && regs.fault_pc < 0x08000000u) {
+        if (prb == 2 && !exact_opcode_fault && !bridge_rte_fault && regs.fault_pc >= 0x04000000u && regs.fault_pc < 0x08000000u) {
             /* Previous's legacy format-7 frame builder stores mmu_effective_addr
              * as the EA word.  JIT-delivered helper faults may leave that field
              * stale from an earlier low-virtual fault; make it match the actual

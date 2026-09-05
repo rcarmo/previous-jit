@@ -2011,7 +2011,9 @@ static void ip_execprof_tick(uae_u32 pc, uae_u16 op) {
 static void m68k_run_mmu040 (void)
 {
 	uae_u16 opcode;
-	struct flag_struct f;
+	/* Updated after setjmp and consumed after a fault longjmp. Without
+	 * volatile the optimiser may restore the initial zero flags instead. */
+	volatile struct flag_struct f;
 	f.cznv = 0;
 	f.x    = 0;
 	uaecptr pc;
